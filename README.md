@@ -24,6 +24,12 @@ The new implementation currently provides:
 - An explicitly enabled, concurrency-safe device-control state machine with
   strict local-target validation and corrective restoration on explicit
   restore, send failure, and shutdown.
+- A validated network context built from the selected adapter and operating
+  system default IPv4 route.
+- A one-shot application runtime that owns discovery, capture, device roles,
+  passive integrity monitoring, cancellation, and ordered shutdown.
+- Passive, debounced reporting when an observed gateway identity conflicts
+  with the startup baseline. Passive monitoring never transmits corrections.
 
 The interactive TUI and GUI will be added after the capture and discovery path
 has been exercised across supported operating systems.
@@ -37,6 +43,7 @@ state across application restarts.
 
 ```sh
 go run ./cmd/netwarden interfaces
+go run ./cmd/netwarden route
 go run ./cmd/netwarden config set-interface en0
 go run ./cmd/netwarden nickname set 00:11:22:33:44:55 "Living Room TV"
 sudo go run ./cmd/netwarden scan --interface en0 --duration 5s

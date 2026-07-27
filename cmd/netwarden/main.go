@@ -13,12 +13,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/amdzy/NetWarden/internal/app"
 	"github.com/amdzy/NetWarden/internal/capture/pcapdriver"
 	appconfig "github.com/amdzy/NetWarden/internal/config"
-	"github.com/amdzy/NetWarden/internal/core"
-	"github.com/amdzy/NetWarden/internal/device"
 	"github.com/amdzy/NetWarden/internal/discovery"
 	"github.com/amdzy/NetWarden/internal/metadata"
+	networkgateway "github.com/amdzy/NetWarden/internal/network/gateway"
 )
 
 func main() {
@@ -36,6 +36,8 @@ func run(args []string) error {
 	switch args[0] {
 	case "interfaces":
 		return listInterfaces()
+	case "route":
+		return showRoute()
 	case "scan":
 		return scan(args[1:])
 	case "resolve":
@@ -57,6 +59,7 @@ func printUsage() {
 
 Usage:
   netwarden interfaces
+  netwarden route
   netwarden scan [--interface NAME] [--prefix CIDR] [--duration 5s]
   netwarden resolve --gateway IP [--interface NAME] [--timeout 3s]
   netwarden config show
@@ -94,6 +97,16 @@ func listInterfaces() error {
 	return nil
 }
 
+func showRoute() error {
+	route, err := (networkgateway.SystemDiscoverer{}).Discover(context.Background())
+	if err != nil {
+		return err
+	}
+	fmt.Println("interface IPv4:", route.InterfaceIP)
+	fmt.Println("default gateway:", route.GatewayIP)
+	return nil
+}
+
 func scan(args []string) error {
 	flags := flag.NewFlagSet("scan", flag.ContinueOnError)
 	interfaceName := flags.String("interface", "", "pcap or system interface name")
@@ -119,44 +132,43 @@ func scan(args []string) error {
 	if err != nil {
 		return err
 	}
-	driver, err := pcapdriver.Open(selected.Name, pcapdriver.Config{Promiscuous: true, Filter: "arp"})
-	if err != nil {
-		return err
-	}
-	defer driver.Close()
-
-	registry := device.NewRegistry()
 	enricher, err := metadata.NewResolver(config.Nicknames)
 	if err != nil {
 		return err
 	}
-	service := core.NewService(driver, registry, time.Minute, 10*time.Second, core.WithEnricher(enricher))
-	prober := discovery.NewARPProber(driver, selected.MAC, localPrefix.Addr())
-	scanner := discovery.NewScanner(prober, *maxHosts, 2*time.Millisecond)
 
 	parent, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithTimeout(parent, *duration)
 	defer cancel()
-	serviceResult := make(chan error, 1)
-	go func() { serviceResult <- service.Run(ctx) }()
-
-	if err := scanner.Scan(ctx, localPrefix); err != nil {
-		cancel()
-		<-serviceResult
-		return fmt.Errorf("scan %s: %w", localPrefix.Masked(), err)
+	selected.Prefixes = []netip.Prefix{localPrefix}
+	dependencies := app.DefaultDependencies()
+	dependencies.Enricher = enricher
+	runtime, err := app.Bootstrap(ctx, dependencies, app.Config{
+		Interface: selected, ScanInterval: time.Hour,
+		ProbeDelay: 2 * time.Millisecond, MaximumHosts: *maxHosts,
+	})
+	if err != nil {
+		return err
 	}
+	defer runtime.Close()
+	runtimeResult := make(chan error, 1)
+	go func() { runtimeResult <- runtime.Run(ctx) }()
+
 	for {
 		select {
-		case event := <-service.Events():
+		case event := <-runtime.DeviceEvents():
 			fmt.Printf("%-15s  %-17s  %-24s  %s\n", event.Device.IP, event.Device.MAC, event.Device.Name, event.Device.Vendor)
-		case err := <-serviceResult:
+		case event := <-runtime.IntegrityEvents():
+			fmt.Fprintf(os.Stderr, "network warning: gateway %s expected at %s but observed claim from %s\n",
+				event.GatewayIP, event.ExpectedMAC, event.ClaimedMAC)
+		case err := <-runtimeResult:
 			if isContextEnd(err) {
 				return nil
 			}
 			return err
 		case <-ctx.Done():
-			err := <-serviceResult
+			err := <-runtimeResult
 			if !isContextEnd(err) {
 				return err
 			}

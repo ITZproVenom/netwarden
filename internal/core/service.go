@@ -30,10 +30,22 @@ type Enricher interface {
 	Enrich(device.Device) device.Metadata
 }
 
+type ARPObserver interface {
+	Observe(packet.ARP, time.Time)
+}
+
 type Option func(*Service)
 
 func WithEnricher(enricher Enricher) Option {
 	return func(service *Service) { service.enricher = enricher }
+}
+
+func WithARPObserver(observer ARPObserver) Option {
+	return func(service *Service) {
+		if observer != nil {
+			service.observers = append(service.observers, observer)
+		}
+	}
 }
 
 type Service struct {
@@ -43,6 +55,7 @@ type Service struct {
 	checkInterval time.Duration
 	events        chan Event
 	enricher      Enricher
+	observers     []ARPObserver
 
 	mu      sync.Mutex
 	running bool
@@ -111,12 +124,15 @@ func (s *Service) handleFrame(frame capture.Frame) error {
 	if message.Operation != packet.ARPOpRequest && message.Operation != packet.ARPOpReply {
 		return nil
 	}
-	if message.SenderIP.IsUnspecified() || isZeroMAC(message.SenderMAC) {
-		return nil
-	}
 	seenAt := frame.CapturedAt
 	if seenAt.IsZero() {
 		seenAt = time.Now().UTC()
+	}
+	for _, observer := range s.observers {
+		observer.Observe(message, seenAt.UTC())
+	}
+	if message.SenderIP.IsUnspecified() || isZeroMAC(message.SenderMAC) {
+		return nil
 	}
 	snapshot, changed, err := s.registry.Observe(device.Observation{
 		IP: message.SenderIP, MAC: message.SenderMAC, SeenAt: seenAt.UTC(),
