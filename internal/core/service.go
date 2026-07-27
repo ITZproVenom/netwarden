@@ -26,23 +26,38 @@ type Event struct {
 	Device device.Device
 }
 
+type Enricher interface {
+	Enrich(device.Device) device.Metadata
+}
+
+type Option func(*Service)
+
+func WithEnricher(enricher Enricher) Option {
+	return func(service *Service) { service.enricher = enricher }
+}
+
 type Service struct {
 	driver        capture.Driver
 	registry      *device.Registry
 	offlineAfter  time.Duration
 	checkInterval time.Duration
 	events        chan Event
+	enricher      Enricher
 
 	mu      sync.Mutex
 	running bool
 }
 
-func NewService(driver capture.Driver, registry *device.Registry, offlineAfter, checkInterval time.Duration) *Service {
-	return &Service{
+func NewService(driver capture.Driver, registry *device.Registry, offlineAfter, checkInterval time.Duration, options ...Option) *Service {
+	service := &Service{
 		driver: driver, registry: registry,
 		offlineAfter: offlineAfter, checkInterval: checkInterval,
 		events: make(chan Event, 64),
 	}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 // Events is a lossy notification stream: if a consumer falls behind, packet
@@ -108,6 +123,12 @@ func (s *Service) handleFrame(frame capture.Frame) error {
 	})
 	if err != nil {
 		return nil
+	}
+	if s.enricher != nil {
+		if enriched, metadataChanged := s.registry.ApplyMetadata(snapshot.MAC, s.enricher.Enrich(snapshot)); metadataChanged {
+			snapshot = enriched
+			changed = true
+		}
 	}
 	if changed {
 		s.publish(Event{Kind: EventObserved, Device: snapshot})

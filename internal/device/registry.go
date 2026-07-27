@@ -39,6 +39,11 @@ type Device struct {
 	Online    bool
 }
 
+type Metadata struct {
+	Name   string
+	Vendor string
+}
+
 type record struct {
 	Device
 }
@@ -112,6 +117,26 @@ func (r *Registry) SetRole(mac net.HardwareAddr, role Role) bool {
 	}
 	current.Role = role
 	return true
+}
+
+// ApplyMetadata enriches an existing record without exposing mutable state.
+func (r *Registry) ApplyMetadata(mac string, metadata Metadata) (Device, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current, ok := r.devices[strings.ToLower(mac)]
+	if !ok {
+		return Device{}, false
+	}
+	changed := false
+	if metadata.Name != "" && current.Name != metadata.Name {
+		current.Name = metadata.Name
+		changed = true
+	}
+	if metadata.Vendor != "" && current.Vendor != metadata.Vendor {
+		current.Vendor = metadata.Vendor
+		changed = true
+	}
+	return current.Device, changed
 }
 
 func (r *Registry) Snapshot() []Device {

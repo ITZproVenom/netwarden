@@ -5,16 +5,20 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/amdzy/NetWarden/internal/capture/pcapdriver"
+	appconfig "github.com/amdzy/NetWarden/internal/config"
 	"github.com/amdzy/NetWarden/internal/core"
 	"github.com/amdzy/NetWarden/internal/device"
 	"github.com/amdzy/NetWarden/internal/discovery"
+	"github.com/amdzy/NetWarden/internal/metadata"
 )
 
 func main() {
@@ -36,6 +40,10 @@ func run(args []string) error {
 		return scan(args[1:])
 	case "resolve":
 		return resolve(args[1:])
+	case "config":
+		return configure(args[1:])
+	case "nickname":
+		return nickname(args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -51,6 +59,10 @@ Usage:
   netwarden interfaces
   netwarden scan [--interface NAME] [--prefix CIDR] [--duration 5s]
   netwarden resolve --gateway IP [--interface NAME] [--timeout 3s]
+  netwarden config show
+  netwarden config set-interface NAME
+  netwarden nickname set MAC NAME
+  netwarden nickname remove MAC
 
 Packet capture and transmission normally require administrator/root privileges.
 Use NetWarden only on networks you are authorized to administer.
@@ -95,7 +107,15 @@ func scan(args []string) error {
 		return errors.New("duration must be positive")
 	}
 
-	selected, localPrefix, err := selectedInterface(*interfaceName, *prefixText)
+	_, config, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	selection := *interfaceName
+	if selection == "" {
+		selection = config.Interface
+	}
+	selected, localPrefix, err := selectedInterface(selection, *prefixText)
 	if err != nil {
 		return err
 	}
@@ -106,7 +126,11 @@ func scan(args []string) error {
 	defer driver.Close()
 
 	registry := device.NewRegistry()
-	service := core.NewService(driver, registry, time.Minute, 10*time.Second)
+	enricher, err := metadata.NewResolver(config.Nicknames)
+	if err != nil {
+		return err
+	}
+	service := core.NewService(driver, registry, time.Minute, 10*time.Second, core.WithEnricher(enricher))
 	prober := discovery.NewARPProber(driver, selected.MAC, localPrefix.Addr())
 	scanner := discovery.NewScanner(prober, *maxHosts, 2*time.Millisecond)
 
@@ -125,7 +149,7 @@ func scan(args []string) error {
 	for {
 		select {
 		case event := <-service.Events():
-			fmt.Printf("%-15s  %s\n", event.Device.IP, event.Device.MAC)
+			fmt.Printf("%-15s  %-17s  %-24s  %s\n", event.Device.IP, event.Device.MAC, event.Device.Name, event.Device.Vendor)
 		case err := <-serviceResult:
 			if isContextEnd(err) {
 				return nil
@@ -160,7 +184,15 @@ func resolve(args []string) error {
 		return errors.New("timeout must be positive")
 	}
 
-	selected, localPrefix, err := selectedInterface(*interfaceName, "")
+	_, config, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	selection := *interfaceName
+	if selection == "" {
+		selection = config.Interface
+	}
+	selected, localPrefix, err := selectedInterface(selection, "")
 	if err != nil {
 		return err
 	}
@@ -181,6 +213,95 @@ func resolve(args []string) error {
 	}
 	fmt.Printf("%s  %s\n", gateway, mac)
 	return nil
+}
+
+func configure(args []string) error {
+	if len(args) == 0 {
+		return errors.New("config command requires 'show' or 'set-interface'")
+	}
+	store, config, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "show":
+		if len(args) != 1 {
+			return errors.New("usage: netwarden config show")
+		}
+		fmt.Println("path:", store.Path())
+		fmt.Println("interface:", config.Interface)
+		fmt.Println("nicknames:", len(config.Nicknames))
+		return nil
+	case "set-interface":
+		if len(args) != 2 {
+			return errors.New("usage: netwarden config set-interface NAME")
+		}
+		selected, _, err := selectedInterface(args[1], "")
+		if err != nil {
+			return err
+		}
+		if _, err := store.SetInterface(selected.Name); err != nil {
+			return err
+		}
+		fmt.Println("saved interface:", selected.Name)
+		return nil
+	default:
+		return fmt.Errorf("unknown config command %q", args[0])
+	}
+}
+
+func nickname(args []string) error {
+	if len(args) < 2 {
+		return errors.New("usage: netwarden nickname set MAC NAME | nickname remove MAC")
+	}
+	store, _, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	mac, err := net.ParseMAC(args[1])
+	if err != nil || len(mac) != 6 {
+		return fmt.Errorf("invalid Ethernet MAC address %q", args[1])
+	}
+	switch args[0] {
+	case "set":
+		if len(args) < 3 {
+			return errors.New("usage: netwarden nickname set MAC NAME")
+		}
+		name := strings.Join(args[2:], " ")
+		if _, err := store.SetNickname(mac, name); err != nil {
+			return err
+		}
+		fmt.Printf("saved nickname for %s: %s\n", strings.ToLower(mac.String()), strings.TrimSpace(name))
+		return nil
+	case "remove":
+		if len(args) != 2 {
+			return errors.New("usage: netwarden nickname remove MAC")
+		}
+		if _, err := store.RemoveNickname(mac); err != nil {
+			return err
+		}
+		fmt.Println("removed nickname for", strings.ToLower(mac.String()))
+		return nil
+	default:
+		return fmt.Errorf("unknown nickname command %q", args[0])
+	}
+}
+
+func loadConfig() (*appconfig.Store, appconfig.Config, error) {
+	path := os.Getenv("NETWARDEN_CONFIG")
+	if path == "" {
+		var err error
+		path, err = appconfig.DefaultPath()
+		if err != nil {
+			return nil, appconfig.Config{}, err
+		}
+	}
+	store := appconfig.NewStore(path)
+	config, err := store.Load()
+	if err != nil {
+		return nil, appconfig.Config{}, err
+	}
+	return store, config, nil
 }
 
 func selectedInterface(requested, requestedPrefix string) (pcapdriver.Interface, netip.Prefix, error) {

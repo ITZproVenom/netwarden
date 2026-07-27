@@ -18,6 +18,9 @@ The new implementation currently provides:
   Ethernet frame transmission.
 - Diagnostic commands for interface listing, ARP scanning, and explicit ARP
   address resolution.
+- Versioned, atomic JSON configuration with saved interface selection and
+  device nicknames.
+- Embedded OUI vendor resolution for observed MAC addresses.
 
 Persistence, the interactive TUI, and the GUI will be added after the capture
 and discovery path has been exercised across supported operating systems.
@@ -26,9 +29,15 @@ and discovery path has been exercised across supported operating systems.
 
 ```sh
 go run ./cmd/netwarden interfaces
+go run ./cmd/netwarden config set-interface en0
+go run ./cmd/netwarden nickname set 00:11:22:33:44:55 "Living Room TV"
 sudo go run ./cmd/netwarden scan --interface en0 --duration 5s
 sudo go run ./cmd/netwarden resolve --interface en0 --gateway 192.168.1.1
 ```
+
+Configuration is stored beneath the operating system's user configuration
+directory. Set `NETWARDEN_CONFIG` to use an explicit file, which is useful for
+development and for the future privileged-helper boundary.
 
 Linux and macOS builds require libpcap development files; Windows builds use
 Npcap. Capture and transmission generally require elevated privileges.

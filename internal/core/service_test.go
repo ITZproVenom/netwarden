@@ -18,6 +18,12 @@ type memoryDriver struct {
 	once   sync.Once
 }
 
+type staticEnricher struct{}
+
+func (staticEnricher) Enrich(device.Device) device.Metadata {
+	return device.Metadata{Name: "Router", Vendor: "Test Vendor"}
+}
+
 func (d *memoryDriver) Run(ctx context.Context, consume func(capture.Frame) error) error {
 	for {
 		select {
@@ -37,7 +43,7 @@ func (d *memoryDriver) Close() error                       { return nil }
 func TestServiceObservesARPFramesAndStops(t *testing.T) {
 	driver := &memoryDriver{frames: make(chan capture.Frame, 1)}
 	registry := device.NewRegistry()
-	service := NewService(driver, registry, time.Minute, time.Second)
+	service := NewService(driver, registry, time.Minute, time.Second, WithEnricher(staticEnricher{}))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- service.Run(ctx) }()
@@ -58,7 +64,8 @@ func TestServiceObservesARPFramesAndStops(t *testing.T) {
 
 	select {
 	case event := <-service.Events():
-		if event.Kind != EventObserved || event.Device.IP.String() != "192.168.1.10" {
+		if event.Kind != EventObserved || event.Device.IP.String() != "192.168.1.10" ||
+			event.Device.Name != "Router" || event.Device.Vendor != "Test Vendor" {
 			t.Fatalf("unexpected event: %#v", event)
 		}
 	case <-time.After(time.Second):
