@@ -124,9 +124,9 @@ Usage:
   netwarden config remove-gateway-mac
   netwarden nickname set MAC NAME
   netwarden nickname remove MAC
-  netwarden disconnect IP MAC                         (stub)
-  netwarden disconnect-all                            (stub)
-  netwarden poison IP MAC                             (stub)
+  netwarden disconnect IP MAC                         
+  netwarden disconnect-all                            
+  netwarden poison IP MAC                             
   netwarden restore IP MAC
   netwarden restore-all
   netwarden stop-poison IP MAC
@@ -727,6 +727,9 @@ func printRuntimeEvent(event app.Event, jsonOutput bool) {
 		if event.Scan != nil {
 			payload["scan"] = event.Scan
 		}
+		if event.Control != nil {
+			payload["control"] = event.Control
+		}
 		if event.Err != nil {
 			payload["error"] = event.Err.Error()
 		}
@@ -746,6 +749,10 @@ func printRuntimeEvent(event app.Event, jsonOutput bool) {
 	if event.Scan != nil && event.Scan.Err != nil {
 		fmt.Fprintln(os.Stderr, "scan:", event.Scan.Err)
 	}
+	if event.Control != nil {
+		fmt.Printf("%s operation=%s state=%s targets=%d reason=%s\n", prefix,
+			event.Control.Operation, event.Control.State, len(event.Control.Targets), event.Control.Reason)
+	}
 	if event.Kind == app.EventPersistenceFailed && event.Err != nil {
 		fmt.Fprintln(os.Stderr, "history:", event.Err)
 	}
@@ -761,6 +768,14 @@ func eventKindName(kind app.EventKind) string {
 		app.EventRuntimeStarting: "runtime_starting", app.EventRuntimeStarted: "runtime_started",
 		app.EventRuntimeStopping: "runtime_stopping", app.EventRuntimeStopped: "runtime_stopped",
 		app.EventPersistenceFailed: "persistence_failed", app.EventRuntimeRebuilding: "runtime_rebuilding",
+		app.EventControlPrepared:                "control_prepared",
+		app.EventControlTargetStateChanged:      "control_target_state_changed",
+		app.EventControlRestorationStarted:      "control_restoration_started",
+		app.EventControlRestorationCompleted:    "control_restoration_completed",
+		app.EventControlBulkRollbackStarted:     "control_bulk_rollback_started",
+		app.EventControlBulkRollbackCompleted:   "control_bulk_rollback_completed",
+		app.EventControlContinuousWorkerStopped: "control_continuous_worker_stopped",
+		app.EventControlAuditFailed:             "control_audit_failed",
 	}
 	if name := names[kind]; name != "" {
 		return name

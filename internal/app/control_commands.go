@@ -57,8 +57,13 @@ type ControlControllerFactory interface {
 	Prepare(context.Context, ControlRequest, ControlScope) (ControlControllerLease, error)
 }
 
+type ControlController interface {
+	Restore(context.Context, control.Endpoint) error
+	Run(context.Context) error
+}
+
 type ControlControllerLease struct {
-	Controller *control.Controller
+	Controller ControlController
 	Close      func() error
 }
 
@@ -75,6 +80,8 @@ type ControlDependencies struct {
 	Scope             ControlScope
 	Auditor           ControlAuditor
 	ControllerFactory ControlControllerFactory
+	Lifecycle         *ControlLifecycle
+	Publish           func(Event)
 }
 
 type ControlCommands struct {
@@ -164,11 +171,14 @@ func (c *ControlCommands) restore(ctx context.Context, operation ControlOperatio
 		outcome = "restore_failed"
 	}
 	if c.deps.Auditor == nil {
-		restoreErrors = append(restoreErrors, errors.New("control audit log is unavailable"))
+		err := errors.New("control audit log is unavailable")
+		restoreErrors = append(restoreErrors, err)
+		c.publishAuditFailure(ControlRequest{Operation: operation, Targets: targets}, err)
 	} else if err := c.deps.Auditor.Record(ctx, ControlAuditEvent{
 		At: time.Now().UTC(), Operation: operation, Targets: cloneTargets(targets), Outcome: outcome,
 	}); err != nil {
 		restoreErrors = append(restoreErrors, fmt.Errorf("record recovery audit: %w", err))
+		c.publishAuditFailure(ControlRequest{Operation: operation, Targets: targets}, err)
 	}
 	return errors.Join(restoreErrors...)
 }
@@ -178,7 +188,9 @@ func (c *ControlCommands) prepare(ctx context.Context, request ControlRequest) e
 		return err
 	}
 	if c.deps.Auditor == nil {
-		return errors.New("control audit log is unavailable")
+		err := errors.New("control audit log is unavailable")
+		c.publishAuditFailure(request, err)
+		return err
 	}
 	request.Targets = sortedUniqueTargets(request.Targets)
 	endpoints := make([]control.Endpoint, 0, len(request.Targets))
@@ -189,7 +201,10 @@ func (c *ControlCommands) prepare(ctx context.Context, request ControlRequest) e
 		}
 		endpoints = append(endpoints, endpoint)
 	}
-	lease := ControlControllerLease{Controller: c.controller}
+	lease := ControlControllerLease{}
+	if c.controller != nil {
+		lease.Controller = c.controller
+	}
 	if lease.Controller == nil {
 		if c.deps.ControllerFactory == nil {
 			return ErrControlControllerUnavailable
@@ -208,21 +223,35 @@ func (c *ControlCommands) prepare(ctx context.Context, request ControlRequest) e
 	}
 	event := ControlAuditEvent{At: time.Now().UTC(), Operation: request.Operation, Targets: cloneTargets(request.Targets), Outcome: "ready_not_implemented"}
 	if err := c.deps.Auditor.Record(ctx, event); err != nil {
+		c.publishAuditFailure(request, err)
 		return fmt.Errorf("record control audit: %w", err)
+	}
+	if c.deps.Lifecycle != nil {
+		c.deps.Lifecycle.Prepared(request)
+	} else if c.deps.Publish != nil {
+		c.deps.Publish(Event{Kind: EventControlPrepared, Control: &ControlEvent{Operation: request.Operation, Targets: cloneTargets(request.Targets), State: ControlStatePrepared}})
 	}
 
 	_ = endpoints
 	switch request.Operation {
 	case ControlDisconnect:
-		// TODO: return lease.Controller.Isolate(ctx, endpoints[0])
+		// TODO: call lease.Controller.Isolate(ctx, endpoints[0]), then hand the
+		// successful target and lease to c.deps.Lifecycle.AdoptActive.
 	case ControlDisconnectAll:
 		// TODO: call lease.Controller.Isolate(ctx, endpoint) for each endpoint;
-		// on failure, restore every endpoint already changed.
+		// on failure call c.deps.Lifecycle.Rollback for every changed endpoint,
+		// otherwise hand all successful targets to AdoptActive.
 	case ControlContinuous:
 		// TODO: call lease.Controller.Isolate(ctx, endpoints[0]), then transfer
-		// lease ownership to a supervised lease.Controller.Run(ctx) worker.
+		// ownership with c.deps.Lifecycle.AdoptActive(..., continuous=true).
 	}
 	return fmt.Errorf("%w: %s", ErrActiveControlNotImplemented, request.Operation)
+}
+
+func (c *ControlCommands) publishAuditFailure(request ControlRequest, err error) {
+	if c.deps.Publish != nil {
+		c.deps.Publish(Event{Kind: EventControlAuditFailed, Err: err, Control: &ControlEvent{Operation: request.Operation, Targets: cloneTargets(request.Targets), State: ControlStateFailed, Reason: err.Error()}})
+	}
 }
 
 func (c *ControlCommands) resolveTarget(target ControlTarget) (ControlTarget, error) {

@@ -73,6 +73,8 @@ type Status struct {
 	Rebuilding              bool
 	LastRestartReason       string
 	SupervisorDroppedEvents uint64
+	ActiveControlTargets    int
+	ContinuousControl       bool
 }
 
 type Runtime struct {
@@ -99,6 +101,7 @@ type Runtime struct {
 	persistErr error
 	done       chan struct{}
 	doneOnce   sync.Once
+	control    *ControlLifecycle
 }
 
 func DefaultDependencies() Dependencies {
@@ -208,6 +211,7 @@ func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*
 		history: dependencies.History, persist: make(chan struct{}, 1),
 		done: make(chan struct{}),
 	}
+	runtime.control = NewControlLifecycle(runtime.publish)
 	scanner.SetObserver(runtime.handleScanEvent)
 	if pinned && gatewayMAC.String() != baselineMAC.String() {
 		monitor.ObserveGatewayClaim(gatewayMAC, now)
@@ -231,6 +235,7 @@ func (r *Runtime) Status() Status {
 		Running: running, Stopped: stopped, Scanning: r.scanner.Scanning(),
 		PeriodicScanEnabled: r.scanner.PeriodicEnabled(), DeviceCount: len(r.Devices()),
 		DroppedEvents: r.DroppedEvents(), LastPersistenceError: errorText(persistErr),
+		ActiveControlTargets: len(r.control.Snapshot()), ContinuousControl: r.control.ContinuousRunning(),
 	}
 }
 
@@ -258,7 +263,7 @@ func (r *Runtime) ControlCommands(auditor ControlAuditor, factory ControlControl
 			LocalIP: networkContext.Local.IP, LocalMAC: networkContext.Local.MAC,
 			GatewayIP: networkContext.Gateway.IP, GatewayMAC: networkContext.Gateway.MAC,
 		},
-		Auditor: auditor, ControllerFactory: factory,
+		Auditor: auditor, ControllerFactory: factory, Lifecycle: r.control, Publish: r.publish,
 	})
 }
 
@@ -333,6 +338,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 	second := <-workerResults
 	third := <-workerResults
 	first = meaningfulError(first, second, third, ctx.Err())
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	controlErr := r.control.RestoreAll(cleanupCtx, "runtime shutdown or network change")
+	cleanupCancel()
 	closeErr := r.service.Close()
 	cancel()
 	eventWorkers.Wait()
@@ -343,7 +351,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	r.stopped = true
 	r.cancel = nil
 	r.mu.Unlock()
-	result := errors.Join(first, stageError(StageShutdown, closeErr))
+	result := errors.Join(first, stageError(StageShutdown, controlErr), stageError(StageShutdown, closeErr))
 	r.publish(Event{Kind: EventRuntimeStopped, Err: result})
 	return result
 }
@@ -461,7 +469,9 @@ func (r *Runtime) Close() error {
 	}
 	r.stopped = true
 	r.doneOnce.Do(func() { close(r.done) })
-	return r.driver.Close()
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return errors.Join(r.control.RestoreAll(cleanupCtx, "runtime closed"), r.driver.Close())
 }
 
 func prefixForRoute(prefixes []netip.Prefix, route networkgateway.Route) (netip.Prefix, error) {

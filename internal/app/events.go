@@ -30,7 +30,32 @@ const (
 	EventRuntimeStopped
 	EventPersistenceFailed
 	EventRuntimeRebuilding
+	EventControlPrepared
+	EventControlTargetStateChanged
+	EventControlRestorationStarted
+	EventControlRestorationCompleted
+	EventControlBulkRollbackStarted
+	EventControlBulkRollbackCompleted
+	EventControlContinuousWorkerStopped
+	EventControlAuditFailed
 )
+
+type ControlState string
+
+const (
+	ControlStatePrepared  ControlState = "prepared"
+	ControlStateActive    ControlState = "active"
+	ControlStateRestoring ControlState = "restoring"
+	ControlStateRestored  ControlState = "restored"
+	ControlStateFailed    ControlState = "failed"
+)
+
+type ControlEvent struct {
+	Operation ControlOperation `json:"operation"`
+	Targets   []ControlTarget  `json:"targets,omitempty"`
+	State     ControlState     `json:"state,omitempty"`
+	Reason    string           `json:"reason,omitempty"`
+}
 
 type Event struct {
 	At         time.Time
@@ -38,6 +63,7 @@ type Event struct {
 	Device     *device.Device
 	Integrity  *defense.Event
 	Scan       *discovery.ScanEvent
+	Control    *ControlEvent
 	Err        error
 	Related    *device.Device
 	PreviousIP netip.Addr
