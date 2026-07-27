@@ -483,3 +483,8 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+# Go build and test output
+/netwarden
+/dist/
+/coverage.out
+*.test
