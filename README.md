@@ -58,10 +58,20 @@ The new implementation currently provides:
 The interactive TUI and GUI will be added after the capture and discovery path
 has been exercised across supported operating systems.
 
-Active device control is intentionally not exposed by the diagnostic CLI yet.
-Its core is packet-tested, defaults to disabled, rejects the local host,
-gateway, off-subnet and broadcast targets, and never persists active isolation
-state across application restarts.
+The `disconnect`, `disconnect-all`, and `poison` CLI paths are reserved stubs.
+They resolve saved device state, filter eligible online peers against the
+current network, append an audit record, verify the live gateway, prepare and
+release the controller/capture lease, stop
+immediately before `Isolate`/`Run`, and return a typed
+`active network control is not implemented` error. The existing controller's
+active methods remain disconnected from the CLI execution path and privileged
+helper.
+
+Recovery is implemented separately: `restore`, `restore-all`, and
+`stop-poison` resolve the live verified gateway identity and send corrective
+gateway mappings. They do not require disruptive-action authorization, but are
+scope-validated and audited. Disruptive CLI paths remain stopped at their
+explicit not-implemented execution boundary.
 
 ## Diagnostic CLI
 
@@ -76,6 +86,8 @@ sudo go run ./cmd/netwarden monitor --interface en0 --interval 10s
 sudo go run ./cmd/netwarden monitor --interface en0 --json
 go run ./cmd/netwarden devices --since 24h
 go run ./cmd/netwarden conflicts --json
+sudo go run ./cmd/netwarden restore 192.168.1.20 02:00:00:00:00:20
+sudo go run ./cmd/netwarden restore-all
 sudo go run ./cmd/netwarden resolve --interface en0 --gateway 192.168.1.1
 ```
 

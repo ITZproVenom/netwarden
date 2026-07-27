@@ -13,10 +13,9 @@ import (
 )
 
 var (
-	ErrActiveControlDisabled = errors.New("active device control is not explicitly enabled")
-	ErrInvalidTarget         = errors.New("invalid isolation target")
-	ErrControllerRunning     = errors.New("control worker is already running")
-	ErrControllerStopped     = errors.New("control worker has stopped")
+	ErrInvalidTarget     = errors.New("invalid isolation target")
+	ErrControllerRunning = errors.New("control worker is already running")
+	ErrControllerStopped = errors.New("control worker has stopped")
 )
 
 type Sender interface {
@@ -24,13 +23,10 @@ type Sender interface {
 }
 
 type Options struct {
-	// EnableActiveControl must be deliberately set by the application after it
-	// has obtained an authorized user action. It is never enabled by default.
-	EnableActiveControl bool
-	RefreshInterval     time.Duration
-	RestorationCount    int
-	RestorationDelay    time.Duration
-	ShutdownTimeout     time.Duration
+	RefreshInterval  time.Duration
+	RestorationCount int
+	RestorationDelay time.Duration
+	ShutdownTimeout  time.Duration
 }
 
 type State struct {
@@ -53,9 +49,6 @@ type Controller struct {
 }
 
 func NewController(sender Sender, local, gateway Endpoint, prefix netip.Prefix, options Options) (*Controller, error) {
-	if !options.EnableActiveControl {
-		return nil, ErrActiveControlDisabled
-	}
 	if sender == nil {
 		return nil, errors.New("packet sender is required")
 	}

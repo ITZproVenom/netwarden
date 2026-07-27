@@ -20,6 +20,9 @@ import (
 	"github.com/amdzy/NetWarden/internal/capture/helperclient"
 	"github.com/amdzy/NetWarden/internal/capture/pcapdriver"
 	appconfig "github.com/amdzy/NetWarden/internal/config"
+	"github.com/amdzy/NetWarden/internal/control"
+	"github.com/amdzy/NetWarden/internal/controlaudit"
+	"github.com/amdzy/NetWarden/internal/device"
 	"github.com/amdzy/NetWarden/internal/discovery"
 	"github.com/amdzy/NetWarden/internal/history"
 	"github.com/amdzy/NetWarden/internal/metadata"
@@ -61,6 +64,10 @@ func run(args []string) error {
 		return manageHistory(args[1:])
 	case "capture-helper":
 		return serveCaptureHelper(args[1:])
+	case "disconnect", "disconnect-all", "poison":
+		return activeControlCommand(args[0], args[1:])
+	case "restore", "restore-all", "stop-poison":
+		return recoveryControlCommand(args[0], args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -88,10 +95,240 @@ Usage:
   netwarden config remove-gateway-mac
   netwarden nickname set MAC NAME
   netwarden nickname remove MAC
+  netwarden disconnect IP MAC                         (stub)
+  netwarden disconnect-all                            (stub)
+  netwarden poison IP MAC                             (stub)
+  netwarden restore IP MAC
+  netwarden restore-all
+  netwarden stop-poison IP MAC
 
 Packet capture and transmission normally require administrator/root privileges.
 Use NetWarden only on networks you are authorized to administer.
 `)
+}
+
+func activeControlCommand(name string, args []string) error {
+	commands, err := cliControlCommands()
+	if err != nil {
+		return err
+	}
+	switch name {
+	case "disconnect", "poison":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: netwarden %s IP MAC", name)
+		}
+		target, err := parseControlTarget(args[0], args[1])
+		if err != nil {
+			return err
+		}
+		if name == "disconnect" {
+			return commands.Disconnect(context.Background(), target)
+		}
+		return commands.StartContinuous(context.Background(), target)
+	case "disconnect-all":
+		if len(args) != 0 {
+			return errors.New("usage: netwarden disconnect-all")
+		}
+		return commands.DisconnectAll(context.Background())
+	default:
+		return fmt.Errorf("unknown active-control command %q", name)
+	}
+}
+
+func recoveryControlCommand(name string, args []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	commands, closeDriver, err := cliRecoveryCommands(ctx)
+	if err != nil {
+		return err
+	}
+	defer closeDriver()
+	switch name {
+	case "restore", "stop-poison":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: netwarden %s IP MAC", name)
+		}
+		target, err := parseControlTarget(args[0], args[1])
+		if err != nil {
+			return err
+		}
+		if name == "restore" {
+			err = commands.Restore(ctx, target)
+		} else {
+			err = commands.StopContinuous(ctx, target)
+		}
+		if err == nil {
+			fmt.Println("restored verified gateway mapping for", target.IP)
+		}
+		return err
+	case "restore-all":
+		if len(args) != 0 {
+			return errors.New("usage: netwarden restore-all")
+		}
+		err := commands.RestoreAll(ctx)
+		if err == nil {
+			fmt.Println("restored verified gateway mapping for eligible peers")
+		}
+		return err
+	default:
+		return fmt.Errorf("unknown recovery command %q", name)
+	}
+}
+
+func cliRecoveryCommands(ctx context.Context) (*app.ControlCommands, func() error, error) {
+	settings, config, err := loadConfig()
+	if err != nil {
+		return nil, nil, err
+	}
+	snapshot, err := history.NewStore(settings.Path() + ".history.json").Load()
+	if err != nil {
+		return nil, nil, err
+	}
+	selected, _, err := selectedInterface(config.Interface, "")
+	if err != nil {
+		return nil, nil, err
+	}
+	route, err := (networkgateway.SystemDiscoverer{}).Discover(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	prefix, err := interfaceRoutePrefix(selected, route)
+	if err != nil {
+		return nil, nil, err
+	}
+	driver, err := pcapdriver.Open(selected.Name, pcapdriver.Config{Promiscuous: true, Filter: "arp"})
+	if err != nil {
+		return nil, nil, err
+	}
+	closeDriver := driver.Close
+	gatewayMAC, err := discovery.ResolveARP(ctx, driver, selected.MAC, route.InterfaceIP, route.GatewayIP)
+	if err != nil {
+		_ = closeDriver()
+		return nil, nil, fmt.Errorf("resolve verified gateway for recovery: %w", err)
+	}
+	if pinned := parseStoredMAC(config.GatewayMAC); len(pinned) == 6 && !strings.EqualFold(pinned.String(), gatewayMAC.String()) {
+		_ = closeDriver()
+		return nil, nil, errors.New("live gateway identity differs from the pinned baseline; recovery was not sent")
+	}
+	controller, err := control.NewController(driver,
+		control.Endpoint{IP: route.InterfaceIP, MAC: selected.MAC},
+		control.Endpoint{IP: route.GatewayIP, MAC: gatewayMAC}, prefix,
+		control.Options{},
+	)
+	if err != nil {
+		_ = closeDriver()
+		return nil, nil, err
+	}
+	commands := app.NewControlCommands(controller, app.ControlDependencies{
+		Devices: snapshotDeviceSource{devices: snapshot.Devices},
+		Scope: app.ControlScope{
+			Prefix: prefix, LocalIP: route.InterfaceIP, LocalMAC: selected.MAC,
+			GatewayIP: route.GatewayIP, GatewayMAC: gatewayMAC,
+		},
+		Auditor: controlaudit.NewStore(settings.Path() + ".control-audit.jsonl"),
+	})
+	return commands, closeDriver, nil
+}
+
+func interfaceRoutePrefix(selected pcapdriver.Interface, route networkgateway.Route) (netip.Prefix, error) {
+	for _, candidate := range selected.Prefixes {
+		if candidate.Addr() == route.InterfaceIP && candidate.Masked().Contains(route.GatewayIP) {
+			return netip.PrefixFrom(route.InterfaceIP, candidate.Bits()), nil
+		}
+	}
+	return netip.Prefix{}, errors.New("selected interface does not match the current default route")
+}
+
+type snapshotDeviceSource struct{ devices []device.Device }
+
+func (s snapshotDeviceSource) Snapshot() []device.Device {
+	return append([]device.Device(nil), s.devices...)
+}
+
+type cliActiveControllerFactory struct {
+	selected pcapdriver.Interface
+	route    networkgateway.Route
+	prefix   netip.Prefix
+	pinned   net.HardwareAddr
+}
+
+func (f cliActiveControllerFactory) Prepare(ctx context.Context, _ app.ControlRequest, _ app.ControlScope) (app.ControlControllerLease, error) {
+	driver, err := pcapdriver.Open(f.selected.Name, pcapdriver.Config{Promiscuous: true, Filter: "arp"})
+	if err != nil {
+		return app.ControlControllerLease{}, err
+	}
+	closeDriver := driver.Close
+	gatewayMAC, err := discovery.ResolveARP(ctx, driver, f.selected.MAC, f.route.InterfaceIP, f.route.GatewayIP)
+	if err != nil {
+		_ = closeDriver()
+		return app.ControlControllerLease{}, fmt.Errorf("resolve verified gateway for control preparation: %w", err)
+	}
+	if len(f.pinned) == 6 && !strings.EqualFold(f.pinned.String(), gatewayMAC.String()) {
+		_ = closeDriver()
+		return app.ControlControllerLease{}, errors.New("live gateway identity differs from the pinned baseline")
+	}
+	controller, err := control.NewController(driver,
+		control.Endpoint{IP: f.route.InterfaceIP, MAC: f.selected.MAC},
+		control.Endpoint{IP: f.route.GatewayIP, MAC: gatewayMAC}, f.prefix,
+		control.Options{},
+	)
+	if err != nil {
+		_ = closeDriver()
+		return app.ControlControllerLease{}, err
+	}
+	return app.ControlControllerLease{Controller: controller, Close: closeDriver}, nil
+}
+
+func cliControlCommands() (*app.ControlCommands, error) {
+	settings, config, err := loadConfig()
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := history.NewStore(settings.Path() + ".history.json").Load()
+	if err != nil {
+		return nil, err
+	}
+	selected, _, err := selectedInterface(config.Interface, "")
+	if err != nil {
+		return nil, err
+	}
+	route, err := (networkgateway.SystemDiscoverer{}).Discover(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	var prefix netip.Prefix
+	for _, candidate := range selected.Prefixes {
+		if candidate.Addr() == route.InterfaceIP && candidate.Masked().Contains(route.GatewayIP) {
+			prefix = netip.PrefixFrom(route.InterfaceIP, candidate.Bits())
+			break
+		}
+	}
+	if !prefix.IsValid() {
+		return nil, errors.New("selected interface does not match the current default route")
+	}
+	return app.NewControlCommands(nil, app.ControlDependencies{
+		Devices: snapshotDeviceSource{devices: snapshot.Devices},
+		Scope: app.ControlScope{
+			Prefix: prefix, LocalIP: route.InterfaceIP, LocalMAC: selected.MAC,
+			GatewayIP: route.GatewayIP, GatewayMAC: parseStoredMAC(config.GatewayMAC),
+		},
+		Auditor: controlaudit.NewStore(settings.Path() + ".control-audit.jsonl"),
+		ControllerFactory: cliActiveControllerFactory{
+			selected: selected, route: route, prefix: prefix, pinned: parseStoredMAC(config.GatewayMAC),
+		},
+	}), nil
+}
+
+func parseControlTarget(ipText, macText string) (app.ControlTarget, error) {
+	ip, err := netip.ParseAddr(ipText)
+	if err != nil || !ip.Is4() {
+		return app.ControlTarget{}, fmt.Errorf("invalid target IPv4 address %q", ipText)
+	}
+	mac, err := net.ParseMAC(macText)
+	if err != nil || len(mac) != 6 {
+		return app.ControlTarget{}, fmt.Errorf("invalid target Ethernet MAC %q", macText)
+	}
+	return app.ControlTarget{IP: ip, MAC: mac}, nil
 }
 
 func listInterfaces() error {

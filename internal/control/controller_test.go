@@ -58,13 +58,6 @@ func (s *recordingSender) messages(t *testing.T) []packet.ARP {
 	return messages
 }
 
-func TestControllerRequiresExplicitOptIn(t *testing.T) {
-	_, err := NewController(&recordingSender{}, testLocal(t), testGateway(t), netip.MustParsePrefix("192.168.1.0/24"), Options{})
-	if !errors.Is(err, ErrActiveControlDisabled) {
-		t.Fatalf("got %v, want ErrActiveControlDisabled", err)
-	}
-}
-
 func TestRestoreRemovesStateAndSendsCorrections(t *testing.T) {
 	sender := &recordingSender{}
 	controller := testController(t, sender)
@@ -151,11 +144,10 @@ func TestControllerRejectsGatewayAndOffSubnetTargets(t *testing.T) {
 func testController(t *testing.T, sender Sender) *Controller {
 	t.Helper()
 	controller, err := NewController(sender, testLocal(t), testGateway(t), netip.MustParsePrefix("192.168.1.0/24"), Options{
-		EnableActiveControl: true,
-		RefreshInterval:     time.Hour,
-		RestorationCount:    3,
-		RestorationDelay:    time.Nanosecond,
-		ShutdownTimeout:     time.Second,
+		RefreshInterval:  time.Hour,
+		RestorationCount: 3,
+		RestorationDelay: time.Nanosecond,
+		ShutdownTimeout:  time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)

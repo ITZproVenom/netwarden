@@ -233,6 +233,19 @@ func (r *Runtime) SetPeriodicScanEnabled(enabled bool) { r.scanner.SetPeriodicEn
 
 func (r *Runtime) ConflictHistory() []defense.Conflict { return r.monitor.History() }
 
+func (r *Runtime) ControlCommands(auditor ControlAuditor, factory ControlControllerFactory) *ControlCommands {
+	networkContext := r.Network()
+	return NewControlCommands(nil, ControlDependencies{
+		Devices: r.registry,
+		Scope: ControlScope{
+			Prefix:  networkContext.Prefix,
+			LocalIP: networkContext.Local.IP, LocalMAC: networkContext.Local.MAC,
+			GatewayIP: networkContext.Gateway.IP, GatewayMAC: networkContext.Gateway.MAC,
+		},
+		Auditor: auditor, ControllerFactory: factory,
+	})
+}
+
 func (r *Runtime) SetNickname(mac net.HardwareAddr, nickname string) error {
 	if r.metadata == nil || r.settings == nil {
 		return errors.New("runtime metadata editing is not configured")
