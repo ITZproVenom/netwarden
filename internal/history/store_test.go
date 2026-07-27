@@ -41,3 +41,29 @@ func TestStoreClassifiesCorruptHistory(t *testing.T) {
 		t.Fatalf("got %v, want ErrCorrupt", err)
 	}
 }
+
+func TestQueryAndPruneHistory(t *testing.T) {
+	now := time.Now().UTC()
+	old := now.Add(-100 * 24 * time.Hour)
+	snapshot := Snapshot{Devices: []device.Device{
+		{IP: netip.MustParseAddr("192.168.1.2"), MAC: "02:00:00:00:00:02", Role: device.RoleLocal, LastSeen: old},
+		{IP: netip.MustParseAddr("192.168.1.20"), MAC: "02:00:00:00:00:20", Role: device.RolePeer, LastSeen: old},
+		{IP: netip.MustParseAddr("192.168.1.21"), MAC: "02:00:00:00:00:21", Role: device.RolePeer, LastSeen: now, Online: true},
+	}}
+	store := NewStore(filepath.Join(t.TempDir(), "history.json"))
+	if err := store.Save(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	online := true
+	queried, err := store.Query(Query{Since: now.Add(-time.Hour), Online: &online})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queried.Devices) != 1 || queried.Devices[0].MAC != "02:00:00:00:00:21" {
+		t.Fatalf("unexpected query: %#v", queried.Devices)
+	}
+	pruned := Prune(snapshot, now.Add(-90*24*time.Hour))
+	if len(pruned.Devices) != 2 {
+		t.Fatalf("pruned devices: %#v", pruned.Devices)
+	}
+}

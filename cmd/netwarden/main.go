@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,6 +15,9 @@ import (
 	"time"
 
 	"github.com/amdzy/NetWarden/internal/app"
+	"github.com/amdzy/NetWarden/internal/capture"
+	"github.com/amdzy/NetWarden/internal/capture/helper"
+	"github.com/amdzy/NetWarden/internal/capture/helperclient"
 	"github.com/amdzy/NetWarden/internal/capture/pcapdriver"
 	appconfig "github.com/amdzy/NetWarden/internal/config"
 	"github.com/amdzy/NetWarden/internal/discovery"
@@ -49,6 +53,14 @@ func run(args []string) error {
 		return configure(args[1:])
 	case "nickname":
 		return nickname(args[1:])
+	case "devices":
+		return showHistory(args[1:], false)
+	case "conflicts":
+		return showHistory(args[1:], true)
+	case "history":
+		return manageHistory(args[1:])
+	case "capture-helper":
+		return serveCaptureHelper(args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -65,6 +77,10 @@ Usage:
   netwarden route
   netwarden scan [--interface NAME] [--prefix CIDR] [--duration 5s]
   netwarden monitor [--interface NAME] [--prefix CIDR]
+  netwarden devices [--since 24h] [--json]
+  netwarden conflicts [--since 168h] [--json]
+  netwarden history prune --older-than 2160h
+  netwarden history clear
   netwarden resolve --gateway IP [--interface NAME] [--timeout 3s]
   netwarden config show
   netwarden config set-interface NAME
@@ -119,6 +135,7 @@ func scan(args []string) error {
 	prefixText := flags.String("prefix", "", "IPv4 prefix to scan (defaults to interface prefix)")
 	duration := flags.Duration("duration", 5*time.Second, "time to collect replies")
 	maxHosts := flags.Int("max-hosts", 4094, "maximum addresses allowed in a scan")
+	helperCommand := flags.String("helper-command", "", "privileged helper command, for example 'sudo ./netwarden'")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -149,6 +166,9 @@ func scan(args []string) error {
 	defer cancel()
 	selected.Prefixes = []netip.Prefix{localPrefix}
 	dependencies := app.DefaultDependencies()
+	if *helperCommand != "" {
+		dependencies.Open = helperOpen(ctx, *helperCommand)
+	}
 	dependencies.Metadata = enricher
 	dependencies.Settings = store
 	dependencies.History = history.NewStore(store.Path() + ".history.json")
@@ -195,6 +215,8 @@ func monitor(args []string) error {
 	prefixText := flags.String("prefix", "", "IPv4 prefix to scan (defaults to interface prefix)")
 	maxHosts := flags.Int("max-hosts", 4094, "maximum addresses allowed in a scan")
 	interval := flags.Duration("interval", 10*time.Second, "periodic discovery interval")
+	jsonOutput := flags.Bool("json", false, "write newline-delimited JSON events")
+	helperCommand := flags.String("helper-command", "", "privileged helper command, for example 'sudo ./netwarden'")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -209,36 +231,39 @@ func monitor(args []string) error {
 	if selection == "" {
 		selection = config.Interface
 	}
-	selected, prefix, err := selectedInterface(selection, *prefixText)
-	if err != nil {
-		return err
-	}
 	resolver, err := metadata.NewResolver(config.Nicknames)
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	selected.Prefixes = []netip.Prefix{prefix}
 	dependencies := app.DefaultDependencies()
+	if *helperCommand != "" {
+		dependencies.Open = helperOpen(ctx, *helperCommand)
+	}
 	dependencies.Metadata = resolver
 	dependencies.Settings = store
 	dependencies.History = history.NewStore(store.Path() + ".history.json")
-	runtime, err := app.Bootstrap(ctx, dependencies, app.Config{
-		Interface: selected, ScanInterval: *interval, ProbeDelay: 2 * time.Millisecond,
-		MaximumHosts: *maxHosts, PinnedGatewayMAC: parseStoredMAC(config.GatewayMAC),
-	})
-	if err != nil {
-		return err
-	}
-	defer runtime.Close()
+	supervisor := app.NewSupervisor(func(factoryContext context.Context) (*app.Runtime, error) {
+		selected, prefix, err := selectedInterface(selection, *prefixText)
+		if err != nil {
+			return nil, err
+		}
+		selected.Prefixes = []netip.Prefix{prefix}
+		return app.Bootstrap(factoryContext, dependencies, app.Config{
+			Interface: selected, ScanInterval: *interval, ProbeDelay: 2 * time.Millisecond,
+			MaximumHosts: *maxHosts, PinnedGatewayMAC: parseStoredMAC(config.GatewayMAC),
+		})
+	}, time.Second)
 	result := make(chan error, 1)
-	go func() { result <- runtime.Run(ctx) }()
-	fmt.Printf("monitoring %s on %s; press Ctrl-C to stop\n", runtime.Network().Prefix.Masked(), selected.Name)
+	go func() { result <- supervisor.Run(ctx) }()
+	if !*jsonOutput {
+		fmt.Println("monitoring network; press Ctrl-C to stop")
+	}
 	for {
 		select {
-		case event := <-runtime.Events():
-			printRuntimeEvent(event)
+		case event := <-supervisor.Events():
+			printRuntimeEvent(event, *jsonOutput)
 		case err := <-result:
 			if isContextEnd(err) {
 				return nil
@@ -254,9 +279,56 @@ func monitor(args []string) error {
 	}
 }
 
-func printRuntimeEvent(event app.Event) {
+func helperOpen(ctx context.Context, commandText string) app.OpenDriver {
+	return func(interfaceName string) (capture.Driver, error) {
+		parts := strings.Fields(commandText)
+		if len(parts) == 0 {
+			return nil, errors.New("helper command is empty")
+		}
+		arguments := append([]string(nil), parts[1:]...)
+		arguments = append(arguments, "capture-helper", "--interface", interfaceName)
+		return helperclient.Open(ctx, parts[0], arguments...)
+	}
+}
+
+func serveCaptureHelper(args []string) error {
+	flags := flag.NewFlagSet("capture-helper", flag.ContinueOnError)
+	interfaceName := flags.String("interface", "", "capture interface")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	selected, prefix, err := selectedInterface(*interfaceName, "")
+	if err != nil {
+		return err
+	}
+	driver, err := pcapdriver.Open(selected.Name, pcapdriver.Config{Promiscuous: true, Filter: "arp"})
+	if err != nil {
+		return err
+	}
+	return helper.Serve(context.Background(), driver, selected.MAC, prefix.Addr(), prefix, os.Stdin, os.Stdout)
+}
+
+func printRuntimeEvent(event app.Event, jsonOutput bool) {
+	if jsonOutput {
+		payload := map[string]any{"timestamp": time.Now().UTC(), "kind": eventKindName(event.Kind)}
+		if event.Device != nil {
+			payload["device"] = event.Device
+		}
+		if event.Integrity != nil {
+			payload["integrity"] = event.Integrity
+		}
+		if event.Scan != nil {
+			payload["scan"] = event.Scan
+		}
+		if event.Err != nil {
+			payload["error"] = event.Err.Error()
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(payload)
+		return
+	}
+	prefix := time.Now().Format("15:04:05") + " " + eventKindName(event.Kind) + ":"
 	if event.Device != nil {
-		fmt.Printf("device %-15s  %-17s  %-24s  online=%t\n",
+		fmt.Printf("%s %-15s  %-17s  %-24s  online=%t\n", prefix,
 			event.Device.IP, event.Device.MAC, event.Device.Name, event.Device.Online)
 	}
 	if event.Integrity != nil {
@@ -270,6 +342,23 @@ func printRuntimeEvent(event app.Event) {
 	if event.Kind == app.EventPersistenceFailed && event.Err != nil {
 		fmt.Fprintln(os.Stderr, "history:", event.Err)
 	}
+}
+
+func eventKindName(kind app.EventKind) string {
+	names := map[app.EventKind]string{
+		app.EventDeviceObserved: "device_observed", app.EventDeviceReturnedOnline: "device_online",
+		app.EventDeviceAddressChanged: "device_address_changed", app.EventDeviceIPConflict: "device_ip_conflict",
+		app.EventDeviceOffline: "device_offline", app.EventDeviceRemoved: "device_removed",
+		app.EventDeviceMetadataChanged: "device_metadata_changed", app.EventIntegrityWarning: "integrity_warning",
+		app.EventScanStarted: "scan_started", app.EventScanCompleted: "scan_completed", app.EventScanFailed: "scan_failed",
+		app.EventRuntimeStarting: "runtime_starting", app.EventRuntimeStarted: "runtime_started",
+		app.EventRuntimeStopping: "runtime_stopping", app.EventRuntimeStopped: "runtime_stopped",
+		app.EventPersistenceFailed: "persistence_failed", app.EventRuntimeRebuilding: "runtime_rebuilding",
+	}
+	if name := names[kind]; name != "" {
+		return name
+	}
+	return fmt.Sprintf("event_%d", kind)
 }
 
 func resolve(args []string) error {
@@ -389,6 +478,93 @@ func parseStoredMAC(value string) net.HardwareAddr {
 		return nil
 	}
 	return mac
+}
+
+func showHistory(args []string, conflictsOnly bool) error {
+	flags := flag.NewFlagSet("history-query", flag.ContinueOnError)
+	since := flags.Duration("since", 0, "only records seen within this duration")
+	mac := flags.String("mac", "", "filter by MAC address")
+	onlineText := flags.String("online", "any", "device state: any, true, or false")
+	jsonOutput := flags.Bool("json", false, "write JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *since < 0 {
+		return errors.New("since cannot be negative")
+	}
+	query := history.Query{MAC: *mac}
+	if *since > 0 {
+		query.Since = time.Now().UTC().Add(-*since)
+	}
+	switch strings.ToLower(*onlineText) {
+	case "any":
+	case "true":
+		value := true
+		query.Online = &value
+	case "false":
+		value := false
+		query.Online = &value
+	default:
+		return errors.New("online must be any, true, or false")
+	}
+	store, _, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	snapshot, err := history.NewStore(store.Path() + ".history.json").Query(query)
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		if conflictsOnly {
+			return json.NewEncoder(os.Stdout).Encode(snapshot.Conflicts)
+		}
+		return json.NewEncoder(os.Stdout).Encode(snapshot.Devices)
+	}
+	if conflictsOnly {
+		for _, conflict := range snapshot.Conflicts {
+			fmt.Printf("%s gateway=%s claimed=%s count=%d active=%t\n", conflict.LastSeen.Format(time.RFC3339), conflict.GatewayIP, conflict.ClaimedMAC, conflict.Count, conflict.Active)
+		}
+		return nil
+	}
+	for _, current := range snapshot.Devices {
+		fmt.Printf("%-15s %-17s %-24s last=%s online=%t\n", current.IP, current.MAC, current.Name, current.LastSeen.Format(time.RFC3339), current.Online)
+	}
+	return nil
+}
+
+func manageHistory(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: netwarden history prune --older-than DURATION | history clear")
+	}
+	settings, _, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	store := history.NewStore(settings.Path() + ".history.json")
+	switch args[0] {
+	case "clear":
+		if len(args) != 1 {
+			return errors.New("usage: netwarden history clear")
+		}
+		return store.Clear()
+	case "prune":
+		flags := flag.NewFlagSet("history prune", flag.ContinueOnError)
+		olderThan := flags.Duration("older-than", 90*24*time.Hour, "remove peer and conflict history older than this duration")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *olderThan <= 0 {
+			return errors.New("older-than must be positive")
+		}
+		snapshot, err := store.Load()
+		if err != nil {
+			return err
+		}
+		return store.Save(history.Prune(snapshot, time.Now().UTC().Add(-*olderThan)))
+	default:
+		return fmt.Errorf("unknown history command %q", args[0])
+	}
 }
 
 func nickname(args []string) error {

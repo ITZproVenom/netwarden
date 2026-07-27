@@ -57,6 +57,7 @@ type Config struct {
 	NetworkCheck     time.Duration
 	DeviceRetention  time.Duration
 	PinnedGatewayMAC net.HardwareAddr
+	HistoryRetention time.Duration
 }
 
 type Status struct {
@@ -357,7 +358,9 @@ func (r *Runtime) persistHistory(ctx context.Context) {
 	var timer *time.Timer
 	var timerC <-chan time.Time
 	flush := func() {
-		err := r.history.Save(history.Snapshot{Devices: r.Devices(), Conflicts: r.ConflictHistory()})
+		snapshot := history.Snapshot{Devices: r.Devices(), Conflicts: r.ConflictHistory()}
+		snapshot = history.Prune(snapshot, time.Now().UTC().Add(-r.config.HistoryRetention))
+		err := r.history.Save(snapshot)
 		r.mu.Lock()
 		r.persistErr = err
 		r.mu.Unlock()
@@ -460,6 +463,9 @@ func applyRuntimeDefaults(config *Config) {
 	}
 	if config.DeviceRetention <= 0 {
 		config.DeviceRetention = 24 * time.Hour
+	}
+	if config.HistoryRetention <= 0 {
+		config.HistoryRetention = 90 * 24 * time.Hour
 	}
 }
 

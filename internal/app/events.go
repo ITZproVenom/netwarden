@@ -28,6 +28,7 @@ const (
 	EventRuntimeStopping
 	EventRuntimeStopped
 	EventPersistenceFailed
+	EventRuntimeRebuilding
 )
 
 type Event struct {

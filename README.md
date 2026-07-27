@@ -44,6 +44,14 @@ The new implementation currently provides:
   restored peers remain offline until observed on the current run.
 - Runtime APIs for manual scans, periodic-scan pause/resume, status snapshots,
   and gateway-conflict history.
+- A restart supervisor that rebuilds capture and discovery after interface or
+  default-route changes while keeping one stable event stream for frontends.
+- Queryable and pruneable history through `devices`, `conflicts`, and `history`
+  CLI commands, with a default 90-day retention window.
+- Timestamped human monitor output and newline-delimited JSON output for
+  integrations and log collectors.
+- An optional cross-platform subprocess privilege boundary. The helper only
+  permits filtered capture and strictly validated local ARP discovery requests.
 - Periodic default-route checks that stop the one-shot runtime cleanly when the
   active network changes, allowing the application layer to rebuild it.
 
@@ -65,6 +73,9 @@ go run ./cmd/netwarden config set-gateway-mac 00:11:22:33:44:55
 go run ./cmd/netwarden nickname set 00:11:22:33:44:55 "Living Room TV"
 sudo go run ./cmd/netwarden scan --interface en0 --duration 5s
 sudo go run ./cmd/netwarden monitor --interface en0 --interval 10s
+sudo go run ./cmd/netwarden monitor --interface en0 --json
+go run ./cmd/netwarden devices --since 24h
+go run ./cmd/netwarden conflicts --json
 sudo go run ./cmd/netwarden resolve --interface en0 --gateway 192.168.1.1
 ```
 
@@ -74,6 +85,12 @@ development and for the future privileged-helper boundary.
 
 Linux and macOS builds require libpcap development files; Windows builds use
 Npcap. Capture and transmission generally require elevated privileges.
+
+For a split privilege boundary, build the binary first and pass an elevation
+command to the unprivileged monitor process, for example
+`netwarden monitor --helper-command "sudo /path/to/netwarden"`. The elevated
+subprocess cannot send arbitrary frames; it validates the interface identity,
+subnet, Ethernet destination, ARP operation, and target before transmission.
 
 ## Development
 

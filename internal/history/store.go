@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/amdzy/NetWarden/internal/defense"
 	"github.com/amdzy/NetWarden/internal/device"
@@ -27,6 +29,12 @@ type Snapshot struct {
 type Store struct {
 	path string
 	mu   sync.Mutex
+}
+
+type Query struct {
+	Since  time.Time
+	MAC    string
+	Online *bool
 }
 
 func NewStore(path string) *Store { return &Store{path: path} }
@@ -104,3 +112,49 @@ func (s *Store) Save(snapshot Snapshot) error {
 	}
 	return nil
 }
+
+func (s *Store) Query(query Query) (Snapshot, error) {
+	snapshot, err := s.Load()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	mac := strings.ToLower(strings.TrimSpace(query.MAC))
+	devices := snapshot.Devices[:0]
+	for _, current := range snapshot.Devices {
+		if !query.Since.IsZero() && current.LastSeen.Before(query.Since) || mac != "" && strings.ToLower(current.MAC) != mac || query.Online != nil && current.Online != *query.Online {
+			continue
+		}
+		devices = append(devices, current)
+	}
+	conflicts := snapshot.Conflicts[:0]
+	for _, current := range snapshot.Conflicts {
+		if !query.Since.IsZero() && current.LastSeen.Before(query.Since) || mac != "" && strings.ToLower(current.ClaimedMAC) != mac {
+			continue
+		}
+		conflicts = append(conflicts, current)
+	}
+	snapshot.Devices, snapshot.Conflicts = devices, conflicts
+	return snapshot, nil
+}
+
+func Prune(snapshot Snapshot, before time.Time) Snapshot {
+	if before.IsZero() {
+		return snapshot
+	}
+	devices := snapshot.Devices[:0]
+	for _, current := range snapshot.Devices {
+		if current.Role != device.RolePeer || !current.LastSeen.Before(before) {
+			devices = append(devices, current)
+		}
+	}
+	conflicts := snapshot.Conflicts[:0]
+	for _, current := range snapshot.Conflicts {
+		if !current.LastSeen.Before(before) {
+			conflicts = append(conflicts, current)
+		}
+	}
+	snapshot.Devices, snapshot.Conflicts = devices, conflicts
+	return snapshot
+}
+
+func (s *Store) Clear() error { return s.Save(Snapshot{}) }

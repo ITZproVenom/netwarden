@@ -227,3 +227,44 @@ func TestRuntimeStopsWhenDefaultRouteChanges(t *testing.T) {
 		t.Fatalf("unexpected typed error: %v", err)
 	}
 }
+
+func TestSupervisorRebuildsRuntimeAfterRouteChange(t *testing.T) {
+	localMAC, _ := net.ParseMAC("02:00:00:00:00:10")
+	gatewayMAC, _ := net.ParseMAC("00:00:0c:00:00:01")
+	initial := networkgateway.Route{GatewayIP: netip.MustParseAddr("192.168.1.1"), InterfaceIP: netip.MustParseAddr("192.168.1.2")}
+	changed := networkgateway.Route{GatewayIP: netip.MustParseAddr("192.168.1.5"), InterfaceIP: netip.MustParseAddr("192.168.1.2")}
+	var mu sync.Mutex
+	created := 0
+	secondCreated := make(chan struct{})
+	factory := func(ctx context.Context) (*Runtime, error) {
+		mu.Lock()
+		created++
+		attempt := created
+		mu.Unlock()
+		var discoverer networkgateway.Discoverer = fixedGateway{route: changed}
+		if attempt == 1 {
+			discoverer = &changingGateway{routes: []networkgateway.Route{initial, changed}}
+		} else if attempt == 2 {
+			close(secondCreated)
+		}
+		return Bootstrap(ctx, Dependencies{
+			Gateway: discoverer, Open: func(string) (capture.Driver, error) { return &runtimeDriver{}, nil },
+			Resolve: func(context.Context, capture.Driver, net.HardwareAddr, netip.Addr, netip.Addr) (net.HardwareAddr, error) {
+				return gatewayMAC, nil
+			},
+		}, Config{Interface: pcapdriver.Interface{Name: "pcap0", MAC: localMAC, Prefixes: []netip.Prefix{netip.MustParsePrefix("192.168.1.2/24")}}, NetworkCheck: time.Millisecond, ScanInterval: time.Hour})
+	}
+	supervisor := NewSupervisor(factory, time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- supervisor.Run(ctx) }()
+	select {
+	case <-secondCreated:
+	case <-time.After(time.Second):
+		t.Fatal("runtime was not rebuilt")
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v", err)
+	}
+}
