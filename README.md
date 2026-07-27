@@ -21,9 +21,17 @@ The new implementation currently provides:
 - Versioned, atomic JSON configuration with saved interface selection and
   device nicknames.
 - Embedded OUI vendor resolution for observed MAC addresses.
+- An explicitly enabled, concurrency-safe device-control state machine with
+  strict local-target validation and corrective restoration on explicit
+  restore, send failure, and shutdown.
 
-Persistence, the interactive TUI, and the GUI will be added after the capture
-and discovery path has been exercised across supported operating systems.
+The interactive TUI and GUI will be added after the capture and discovery path
+has been exercised across supported operating systems.
+
+Active device control is intentionally not exposed by the diagnostic CLI yet.
+Its core is packet-tested, defaults to disabled, rejects the local host,
+gateway, off-subnet and broadcast targets, and never persists active isolation
+state across application restarts.
 
 ## Diagnostic CLI
 
