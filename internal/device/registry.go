@@ -44,6 +44,27 @@ type Metadata struct {
 	Vendor string
 }
 
+type ChangeKind uint8
+
+const (
+	ChangeDiscovered ChangeKind = iota + 1
+	ChangeReturnedOnline
+	ChangeAddressChanged
+	ChangeIPConflict
+)
+
+type Change struct {
+	Kind       ChangeKind
+	Device     Device
+	Related    *Device
+	PreviousIP netip.Addr
+}
+
+type ObservationResult struct {
+	Device  Device
+	Changes []Change
+}
+
 type record struct {
 	Device
 }
@@ -51,17 +72,42 @@ type record struct {
 type Registry struct {
 	mu      sync.RWMutex
 	devices map[string]*record
+	byIP    map[netip.Addr]string
 }
 
 func NewRegistry() *Registry {
-	return &Registry{devices: make(map[string]*record)}
+	return &Registry{devices: make(map[string]*record), byIP: make(map[netip.Addr]string)}
+}
+
+// Restore imports durable peer history. Restored peers begin offline until a
+// live packet confirms their presence in the current runtime.
+func (r *Registry) Restore(devices []Device) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, snapshot := range devices {
+		mac, err := net.ParseMAC(snapshot.MAC)
+		if err != nil || len(mac) != 6 || !snapshot.IP.Is4() || snapshot.Role != RolePeer {
+			continue
+		}
+		snapshot.MAC = canonicalMAC(mac)
+		snapshot.Online = false
+		r.devices[snapshot.MAC] = &record{Device: snapshot}
+		r.byIP[snapshot.IP] = snapshot.MAC
+	}
 }
 
 // Observe inserts or refreshes a device and returns its new snapshot. changed
 // reports whether observers should refresh their view.
 func (r *Registry) Observe(observation Observation) (snapshot Device, changed bool, err error) {
+	result, err := r.ObserveDetailed(observation)
+	return result.Device, len(result.Changes) > 0, err
+}
+
+// ObserveDetailed records an observation and describes every identity or
+// lifecycle transition caused by it.
+func (r *Registry) ObserveDetailed(observation Observation) (ObservationResult, error) {
 	if !observation.IP.IsValid() || !observation.IP.Is4() || len(observation.MAC) != 6 {
-		return Device{}, false, ErrInvalidObservation
+		return ObservationResult{}, ErrInvalidObservation
 	}
 	seenAt := observation.SeenAt
 	if seenAt.IsZero() {
@@ -73,21 +119,65 @@ func (r *Registry) Observe(observation Observation) (snapshot Device, changed bo
 	defer r.mu.Unlock()
 	existing, ok := r.devices[mac]
 	if !ok {
-		snapshot = Device{
+		snapshot := Device{
 			IP: observation.IP, MAC: mac, Name: observation.IP.String(),
 			FirstSeen: seenAt, LastSeen: seenAt, Online: true,
 		}
+		result := ObservationResult{Device: snapshot}
+		if previousMAC, occupied := r.byIP[observation.IP]; occupied && previousMAC != mac {
+			if previous, exists := r.devices[previousMAC]; exists {
+				previous.Online = false
+				related := previous.Device
+				result.Changes = append(result.Changes, Change{
+					Kind: ChangeIPConflict, Device: snapshot, Related: &related,
+				})
+			}
+		}
 		r.devices[mac] = &record{Device: snapshot}
-		return snapshot, true, nil
+		r.byIP[observation.IP] = mac
+		result.Changes = append(result.Changes, Change{Kind: ChangeDiscovered, Device: snapshot})
+		return result, nil
 	}
 
-	changed = !existing.Online || existing.IP != observation.IP
-	existing.IP = observation.IP
+	result := ObservationResult{}
+	wasOnline := existing.Online
+	previousIP := existing.IP
+	if previousMAC, occupied := r.byIP[observation.IP]; occupied && previousMAC != mac {
+		if previous, exists := r.devices[previousMAC]; exists {
+			previous.Online = false
+			related := previous.Device
+			result.Changes = append(result.Changes, Change{
+				Kind: ChangeIPConflict, Device: existing.Device, Related: &related,
+			})
+		}
+	}
+	if previousIP != observation.IP {
+		if indexedMAC := r.byIP[previousIP]; indexedMAC == mac {
+			delete(r.byIP, previousIP)
+		}
+		if existing.Name == previousIP.String() {
+			existing.Name = observation.IP.String()
+		}
+		existing.IP = observation.IP
+	}
+	r.byIP[observation.IP] = mac
 	if seenAt.After(existing.LastSeen) {
 		existing.LastSeen = seenAt
 	}
 	existing.Online = true
-	return existing.Device, changed, nil
+	result.Device = existing.Device
+	for i := range result.Changes {
+		result.Changes[i].Device = existing.Device
+	}
+	if previousIP != observation.IP {
+		result.Changes = append(result.Changes, Change{
+			Kind: ChangeAddressChanged, Device: existing.Device, PreviousIP: previousIP,
+		})
+	}
+	if !wasOnline {
+		result.Changes = append(result.Changes, Change{Kind: ChangeReturnedOnline, Device: existing.Device})
+	}
+	return result, nil
 }
 
 // MarkOffline marks peers not seen for at least timeout as offline. It returns
@@ -106,6 +196,27 @@ func (r *Registry) MarkOffline(now time.Time, timeout time.Duration) []Device {
 		}
 	}
 	return changed
+}
+
+// RemoveStale permanently removes offline peer records after retention.
+func (r *Registry) RemoveStale(now time.Time, retention time.Duration) []Device {
+	if retention <= 0 {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var removed []Device
+	for mac, current := range r.devices {
+		if current.Role != RolePeer || current.Online || now.Sub(current.LastSeen) < retention {
+			continue
+		}
+		removed = append(removed, current.Device)
+		delete(r.devices, mac)
+		if r.byIP[current.IP] == mac {
+			delete(r.byIP, current.IP)
+		}
+	}
+	return removed
 }
 
 func (r *Registry) SetRole(mac net.HardwareAddr, role Role) bool {
@@ -153,6 +264,16 @@ func (r *Registry) Snapshot() []Device {
 		return result[i].IP.Less(result[j].IP)
 	})
 	return result
+}
+
+func (r *Registry) Get(mac string) (Device, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	current, ok := r.devices[strings.ToLower(mac)]
+	if !ok {
+		return Device{}, false
+	}
+	return current.Device, true
 }
 
 func canonicalMAC(mac net.HardwareAddr) string {

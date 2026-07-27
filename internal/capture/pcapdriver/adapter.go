@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,7 +48,7 @@ func Open(device string, config Config) (*Driver, error) {
 
 	readHandle, err := pcap.OpenLive(device, config.SnapshotLength, config.Promiscuous, config.ReadTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("open capture device %q: %w", device, err)
+		return nil, classifyOpenError(device, err)
 	}
 	if config.Filter != "" {
 		if err := readHandle.SetBPFFilter(config.Filter); err != nil {
@@ -58,9 +60,21 @@ func Open(device string, config Config) (*Driver, error) {
 	writeHandle, err := pcap.OpenLive(device, config.SnapshotLength, config.Promiscuous, config.ReadTimeout)
 	if err != nil {
 		readHandle.Close()
-		return nil, fmt.Errorf("open transmit device %q: %w", device, err)
+		return nil, classifyOpenError(device, err)
 	}
 	return &Driver{read: readHandle, write: writeHandle}, nil
+}
+
+func classifyOpenError(device string, err error) error {
+	message := strings.ToLower(err.Error())
+	kind := capture.ErrRuntimeUnavailable
+	switch {
+	case os.IsPermission(err), strings.Contains(message, "permission"), strings.Contains(message, "not permitted"), strings.Contains(message, "access is denied"):
+		kind = capture.ErrPermissionDenied
+	case strings.Contains(message, "no such device"), strings.Contains(message, "not found"), strings.Contains(message, "does not exist"):
+		kind = capture.ErrInterfaceMissing
+	}
+	return capture.NewOperationError(fmt.Sprintf("open capture device %q", device), kind, err)
 }
 
 func (d *Driver) Run(ctx context.Context, consume func(capture.Frame) error) error {

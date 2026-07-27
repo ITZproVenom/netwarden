@@ -79,3 +79,13 @@ func TestServiceObservesARPFramesAndStops(t *testing.T) {
 		t.Fatal("service did not stop after cancellation")
 	}
 }
+
+func TestServiceAccountsForDroppedEvents(t *testing.T) {
+	service := NewService(&memoryDriver{}, device.NewRegistry(), time.Minute, time.Second)
+	for i := 0; i < cap(service.events)+3; i++ {
+		service.publish(Event{Kind: EventDiscovered})
+	}
+	if got := service.DroppedEvents(); got != 3 {
+		t.Fatalf("got %d dropped events, want 3", got)
+	}
+}

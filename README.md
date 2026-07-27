@@ -10,7 +10,8 @@ The new implementation currently provides:
 
 - IPv4 subnet enumeration that respects the configured prefix.
 - Ethernet/ARP packet encoding and decoding.
-- A concurrency-safe registry of observed devices.
+- A concurrency-safe registry with MAC/IP identity indexes, conflict events,
+  online/offline transitions, address moves, and stale-record retention.
 - Cancellable foreground and periodic discovery services.
 - Liveness tracking based on elapsed duration.
 - Interfaces that keep privileged packet capture outside the application core.
@@ -18,9 +19,11 @@ The new implementation currently provides:
   Ethernet frame transmission.
 - Diagnostic commands for interface listing, ARP scanning, and explicit ARP
   address resolution.
-- Versioned, atomic JSON configuration with saved interface selection and
-  device nicknames.
+- Versioned, atomic JSON configuration with saved interface selection, device
+  nicknames, and an optional pinned gateway MAC baseline.
 - Embedded OUI vendor resolution for observed MAC addresses.
+- Non-blocking reverse-DNS hostname resolution with deduplicated lookups,
+  bounded timeouts, caching, and live metadata refresh events.
 - An explicitly enabled, concurrency-safe device-control state machine with
   strict local-target validation and corrective restoration on explicit
   restore, send failure, and shutdown.
@@ -29,7 +32,20 @@ The new implementation currently provides:
 - A one-shot application runtime that owns discovery, capture, device roles,
   passive integrity monitoring, cancellation, and ordered shutdown.
 - Passive, debounced reporting when an observed gateway identity conflicts
-  with the startup baseline. Passive monitoring never transmits corrections.
+  with a learned or pinned baseline, including conflict history and restoration
+  events. Passive monitoring never transmits corrections.
+- Cross-process configuration locking on Unix and Windows.
+- Live nickname updates that persist first and then refresh existing device
+  snapshots without restarting capture.
+- A unified typed runtime event stream, lifecycle/scan events, event-drop
+  accounting, and stage-aware native error categories.
+- Version-controlled recorded-packet fixtures for capture-path regression tests.
+- Durable device and gateway-conflict history stored separately from settings;
+  restored peers remain offline until observed on the current run.
+- Runtime APIs for manual scans, periodic-scan pause/resume, status snapshots,
+  and gateway-conflict history.
+- Periodic default-route checks that stop the one-shot runtime cleanly when the
+  active network changes, allowing the application layer to rebuild it.
 
 The interactive TUI and GUI will be added after the capture and discovery path
 has been exercised across supported operating systems.
@@ -45,8 +61,10 @@ state across application restarts.
 go run ./cmd/netwarden interfaces
 go run ./cmd/netwarden route
 go run ./cmd/netwarden config set-interface en0
+go run ./cmd/netwarden config set-gateway-mac 00:11:22:33:44:55
 go run ./cmd/netwarden nickname set 00:11:22:33:44:55 "Living Room TV"
 sudo go run ./cmd/netwarden scan --interface en0 --duration 5s
+sudo go run ./cmd/netwarden monitor --interface en0 --interval 10s
 sudo go run ./cmd/netwarden resolve --interface en0 --gateway 192.168.1.1
 ```
 
@@ -63,6 +81,9 @@ Npcap. Capture and transmission generally require elevated privileges.
 go test ./...
 go vet ./...
 ```
+
+CI runs tests, vet, and builds on Linux, macOS, and Windows, with an additional
+Linux race-detector and formatting job.
 
 NetWarden should only be used on networks you own or are explicitly authorized
 to administer.

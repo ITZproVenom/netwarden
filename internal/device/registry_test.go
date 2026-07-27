@@ -56,3 +56,90 @@ func TestRegistryDoesNotExpireGateway(t *testing.T) {
 		t.Fatalf("gateway expired: %#v", changed)
 	}
 }
+
+func TestRegistryReportsMACAddressMove(t *testing.T) {
+	registry := NewRegistry()
+	mac, _ := net.ParseMAC("02:00:00:00:00:20")
+	seen := time.Now().UTC()
+	_, _, _ = registry.Observe(Observation{IP: netip.MustParseAddr("192.168.1.20"), MAC: mac, SeenAt: seen})
+	result, err := registry.ObserveDetailed(Observation{IP: netip.MustParseAddr("192.168.1.21"), MAC: mac, SeenAt: seen.Add(time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Changes) != 1 || result.Changes[0].Kind != ChangeAddressChanged ||
+		result.Changes[0].PreviousIP.String() != "192.168.1.20" {
+		t.Fatalf("unexpected changes: %#v", result.Changes)
+	}
+}
+
+func TestRegistryReportsIPReassignmentAndMarksOldDeviceOffline(t *testing.T) {
+	registry := NewRegistry()
+	oldMAC, _ := net.ParseMAC("02:00:00:00:00:20")
+	newMAC, _ := net.ParseMAC("02:00:00:00:00:21")
+	ip := netip.MustParseAddr("192.168.1.20")
+	_, _, _ = registry.Observe(Observation{IP: ip, MAC: oldMAC})
+	result, err := registry.ObserveDetailed(Observation{IP: ip, MAC: newMAC})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Changes) != 2 || result.Changes[0].Kind != ChangeIPConflict || result.Changes[0].Related == nil {
+		t.Fatalf("unexpected changes: %#v", result.Changes)
+	}
+	old, ok := registry.Get(oldMAC.String())
+	if !ok || old.Online {
+		t.Fatalf("old owner was not marked offline: %#v", old)
+	}
+}
+
+func TestRegistryKnownDevicesCanReassertConflictingIP(t *testing.T) {
+	registry := NewRegistry()
+	ip := netip.MustParseAddr("192.168.1.20")
+	first, _ := net.ParseMAC("02:00:00:00:00:01")
+	second, _ := net.ParseMAC("02:00:00:00:00:02")
+	now := time.Now().UTC()
+	_, _, _ = registry.Observe(Observation{IP: ip, MAC: first, SeenAt: now})
+	_, _, _ = registry.Observe(Observation{IP: ip, MAC: second, SeenAt: now.Add(time.Second)})
+	result, err := registry.ObserveDetailed(Observation{IP: ip, MAC: first, SeenAt: now.Add(2 * time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conflict, returned bool
+	for _, change := range result.Changes {
+		conflict = conflict || change.Kind == ChangeIPConflict
+		returned = returned || change.Kind == ChangeReturnedOnline
+	}
+	if !conflict || !returned {
+		t.Fatalf("expected conflict and return transitions: %#v", result.Changes)
+	}
+	secondSnapshot, _ := registry.Get(second.String())
+	if secondSnapshot.Online {
+		t.Fatal("previous IP owner remained online")
+	}
+}
+
+func TestRegistryRemovesStaleOfflinePeers(t *testing.T) {
+	registry := NewRegistry()
+	mac, _ := net.ParseMAC("02:00:00:00:00:20")
+	seen := time.Now().UTC()
+	_, _, _ = registry.Observe(Observation{IP: netip.MustParseAddr("192.168.1.20"), MAC: mac, SeenAt: seen})
+	registry.MarkOffline(seen.Add(time.Minute), time.Minute)
+	removed := registry.RemoveStale(seen.Add(2*time.Hour), time.Hour)
+	if len(removed) != 1 {
+		t.Fatalf("removed %#v", removed)
+	}
+	if _, ok := registry.Get(mac.String()); ok {
+		t.Fatal("stale device remains in registry")
+	}
+}
+
+func TestRegistryRestoresOnlyValidPeersOffline(t *testing.T) {
+	registry := NewRegistry()
+	registry.Restore([]Device{
+		{IP: netip.MustParseAddr("192.168.1.20"), MAC: "02:00:00:00:00:20", Role: RolePeer, Online: true},
+		{IP: netip.MustParseAddr("192.168.1.1"), MAC: "00:00:0c:00:00:01", Role: RoleGateway, Online: true},
+	})
+	devices := registry.Snapshot()
+	if len(devices) != 1 || devices[0].Online || devices[0].Role != RolePeer {
+		t.Fatalf("unexpected restored devices: %#v", devices)
+	}
+}

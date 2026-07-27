@@ -18,12 +18,33 @@ const CurrentVersion = 1
 var (
 	ErrUnsupportedVersion = errors.New("unsupported configuration version")
 	ErrInvalidNickname    = errors.New("nickname must contain 1 to 64 characters")
+	ErrCorrupt            = errors.New("configuration is corrupt")
+	ErrLock               = errors.New("configuration lock failed")
 )
 
 type Config struct {
-	Version   int               `json:"version"`
-	Interface string            `json:"interface,omitempty"`
-	Nicknames map[string]string `json:"nicknames,omitempty"`
+	Version    int               `json:"version"`
+	Interface  string            `json:"interface,omitempty"`
+	GatewayMAC string            `json:"gateway_mac,omitempty"`
+	Nicknames  map[string]string `json:"nicknames,omitempty"`
+}
+
+func (s *Store) SetGatewayMAC(mac net.HardwareAddr) (Config, error) {
+	key, err := normalizeMAC(mac)
+	if err != nil {
+		return Config{}, err
+	}
+	return s.update(func(config *Config) error {
+		config.GatewayMAC = key
+		return nil
+	})
+}
+
+func (s *Store) RemoveGatewayMAC() (Config, error) {
+	return s.update(func(config *Config) error {
+		config.GatewayMAC = ""
+		return nil
+	})
 }
 
 func DefaultPath() (string, error) {
@@ -46,6 +67,11 @@ func (s *Store) Path() string { return s.path }
 func (s *Store) Load() (Config, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	unlock, err := lockFile(s.path + ".lock")
+	if err != nil {
+		return Config{}, fmt.Errorf("%w: %v", ErrLock, err)
+	}
+	defer unlock()
 	return s.load()
 }
 
@@ -89,6 +115,11 @@ func (s *Store) RemoveNickname(mac net.HardwareAddr) (Config, error) {
 func (s *Store) update(change func(*Config) error) (Config, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	unlock, err := lockFile(s.path + ".lock")
+	if err != nil {
+		return Config{}, fmt.Errorf("%w: %v", ErrLock, err)
+	}
+	defer unlock()
 	config, err := s.load()
 	if err != nil {
 		return Config{}, err
@@ -116,20 +147,27 @@ func (s *Store) load() (Config, error) {
 	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&config); err != nil {
-		return Config{}, fmt.Errorf("decode configuration %q: %w", s.path, err)
+		return Config{}, fmt.Errorf("%w: decode %q: %v", ErrCorrupt, s.path, err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			err = errors.New("multiple JSON values")
 		}
-		return Config{}, fmt.Errorf("decode configuration %q: %w", s.path, err)
+		return Config{}, fmt.Errorf("%w: decode %q: %v", ErrCorrupt, s.path, err)
 	}
 	if config.Version != CurrentVersion {
 		return Config{}, fmt.Errorf("%w: got %d, support %d", ErrUnsupportedVersion, config.Version, CurrentVersion)
 	}
 	if config.Nicknames == nil {
 		config.Nicknames = make(map[string]string)
+	}
+	if config.GatewayMAC != "" {
+		mac, err := net.ParseMAC(config.GatewayMAC)
+		if err != nil || len(mac) != 6 {
+			return Config{}, fmt.Errorf("%w: invalid gateway_mac", ErrCorrupt)
+		}
+		config.GatewayMAC = strings.ToLower(mac.String())
 	}
 	return clone(config), nil
 }

@@ -71,3 +71,14 @@ func TestScannerPreventsOverlappingScans(t *testing.T) {
 		t.Fatalf("got %v, want context.Canceled", err)
 	}
 }
+
+func TestScannerPeriodicControl(t *testing.T) {
+	scanner := NewScanner(&recordingProber{}, 2, 0)
+	if !scanner.PeriodicEnabled() {
+		t.Fatal("periodic scans should default to enabled")
+	}
+	scanner.SetPeriodicEnabled(false)
+	if scanner.PeriodicEnabled() {
+		t.Fatal("periodic scans remained enabled")
+	}
+}

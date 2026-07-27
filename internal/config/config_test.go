@@ -2,9 +2,11 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -15,6 +17,10 @@ func TestStorePersistsInterfaceAndNickname(t *testing.T) {
 		t.Fatal(err)
 	}
 	mac, _ := net.ParseMAC("02:00:00:00:00:01")
+	gatewayMAC, _ := net.ParseMAC("00:00:0c:00:00:01")
+	if _, err := store.SetGatewayMAC(gatewayMAC); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.SetNickname(mac, "Living Room TV"); err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +29,7 @@ func TestStorePersistsInterfaceAndNickname(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Version != CurrentVersion || got.Interface != "en0" || got.Nicknames["02:00:00:00:00:01"] != "Living Room TV" {
+	if got.Version != CurrentVersion || got.Interface != "en0" || got.GatewayMAC != gatewayMAC.String() || got.Nicknames["02:00:00:00:00:01"] != "Living Room TV" {
 		t.Fatalf("unexpected configuration: %#v", got)
 	}
 	info, err := os.Stat(path)
@@ -40,8 +46,8 @@ func TestStoreReportsCorruptConfiguration(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewStore(path).Load(); err == nil {
-		t.Fatal("expected corrupt configuration error")
+	if _, err := NewStore(path).Load(); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("got %v, want ErrCorrupt", err)
 	}
 }
 
@@ -71,5 +77,35 @@ func TestSetNicknameValidatesInput(t *testing.T) {
 	mac, _ := net.ParseMAC("02:00:00:00:00:01")
 	if _, err := store.SetNickname(mac, "  "); !errors.Is(err, ErrInvalidNickname) {
 		t.Fatalf("got %v, want ErrInvalidNickname", err)
+	}
+}
+
+func TestSeparateStoresDoNotLoseConcurrentUpdates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	const count = 16
+	var wait sync.WaitGroup
+	errorsFound := make(chan error, count)
+	for i := 0; i < count; i++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			mac, _ := net.ParseMAC(fmt.Sprintf("02:00:00:00:00:%02x", index))
+			_, err := NewStore(path).SetNickname(mac, fmt.Sprintf("Device %d", index))
+			errorsFound <- err
+		}(i)
+	}
+	wait.Wait()
+	close(errorsFound)
+	for err := range errorsFound {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	config, err := NewStore(path).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Nicknames) != count {
+		t.Fatalf("got %d nicknames, want %d", len(config.Nicknames), count)
 	}
 }

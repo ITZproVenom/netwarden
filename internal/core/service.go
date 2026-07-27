@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/amdzy/NetWarden/internal/capture"
@@ -17,13 +19,22 @@ import (
 type EventKind uint8
 
 const (
-	EventObserved EventKind = iota + 1
+	EventDiscovered EventKind = iota + 1
+	EventReturnedOnline
+	EventAddressChanged
+	EventIPConflict
 	EventOffline
+	EventRemoved
+	EventMetadataChanged
 )
 
+const EventObserved = EventDiscovered
+
 type Event struct {
-	Kind   EventKind
-	Device device.Device
+	Kind       EventKind
+	Device     device.Device
+	Related    *device.Device
+	PreviousIP netip.Addr
 }
 
 type Enricher interface {
@@ -48,14 +59,20 @@ func WithARPObserver(observer ARPObserver) Option {
 	}
 }
 
+func WithRemovalAfter(retention time.Duration) Option {
+	return func(service *Service) { service.removeAfter = retention }
+}
+
 type Service struct {
 	driver        capture.Driver
 	registry      *device.Registry
 	offlineAfter  time.Duration
 	checkInterval time.Duration
+	removeAfter   time.Duration
 	events        chan Event
 	enricher      Enricher
 	observers     []ARPObserver
+	dropped       atomic.Uint64
 
 	mu      sync.Mutex
 	running bool
@@ -77,7 +94,24 @@ func NewService(driver capture.Driver, registry *device.Registry, offlineAfter, 
 // processing continues and the consumer can retrieve a fresh Snapshot.
 func (s *Service) Events() <-chan Event { return s.events }
 
+func (s *Service) DroppedEvents() uint64 { return s.dropped.Load() }
+
 func (s *Service) Snapshot() []device.Device { return s.registry.Snapshot() }
+
+func (s *Service) RefreshMetadata(mac string) bool {
+	if s.enricher == nil {
+		return false
+	}
+	snapshot, ok := s.registry.Get(mac)
+	if !ok {
+		return false
+	}
+	enriched, changed := s.registry.ApplyMetadata(mac, s.enricher.Enrich(snapshot))
+	if changed {
+		s.publish(Event{Kind: EventMetadataChanged, Device: enriched})
+	}
+	return changed
+}
 
 // Run captures until cancellation or a driver error. A Service cannot be run
 // more than once concurrently.
@@ -134,20 +168,35 @@ func (s *Service) handleFrame(frame capture.Frame) error {
 	if message.SenderIP.IsUnspecified() || isZeroMAC(message.SenderMAC) {
 		return nil
 	}
-	snapshot, changed, err := s.registry.Observe(device.Observation{
+	result, err := s.registry.ObserveDetailed(device.Observation{
 		IP: message.SenderIP, MAC: message.SenderMAC, SeenAt: seenAt.UTC(),
 	})
 	if err != nil {
 		return nil
 	}
+	snapshot := result.Device
 	if s.enricher != nil {
 		if enriched, metadataChanged := s.registry.ApplyMetadata(snapshot.MAC, s.enricher.Enrich(snapshot)); metadataChanged {
 			snapshot = enriched
-			changed = true
+			for i := range result.Changes {
+				result.Changes[i].Device = enriched
+			}
 		}
 	}
-	if changed {
-		s.publish(Event{Kind: EventObserved, Device: snapshot})
+	for _, change := range result.Changes {
+		event := Event{Device: change.Device, Related: change.Related}
+		switch change.Kind {
+		case device.ChangeDiscovered:
+			event.Kind = EventDiscovered
+		case device.ChangeReturnedOnline:
+			event.Kind = EventReturnedOnline
+		case device.ChangeAddressChanged:
+			event.Kind = EventAddressChanged
+			event.PreviousIP = change.PreviousIP
+		case device.ChangeIPConflict:
+			event.Kind = EventIPConflict
+		}
+		s.publish(event)
 	}
 	return nil
 }
@@ -163,6 +212,9 @@ func (s *Service) runLiveness(ctx context.Context) {
 			for _, snapshot := range s.registry.MarkOffline(now.UTC(), s.offlineAfter) {
 				s.publish(Event{Kind: EventOffline, Device: snapshot})
 			}
+			for _, snapshot := range s.registry.RemoveStale(now.UTC(), s.removeAfter) {
+				s.publish(Event{Kind: EventRemoved, Device: snapshot})
+			}
 		}
 	}
 }
@@ -171,6 +223,7 @@ func (s *Service) publish(event Event) {
 	select {
 	case s.events <- event:
 	default:
+		s.dropped.Add(1)
 	}
 }
 

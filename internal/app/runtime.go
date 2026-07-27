@@ -8,14 +8,17 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/amdzy/NetWarden/internal/capture"
 	"github.com/amdzy/NetWarden/internal/capture/pcapdriver"
+	appconfig "github.com/amdzy/NetWarden/internal/config"
 	"github.com/amdzy/NetWarden/internal/core"
 	"github.com/amdzy/NetWarden/internal/defense"
 	"github.com/amdzy/NetWarden/internal/device"
 	"github.com/amdzy/NetWarden/internal/discovery"
+	"github.com/amdzy/NetWarden/internal/history"
 	"github.com/amdzy/NetWarden/internal/network"
 	networkgateway "github.com/amdzy/NetWarden/internal/network/gateway"
 )
@@ -23,11 +26,24 @@ import (
 type OpenDriver func(string) (capture.Driver, error)
 type ResolveHardware func(context.Context, capture.Driver, net.HardwareAddr, netip.Addr, netip.Addr) (net.HardwareAddr, error)
 
+type MetadataEditor interface {
+	core.Enricher
+	SetNickname(net.HardwareAddr, string)
+	RemoveNickname(net.HardwareAddr)
+}
+
+type metadataRefreshBinder interface {
+	SetRefresh(func(string))
+}
+
 type Dependencies struct {
 	Gateway  networkgateway.Discoverer
 	Open     OpenDriver
 	Resolve  ResolveHardware
 	Enricher core.Enricher
+	Metadata MetadataEditor
+	Settings *appconfig.Store
+	History  *history.Store
 }
 
 type Config struct {
@@ -38,6 +54,19 @@ type Config struct {
 	OfflineAfter     time.Duration
 	LivenessCheck    time.Duration
 	ConflictCooldown time.Duration
+	NetworkCheck     time.Duration
+	DeviceRetention  time.Duration
+	PinnedGatewayMAC net.HardwareAddr
+}
+
+type Status struct {
+	Running              bool
+	Stopped              bool
+	Scanning             bool
+	PeriodicScanEnabled  bool
+	DeviceCount          int
+	DroppedEvents        uint64
+	LastPersistenceError error
 }
 
 type Runtime struct {
@@ -47,12 +76,21 @@ type Runtime struct {
 	service  *core.Service
 	scanner  *discovery.Scanner
 	monitor  *defense.Monitor
+	metadata MetadataEditor
+	settings *appconfig.Store
+	history  *history.Store
 	config   Config
+	events   chan Event
+	gateway  networkgateway.Discoverer
+	route    networkgateway.Route
 
-	mu      sync.Mutex
-	cancel  context.CancelFunc
-	running bool
-	stopped bool
+	mu         sync.Mutex
+	cancel     context.CancelFunc
+	running    bool
+	stopped    bool
+	dropped    atomic.Uint64
+	persist    chan struct{}
+	persistErr error
 }
 
 func DefaultDependencies() Dependencies {
@@ -69,73 +107,154 @@ func DefaultDependencies() Dependencies {
 // resolves the gateway identity before starting any background work.
 func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*Runtime, error) {
 	if dependencies.Gateway == nil || dependencies.Open == nil || dependencies.Resolve == nil {
-		return nil, errors.New("gateway discovery, capture factory, and address resolver are required")
+		return nil, stageError(StageConfiguration, errors.New("gateway discovery, capture factory, and address resolver are required"))
 	}
 	if config.Interface.Name == "" || len(config.Interface.MAC) != 6 {
-		return nil, errors.New("a capture interface with an Ethernet MAC is required")
+		return nil, stageError(StageConfiguration, errors.New("a capture interface with an Ethernet MAC is required"))
 	}
 	applyRuntimeDefaults(&config)
 
 	route, err := dependencies.Gateway.Discover(ctx)
 	if err != nil {
-		return nil, err
+		return nil, stageError(StageGatewayRoute, err)
 	}
 	prefix, err := prefixForRoute(config.Interface.Prefixes, route)
 	if err != nil {
-		return nil, fmt.Errorf("selected interface %q: %w", config.Interface.Name, err)
+		return nil, stageError(StageGatewayRoute, fmt.Errorf("selected interface %q: %w", config.Interface.Name, err))
 	}
 	driver, err := dependencies.Open(config.Interface.Name)
 	if err != nil {
-		return nil, err
+		return nil, stageError(StageCaptureOpen, err)
 	}
 	gatewayMAC, err := dependencies.Resolve(ctx, driver, config.Interface.MAC, route.InterfaceIP, route.GatewayIP)
 	if err != nil {
 		driver.Close()
-		return nil, fmt.Errorf("resolve default gateway identity: %w", err)
+		return nil, stageError(StageGatewayIdentity, fmt.Errorf("resolve default gateway identity: %w", err))
+	}
+	baselineMAC := gatewayMAC
+	pinned := len(config.PinnedGatewayMAC) != 0
+	if pinned {
+		if len(config.PinnedGatewayMAC) != 6 {
+			driver.Close()
+			return nil, stageError(StageConfiguration, errors.New("pinned gateway MAC must contain 6 bytes"))
+		}
+		baselineMAC = append(net.HardwareAddr(nil), config.PinnedGatewayMAC...)
 	}
 
 	networkContext, err := network.NewContext(
 		config.Interface.Name, config.Interface.SystemName, prefix,
 		network.Endpoint{IP: route.InterfaceIP, MAC: config.Interface.MAC},
-		network.Endpoint{IP: route.GatewayIP, MAC: gatewayMAC},
+		network.Endpoint{IP: route.GatewayIP, MAC: baselineMAC},
 	)
 	if err != nil {
 		driver.Close()
-		return nil, err
+		return nil, stageError(StageConfiguration, err)
 	}
 
 	registry := device.NewRegistry()
+	var durableHistory history.Snapshot
+	if dependencies.History != nil {
+		snapshot, loadErr := dependencies.History.Load()
+		if loadErr != nil {
+			driver.Close()
+			return nil, stageError(StagePersistence, loadErr)
+		}
+		durableHistory = snapshot
+		registry.Restore(snapshot.Devices)
+	}
 	now := time.Now().UTC()
 	_, _, err = registry.Observe(device.Observation{IP: networkContext.Local.IP, MAC: networkContext.Local.MAC, SeenAt: now})
 	if err != nil {
 		driver.Close()
-		return nil, err
+		return nil, stageError(StageConfiguration, err)
 	}
 	registry.SetRole(networkContext.Local.MAC, device.RoleLocal)
 	_, _, err = registry.Observe(device.Observation{IP: networkContext.Gateway.IP, MAC: networkContext.Gateway.MAC, SeenAt: now})
 	if err != nil {
 		driver.Close()
-		return nil, err
+		return nil, stageError(StageConfiguration, err)
 	}
 	registry.SetRole(networkContext.Gateway.MAC, device.RoleGateway)
 	monitor := defense.NewMonitor(networkContext.Gateway.IP, networkContext.Gateway.MAC, config.ConflictCooldown)
-	options := []core.Option{core.WithARPObserver(monitor)}
-	if dependencies.Enricher != nil {
+	if pinned {
+		monitor = defense.NewPinnedMonitor(networkContext.Gateway.IP, networkContext.Gateway.MAC, config.ConflictCooldown)
+	}
+	monitor.RestoreHistory(durableHistory.Conflicts)
+	options := []core.Option{core.WithARPObserver(monitor), core.WithRemovalAfter(config.DeviceRetention)}
+	if dependencies.Metadata != nil {
+		options = append(options, core.WithEnricher(dependencies.Metadata))
+	} else if dependencies.Enricher != nil {
 		options = append(options, core.WithEnricher(dependencies.Enricher))
 	}
 	service := core.NewService(driver, registry, config.OfflineAfter, config.LivenessCheck, options...)
+	if binder, ok := dependencies.Metadata.(metadataRefreshBinder); ok {
+		binder.SetRefresh(func(mac string) { service.RefreshMetadata(mac) })
+	}
 	prober := discovery.NewARPProber(driver, networkContext.Local.MAC, networkContext.Local.IP)
 	scanner := discovery.NewScanner(prober, config.MaximumHosts, config.ProbeDelay)
-	return &Runtime{
+	runtime := &Runtime{
 		network: networkContext, driver: driver, registry: registry,
 		service: service, scanner: scanner, monitor: monitor, config: config,
-	}, nil
+		metadata: dependencies.Metadata, settings: dependencies.Settings,
+		events: make(chan Event, 128), gateway: dependencies.Gateway, route: route,
+		history: dependencies.History, persist: make(chan struct{}, 1),
+	}
+	scanner.SetObserver(runtime.handleScanEvent)
+	if pinned && gatewayMAC.String() != baselineMAC.String() {
+		monitor.ObserveGatewayClaim(gatewayMAC, now)
+	}
+	return runtime, nil
 }
 
-func (r *Runtime) Network() network.Context              { return r.network.Clone() }
-func (r *Runtime) Devices() []device.Device              { return r.registry.Snapshot() }
-func (r *Runtime) DeviceEvents() <-chan core.Event       { return r.service.Events() }
-func (r *Runtime) IntegrityEvents() <-chan defense.Event { return r.monitor.Events() }
+func (r *Runtime) Network() network.Context { return r.network.Clone() }
+func (r *Runtime) Devices() []device.Device { return r.registry.Snapshot() }
+func (r *Runtime) Events() <-chan Event     { return r.events }
+func (r *Runtime) DroppedEvents() uint64 {
+	return r.dropped.Load() + r.service.DroppedEvents() + r.monitor.DroppedEvents()
+}
+
+func (r *Runtime) Status() Status {
+	r.mu.Lock()
+	running, stopped, persistErr := r.running, r.stopped, r.persistErr
+	r.mu.Unlock()
+	return Status{
+		Running: running, Stopped: stopped, Scanning: r.scanner.Scanning(),
+		PeriodicScanEnabled: r.scanner.PeriodicEnabled(), DeviceCount: len(r.Devices()),
+		DroppedEvents: r.DroppedEvents(), LastPersistenceError: persistErr,
+	}
+}
+
+func (r *Runtime) ScanNow(ctx context.Context) error {
+	return r.scanner.Scan(ctx, r.network.Prefix)
+}
+
+func (r *Runtime) SetPeriodicScanEnabled(enabled bool) { r.scanner.SetPeriodicEnabled(enabled) }
+
+func (r *Runtime) ConflictHistory() []defense.Conflict { return r.monitor.History() }
+
+func (r *Runtime) SetNickname(mac net.HardwareAddr, nickname string) error {
+	if r.metadata == nil || r.settings == nil {
+		return errors.New("runtime metadata editing is not configured")
+	}
+	if _, err := r.settings.SetNickname(mac, nickname); err != nil {
+		return err
+	}
+	r.metadata.SetNickname(mac, nickname)
+	r.service.RefreshMetadata(mac.String())
+	return nil
+}
+
+func (r *Runtime) RemoveNickname(mac net.HardwareAddr) error {
+	if r.metadata == nil || r.settings == nil {
+		return errors.New("runtime metadata editing is not configured")
+	}
+	if _, err := r.settings.RemoveNickname(mac); err != nil {
+		return err
+	}
+	r.metadata.RemoveNickname(mac)
+	r.service.RefreshMetadata(mac.String())
+	return nil
+}
 
 // Run owns both background services and closes packet I/O only after both have
 // observed cancellation. A Runtime is intentionally one-shot.
@@ -153,36 +272,143 @@ func (r *Runtime) Run(ctx context.Context) error {
 	r.cancel = cancel
 	r.running = true
 	r.mu.Unlock()
+	r.publish(Event{Kind: EventRuntimeStarting})
 
-	serviceResult := make(chan error, 1)
-	scannerResult := make(chan error, 1)
-	go func() { serviceResult <- r.service.Run(workerCtx) }()
-	go func() { scannerResult <- r.scanner.Run(workerCtx, r.network.Prefix, r.config.ScanInterval) }()
-
-	var first error
-	select {
-	case first = <-serviceResult:
-		cancel()
-		second := <-scannerResult
-		first = meaningfulError(first, second, ctx.Err())
-	case first = <-scannerResult:
-		cancel()
-		second := <-serviceResult
-		first = meaningfulError(first, second, ctx.Err())
-	case <-ctx.Done():
-		cancel()
-		serviceErr := <-serviceResult
-		scannerErr := <-scannerResult
-		first = meaningfulError(serviceErr, scannerErr, ctx.Err())
+	workerResults := make(chan error, 3)
+	var eventWorkers sync.WaitGroup
+	eventWorkers.Add(1)
+	go func() {
+		defer eventWorkers.Done()
+		r.forwardEvents(workerCtx)
+	}()
+	var persistenceWorker sync.WaitGroup
+	if r.history != nil {
+		persistenceWorker.Add(1)
+		go func() {
+			defer persistenceWorker.Done()
+			r.persistHistory(workerCtx)
+		}()
 	}
+	go func() { workerResults <- workerError(StageCapture, r.service.Run(workerCtx)) }()
+	go func() {
+		workerResults <- workerError(StageDiscovery, r.scanner.Run(workerCtx, r.network.Prefix, r.config.ScanInterval))
+	}()
+	go func() { workerResults <- r.watchNetwork(workerCtx) }()
+	r.publish(Event{Kind: EventRuntimeStarted})
+
+	first := <-workerResults
+	r.publish(Event{Kind: EventRuntimeStopping, Err: first})
+	cancel()
+	second := <-workerResults
+	third := <-workerResults
+	first = meaningfulError(first, second, third, ctx.Err())
 	closeErr := r.service.Close()
+	cancel()
+	eventWorkers.Wait()
+	persistenceWorker.Wait()
 
 	r.mu.Lock()
 	r.running = false
 	r.stopped = true
 	r.cancel = nil
 	r.mu.Unlock()
-	return errors.Join(first, closeErr)
+	result := errors.Join(first, stageError(StageShutdown, closeErr))
+	r.publish(Event{Kind: EventRuntimeStopped, Err: result})
+	return result
+}
+
+func (r *Runtime) forwardEvents(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event := <-r.service.Events():
+			r.publish(eventFromCore(event))
+			r.schedulePersist()
+		case event := <-r.monitor.Events():
+			r.publish(eventFromDefense(event))
+			r.schedulePersist()
+		}
+	}
+}
+
+func (r *Runtime) publish(event Event) {
+	select {
+	case r.events <- event:
+	default:
+		r.dropped.Add(1)
+	}
+}
+
+func (r *Runtime) handleScanEvent(event discovery.ScanEvent) { r.publish(eventFromScan(event)) }
+
+func (r *Runtime) schedulePersist() {
+	if r.history == nil {
+		return
+	}
+	select {
+	case r.persist <- struct{}{}:
+	default:
+	}
+}
+
+func (r *Runtime) persistHistory(ctx context.Context) {
+	const debounce = 250 * time.Millisecond
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	flush := func() {
+		err := r.history.Save(history.Snapshot{Devices: r.Devices(), Conflicts: r.ConflictHistory()})
+		r.mu.Lock()
+		r.persistErr = err
+		r.mu.Unlock()
+		if err != nil {
+			r.publish(Event{Kind: EventPersistenceFailed, Err: stageError(StagePersistence, err)})
+		}
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			if timer != nil {
+				timer.Stop()
+			}
+			flush()
+			return
+		case <-r.persist:
+			if timer == nil {
+				timer = time.NewTimer(debounce)
+			} else if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(debounce)
+			timerC = timer.C
+		case <-timerC:
+			flush()
+			timerC = nil
+		}
+	}
+}
+
+func (r *Runtime) watchNetwork(ctx context.Context) error {
+	ticker := time.NewTicker(r.config.NetworkCheck)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			route, err := r.gateway.Discover(ctx)
+			if err != nil {
+				return stageError(StageNetworkChange, fmt.Errorf("check default route: %w", err))
+			}
+			if route != r.route {
+				return stageError(StageNetworkChange, fmt.Errorf("%w: was %s via %s, now %s via %s",
+					ErrNetworkChanged, r.route.GatewayIP, r.route.InterfaceIP, route.GatewayIP, route.InterfaceIP))
+			}
+		}
+	}
 }
 
 // Close requests shutdown. When Run was never called, it closes the driver
@@ -229,6 +455,12 @@ func applyRuntimeDefaults(config *Config) {
 	if config.ConflictCooldown <= 0 {
 		config.ConflictCooldown = 5 * time.Second
 	}
+	if config.NetworkCheck <= 0 {
+		config.NetworkCheck = 5 * time.Second
+	}
+	if config.DeviceRetention <= 0 {
+		config.DeviceRetention = 24 * time.Hour
+	}
 }
 
 func meaningfulError(errorsToCheck ...error) error {
@@ -243,4 +475,11 @@ func meaningfulError(errorsToCheck ...error) error {
 		}
 	}
 	return nil
+}
+
+func workerError(stage Stage, err error) error {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return stageError(stage, err)
 }

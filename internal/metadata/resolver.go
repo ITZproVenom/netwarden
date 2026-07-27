@@ -3,11 +3,15 @@
 package metadata
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/netip"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/amdzy/NetWarden/internal/device"
 )
@@ -27,8 +31,20 @@ var vendorIndex struct {
 }
 
 type Resolver struct {
+	mu        sync.RWMutex
 	nicknames map[string]string
 	vendors   map[string]string
+	hostnames map[netip.Addr]hostnameEntry
+	inflight  map[netip.Addr]map[string]struct{}
+	lookup    func(context.Context, string) ([]string, error)
+	refresh   func(string)
+	ttl       time.Duration
+	timeout   time.Duration
+}
+
+type hostnameEntry struct {
+	name    string
+	expires time.Time
 }
 
 func NewResolver(nicknames map[string]string) (*Resolver, error) {
@@ -53,19 +69,105 @@ func NewResolver(nicknames map[string]string) (*Resolver, error) {
 	for mac, nickname := range nicknames {
 		copyNicknames[strings.ToLower(mac)] = nickname
 	}
-	return &Resolver{nicknames: copyNicknames, vendors: vendorIndex.values}, nil
+	return &Resolver{
+		nicknames: copyNicknames, vendors: vendorIndex.values,
+		hostnames: make(map[netip.Addr]hostnameEntry), inflight: make(map[netip.Addr]map[string]struct{}),
+		lookup: net.DefaultResolver.LookupAddr, ttl: 30 * time.Minute, timeout: 2 * time.Second,
+	}, nil
 }
 
 func (r *Resolver) Enrich(snapshot device.Device) device.Metadata {
-	result := device.Metadata{Vendor: "Unknown"}
+	r.mu.RLock()
+	result := device.Metadata{Name: snapshot.IP.String(), Vendor: "Unknown"}
 	mac := strings.ToLower(snapshot.MAC)
-	if nickname := r.nicknames[mac]; nickname != "" {
+	nickname := r.nicknames[mac]
+	if nickname != "" {
 		result.Name = nickname
+	} else if cached, ok := r.hostnames[snapshot.IP]; ok && time.Now().Before(cached.expires) && cached.name != "" {
+		result.Name = cached.name
 	}
 	if len(mac) >= 8 {
 		if vendor := r.vendors[strings.ToUpper(mac[:8])]; vendor != "" {
 			result.Vendor = vendor
 		}
 	}
+	r.mu.RUnlock()
+	if nickname == "" {
+		r.resolveHostname(snapshot.IP, mac)
+	}
 	return result
+}
+
+// SetRefresh installs the non-blocking callback used when an asynchronous
+// hostname lookup changes metadata for a known MAC address.
+func (r *Resolver) SetRefresh(refresh func(string)) {
+	r.mu.Lock()
+	r.refresh = refresh
+	r.mu.Unlock()
+}
+
+// SetHostnameLookup replaces reverse DNS for tests or applications with a
+// custom resolver. Lookups are deduplicated per address and cached.
+func (r *Resolver) SetHostnameLookup(lookup func(string) ([]string, error), ttl time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if lookup != nil {
+		r.lookup = func(_ context.Context, address string) ([]string, error) { return lookup(address) }
+	}
+	if ttl > 0 {
+		r.ttl = ttl
+	}
+}
+
+func (r *Resolver) resolveHostname(ip netip.Addr, mac string) {
+	if !ip.IsValid() {
+		return
+	}
+	r.mu.Lock()
+	if cached, ok := r.hostnames[ip]; ok && time.Now().Before(cached.expires) {
+		r.mu.Unlock()
+		return
+	}
+	if waiters := r.inflight[ip]; waiters != nil {
+		waiters[mac] = struct{}{}
+		r.mu.Unlock()
+		return
+	}
+	r.inflight[ip] = map[string]struct{}{mac: {}}
+	lookup := r.lookup
+	ttl := r.ttl
+	timeout := r.timeout
+	r.mu.Unlock()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		names, err := lookup(ctx, ip.String())
+		name := ""
+		if err == nil && len(names) > 0 {
+			name = strings.TrimSuffix(strings.TrimSpace(names[0]), ".")
+		}
+		r.mu.Lock()
+		waiters := r.inflight[ip]
+		delete(r.inflight, ip)
+		r.hostnames[ip] = hostnameEntry{name: name, expires: time.Now().Add(ttl)}
+		refresh := r.refresh
+		r.mu.Unlock()
+		if name != "" && refresh != nil {
+			for waiter := range waiters {
+				refresh(waiter)
+			}
+		}
+	}()
+}
+
+func (r *Resolver) SetNickname(mac net.HardwareAddr, nickname string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nicknames[strings.ToLower(mac.String())] = nickname
+}
+
+func (r *Resolver) RemoveNickname(mac net.HardwareAddr) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.nicknames, strings.ToLower(mac.String()))
 }

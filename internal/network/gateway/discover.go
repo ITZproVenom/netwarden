@@ -3,10 +3,16 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 
 	jackpal "github.com/jackpal/gateway"
+)
+
+var (
+	ErrNoDefaultRoute = errors.New("no default IPv4 route")
+	ErrRouteQuery     = errors.New("default route query failed")
 )
 
 type Route struct {
@@ -26,11 +32,15 @@ func (SystemDiscoverer) Discover(ctx context.Context) (Route, error) {
 	}
 	gatewayIP, err := jackpal.DiscoverGateway()
 	if err != nil {
-		return Route{}, fmt.Errorf("discover default IPv4 gateway: %w", err)
+		var noGateway *jackpal.ErrNoGateway
+		if errors.As(err, &noGateway) {
+			return Route{}, fmt.Errorf("%w: %v", ErrNoDefaultRoute, err)
+		}
+		return Route{}, fmt.Errorf("%w: discover default IPv4 gateway: %v", ErrRouteQuery, err)
 	}
 	interfaceIP, err := jackpal.DiscoverInterface()
 	if err != nil {
-		return Route{}, fmt.Errorf("discover default IPv4 interface: %w", err)
+		return Route{}, fmt.Errorf("%w: discover default IPv4 interface: %v", ErrRouteQuery, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return Route{}, err

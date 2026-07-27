@@ -17,6 +17,7 @@ import (
 	"github.com/amdzy/NetWarden/internal/capture/pcapdriver"
 	appconfig "github.com/amdzy/NetWarden/internal/config"
 	"github.com/amdzy/NetWarden/internal/discovery"
+	"github.com/amdzy/NetWarden/internal/history"
 	"github.com/amdzy/NetWarden/internal/metadata"
 	networkgateway "github.com/amdzy/NetWarden/internal/network/gateway"
 )
@@ -40,6 +41,8 @@ func run(args []string) error {
 		return showRoute()
 	case "scan":
 		return scan(args[1:])
+	case "monitor":
+		return monitor(args[1:])
 	case "resolve":
 		return resolve(args[1:])
 	case "config":
@@ -61,9 +64,12 @@ Usage:
   netwarden interfaces
   netwarden route
   netwarden scan [--interface NAME] [--prefix CIDR] [--duration 5s]
+  netwarden monitor [--interface NAME] [--prefix CIDR]
   netwarden resolve --gateway IP [--interface NAME] [--timeout 3s]
   netwarden config show
   netwarden config set-interface NAME
+  netwarden config set-gateway-mac MAC
+  netwarden config remove-gateway-mac
   netwarden nickname set MAC NAME
   netwarden nickname remove MAC
 
@@ -120,7 +126,7 @@ func scan(args []string) error {
 		return errors.New("duration must be positive")
 	}
 
-	_, config, err := loadConfig()
+	store, config, err := loadConfig()
 	if err != nil {
 		return err
 	}
@@ -143,10 +149,13 @@ func scan(args []string) error {
 	defer cancel()
 	selected.Prefixes = []netip.Prefix{localPrefix}
 	dependencies := app.DefaultDependencies()
-	dependencies.Enricher = enricher
+	dependencies.Metadata = enricher
+	dependencies.Settings = store
+	dependencies.History = history.NewStore(store.Path() + ".history.json")
 	runtime, err := app.Bootstrap(ctx, dependencies, app.Config{
 		Interface: selected, ScanInterval: time.Hour,
 		ProbeDelay: 2 * time.Millisecond, MaximumHosts: *maxHosts,
+		PinnedGatewayMAC: parseStoredMAC(config.GatewayMAC),
 	})
 	if err != nil {
 		return err
@@ -157,11 +166,14 @@ func scan(args []string) error {
 
 	for {
 		select {
-		case event := <-runtime.DeviceEvents():
-			fmt.Printf("%-15s  %-17s  %-24s  %s\n", event.Device.IP, event.Device.MAC, event.Device.Name, event.Device.Vendor)
-		case event := <-runtime.IntegrityEvents():
-			fmt.Fprintf(os.Stderr, "network warning: gateway %s expected at %s but observed claim from %s\n",
-				event.GatewayIP, event.ExpectedMAC, event.ClaimedMAC)
+		case event := <-runtime.Events():
+			if event.Device != nil {
+				fmt.Printf("%-15s  %-17s  %-24s  %s\n", event.Device.IP, event.Device.MAC, event.Device.Name, event.Device.Vendor)
+			}
+			if event.Integrity != nil {
+				fmt.Fprintf(os.Stderr, "network warning: gateway %s expected at %s but observed claim from %s\n",
+					event.Integrity.GatewayIP, event.Integrity.ExpectedMAC, event.Integrity.ClaimedMAC)
+			}
 		case err := <-runtimeResult:
 			if isContextEnd(err) {
 				return nil
@@ -174,6 +186,89 @@ func scan(args []string) error {
 			}
 			return nil
 		}
+	}
+}
+
+func monitor(args []string) error {
+	flags := flag.NewFlagSet("monitor", flag.ContinueOnError)
+	interfaceName := flags.String("interface", "", "pcap or system interface name")
+	prefixText := flags.String("prefix", "", "IPv4 prefix to scan (defaults to interface prefix)")
+	maxHosts := flags.Int("max-hosts", 4094, "maximum addresses allowed in a scan")
+	interval := flags.Duration("interval", 10*time.Second, "periodic discovery interval")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *interval <= 0 {
+		return errors.New("interval must be positive")
+	}
+	store, config, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	selection := *interfaceName
+	if selection == "" {
+		selection = config.Interface
+	}
+	selected, prefix, err := selectedInterface(selection, *prefixText)
+	if err != nil {
+		return err
+	}
+	resolver, err := metadata.NewResolver(config.Nicknames)
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	selected.Prefixes = []netip.Prefix{prefix}
+	dependencies := app.DefaultDependencies()
+	dependencies.Metadata = resolver
+	dependencies.Settings = store
+	dependencies.History = history.NewStore(store.Path() + ".history.json")
+	runtime, err := app.Bootstrap(ctx, dependencies, app.Config{
+		Interface: selected, ScanInterval: *interval, ProbeDelay: 2 * time.Millisecond,
+		MaximumHosts: *maxHosts, PinnedGatewayMAC: parseStoredMAC(config.GatewayMAC),
+	})
+	if err != nil {
+		return err
+	}
+	defer runtime.Close()
+	result := make(chan error, 1)
+	go func() { result <- runtime.Run(ctx) }()
+	fmt.Printf("monitoring %s on %s; press Ctrl-C to stop\n", runtime.Network().Prefix.Masked(), selected.Name)
+	for {
+		select {
+		case event := <-runtime.Events():
+			printRuntimeEvent(event)
+		case err := <-result:
+			if isContextEnd(err) {
+				return nil
+			}
+			return err
+		case <-ctx.Done():
+			err := <-result
+			if isContextEnd(err) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+func printRuntimeEvent(event app.Event) {
+	if event.Device != nil {
+		fmt.Printf("device %-15s  %-17s  %-24s  online=%t\n",
+			event.Device.IP, event.Device.MAC, event.Device.Name, event.Device.Online)
+	}
+	if event.Integrity != nil {
+		fmt.Fprintf(os.Stderr, "integrity gateway=%s expected=%s claimed=%s kind=%d count=%d\n",
+			event.Integrity.GatewayIP, event.Integrity.ExpectedMAC, event.Integrity.ClaimedMAC,
+			event.Integrity.Kind, event.Integrity.Count)
+	}
+	if event.Scan != nil && event.Scan.Err != nil {
+		fmt.Fprintln(os.Stderr, "scan:", event.Scan.Err)
+	}
+	if event.Kind == app.EventPersistenceFailed && event.Err != nil {
+		fmt.Fprintln(os.Stderr, "history:", event.Err)
 	}
 }
 
@@ -229,7 +324,7 @@ func resolve(args []string) error {
 
 func configure(args []string) error {
 	if len(args) == 0 {
-		return errors.New("config command requires 'show' or 'set-interface'")
+		return errors.New("config subcommand is required")
 	}
 	store, config, err := loadConfig()
 	if err != nil {
@@ -242,6 +337,7 @@ func configure(args []string) error {
 		}
 		fmt.Println("path:", store.Path())
 		fmt.Println("interface:", config.Interface)
+		fmt.Println("gateway MAC:", config.GatewayMAC)
 		fmt.Println("nicknames:", len(config.Nicknames))
 		return nil
 	case "set-interface":
@@ -257,9 +353,42 @@ func configure(args []string) error {
 		}
 		fmt.Println("saved interface:", selected.Name)
 		return nil
+	case "set-gateway-mac":
+		if len(args) != 2 {
+			return errors.New("usage: netwarden config set-gateway-mac MAC")
+		}
+		mac, err := net.ParseMAC(args[1])
+		if err != nil || len(mac) != 6 {
+			return fmt.Errorf("invalid Ethernet MAC address %q", args[1])
+		}
+		if _, err := store.SetGatewayMAC(mac); err != nil {
+			return err
+		}
+		fmt.Println("saved gateway MAC:", strings.ToLower(mac.String()))
+		return nil
+	case "remove-gateway-mac":
+		if len(args) != 1 {
+			return errors.New("usage: netwarden config remove-gateway-mac")
+		}
+		if _, err := store.RemoveGatewayMAC(); err != nil {
+			return err
+		}
+		fmt.Println("removed pinned gateway MAC")
+		return nil
 	default:
 		return fmt.Errorf("unknown config command %q", args[0])
 	}
+}
+
+func parseStoredMAC(value string) net.HardwareAddr {
+	if value == "" {
+		return nil
+	}
+	mac, err := net.ParseMAC(value)
+	if err != nil || len(mac) != 6 {
+		return nil
+	}
+	return mac
 }
 
 func nickname(args []string) error {
