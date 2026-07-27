@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/netip"
+	"time"
 
 	"github.com/amdzy/NetWarden/internal/core"
 	"github.com/amdzy/NetWarden/internal/defense"
@@ -32,6 +33,7 @@ const (
 )
 
 type Event struct {
+	At         time.Time
 	Kind       EventKind
 	Device     *device.Device
 	Integrity  *defense.Event

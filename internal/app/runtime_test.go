@@ -267,4 +267,13 @@ func TestSupervisorRebuildsRuntimeAfterRouteChange(t *testing.T) {
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v", err)
 	}
+	status := supervisor.Status()
+	if status.Generation < 2 || status.RestartCount != 1 || status.LastRestartReason == "" {
+		t.Fatalf("unexpected supervisor status: %#v", status)
+	}
+	select {
+	case <-supervisor.Done():
+	default:
+		t.Fatal("supervisor completion signal was not closed")
+	}
 }

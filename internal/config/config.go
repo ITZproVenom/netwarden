@@ -13,7 +13,7 @@ import (
 	"sync"
 )
 
-const CurrentVersion = 1
+const CurrentVersion = 2
 
 var (
 	ErrUnsupportedVersion = errors.New("unsupported configuration version")
@@ -156,8 +156,13 @@ func (s *Store) load() (Config, error) {
 		}
 		return Config{}, fmt.Errorf("%w: decode %q: %v", ErrCorrupt, s.path, err)
 	}
-	if config.Version != CurrentVersion {
-		return Config{}, fmt.Errorf("%w: got %d, support %d", ErrUnsupportedVersion, config.Version, CurrentVersion)
+	if config.Version > CurrentVersion || config.Version < 1 {
+		return Config{}, fmt.Errorf("%w: got %d, support through %d", ErrUnsupportedVersion, config.Version, CurrentVersion)
+	}
+	for config.Version < CurrentVersion {
+		if err := migrate(&config); err != nil {
+			return Config{}, err
+		}
 	}
 	if config.Nicknames == nil {
 		config.Nicknames = make(map[string]string)
@@ -170,6 +175,18 @@ func (s *Store) load() (Config, error) {
 		config.GatewayMAC = strings.ToLower(mac.String())
 	}
 	return clone(config), nil
+}
+
+func migrate(config *Config) error {
+	switch config.Version {
+	case 1:
+		// Version 2 formalizes the optional gateway baseline and retains all
+		// version-1 fields without changing their meaning.
+		config.Version = 2
+		return nil
+	default:
+		return fmt.Errorf("%w: no migration from version %d", ErrUnsupportedVersion, config.Version)
+	}
 }
 
 func (s *Store) save(config Config) error {

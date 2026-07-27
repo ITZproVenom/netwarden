@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/amdzy/NetWarden/internal/defense"
@@ -19,20 +20,29 @@ type Supervisor struct {
 	delay   time.Duration
 	events  chan Event
 
-	mu      sync.RWMutex
-	current *Runtime
+	mu                sync.RWMutex
+	current           *Runtime
+	generation        uint64
+	restartCount      uint64
+	rebuilding        bool
+	lastRestartReason string
+	dropped           atomic.Uint64
+	done              chan struct{}
+	doneOnce          sync.Once
 }
 
 func NewSupervisor(factory RuntimeFactory, retryDelay time.Duration) *Supervisor {
 	if retryDelay <= 0 {
 		retryDelay = time.Second
 	}
-	return &Supervisor{factory: factory, delay: retryDelay, events: make(chan Event, 256)}
+	return &Supervisor{factory: factory, delay: retryDelay, events: make(chan Event, 256), done: make(chan struct{})}
 }
 
-func (s *Supervisor) Events() <-chan Event { return s.events }
+func (s *Supervisor) Events() <-chan Event  { return s.events }
+func (s *Supervisor) Done() <-chan struct{} { return s.done }
 
 func (s *Supervisor) Run(ctx context.Context) error {
+	defer s.doneOnce.Do(func() { close(s.done) })
 	if s.factory == nil {
 		return errors.New("runtime factory is required")
 	}
@@ -51,6 +61,8 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 		s.mu.Lock()
 		s.current = runtime
+		s.generation++
+		s.rebuilding = false
 		s.mu.Unlock()
 		forwardCtx, stopForward := context.WithCancel(ctx)
 		forwarded := make(chan struct{})
@@ -61,11 +73,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 				case <-forwardCtx.Done():
 					return
 				case event := <-runtime.Events():
-					select {
-					case s.events <- event:
-					case <-forwardCtx.Done():
-						return
-					}
+					s.publish(event)
 				}
 			}
 		}()
@@ -81,6 +89,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			return err
 		}
 		rebuilding = true
+		s.mu.Lock()
+		s.restartCount++
+		s.rebuilding = true
+		s.lastRestartReason = err.Error()
+		s.mu.Unlock()
 		s.publish(Event{Kind: EventRuntimeRebuilding, Err: err})
 		if err := waitForRetry(ctx, s.delay); err != nil {
 			return err
@@ -114,10 +127,16 @@ func (s *Supervisor) Current() *Runtime {
 }
 
 func (s *Supervisor) Status() Status {
+	s.mu.RLock()
+	generation, restarts, rebuilding, reason := s.generation, s.restartCount, s.rebuilding, s.lastRestartReason
+	s.mu.RUnlock()
 	if runtime := s.Current(); runtime != nil {
-		return runtime.Status()
+		status := runtime.Status()
+		status.Generation, status.RestartCount, status.Rebuilding, status.LastRestartReason = generation, restarts, rebuilding, reason
+		status.SupervisorDroppedEvents = s.dropped.Load()
+		return status
 	}
-	return Status{}
+	return Status{Generation: generation, RestartCount: restarts, Rebuilding: rebuilding, LastRestartReason: reason, SupervisorDroppedEvents: s.dropped.Load()}
 }
 
 func (s *Supervisor) Devices() []device.Device {
@@ -150,8 +169,12 @@ func (s *Supervisor) SetPeriodicScanEnabled(enabled bool) error {
 }
 
 func (s *Supervisor) publish(event Event) {
+	if event.At.IsZero() {
+		event.At = time.Now().UTC()
+	}
 	select {
 	case s.events <- event:
 	default:
+		s.dropped.Add(1)
 	}
 }

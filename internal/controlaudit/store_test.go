@@ -52,3 +52,30 @@ func TestStoreAppendsControlAuditEvents(t *testing.T) {
 		t.Fatalf("audit records = %d, want 2", count)
 	}
 }
+
+func TestStoreQueriesAndPrunesAuditEvents(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "control.jsonl"))
+	now := time.Now().UTC()
+	for _, event := range []app.ControlAuditEvent{
+		{At: now.Add(-48 * time.Hour), Operation: app.ControlDisconnect, Outcome: "old"},
+		{At: now, Operation: app.ControlRestore, Outcome: "restored"},
+	} {
+		if err := store.Record(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err := store.Query(Query{Since: now.Add(-time.Hour), Operation: app.ControlRestore})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Outcome != "restored" {
+		t.Fatalf("unexpected query: %#v", events)
+	}
+	if err := store.Prune(now.Add(-24 * time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	events, err = store.Query(Query{})
+	if err != nil || len(events) != 1 {
+		t.Fatalf("after prune: %#v, %v", events, err)
+	}
+}

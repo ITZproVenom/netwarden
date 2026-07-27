@@ -10,6 +10,8 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -25,8 +27,15 @@ import (
 	"github.com/amdzy/NetWarden/internal/device"
 	"github.com/amdzy/NetWarden/internal/discovery"
 	"github.com/amdzy/NetWarden/internal/history"
+	"github.com/amdzy/NetWarden/internal/localapi"
 	"github.com/amdzy/NetWarden/internal/metadata"
 	networkgateway "github.com/amdzy/NetWarden/internal/network/gateway"
+)
+
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildDate = "unknown"
 )
 
 func main() {
@@ -43,9 +52,11 @@ func run(args []string) error {
 	}
 	switch args[0] {
 	case "interfaces":
-		return listInterfaces()
+		return listInterfaces(args[1:])
 	case "route":
-		return showRoute()
+		return showRoute(args[1:])
+	case "version":
+		return showVersion(args[1:])
 	case "scan":
 		return scan(args[1:])
 	case "monitor":
@@ -62,6 +73,16 @@ func run(args []string) error {
 		return showHistory(args[1:], true)
 	case "history":
 		return manageHistory(args[1:])
+	case "audit":
+		return manageAudit(args[1:])
+	case "status":
+		return runtimeStatus(args[1:])
+	case "refresh":
+		return runtimeAction("/refresh")
+	case "pause":
+		return runtimeAction("/scan/pause")
+	case "resume":
+		return runtimeAction("/scan/resume")
 	case "capture-helper":
 		return serveCaptureHelper(args[1:])
 	case "disconnect", "disconnect-all", "poison":
@@ -82,12 +103,20 @@ func printUsage() {
 Usage:
   netwarden interfaces
   netwarden route
+  netwarden version [--json]
   netwarden scan [--interface NAME] [--prefix CIDR] [--duration 5s]
   netwarden monitor [--interface NAME] [--prefix CIDR]
   netwarden devices [--since 24h] [--json]
   netwarden conflicts [--since 168h] [--json]
   netwarden history prune --older-than 2160h
   netwarden history clear
+  netwarden audit [--since 24h] [--operation NAME] [--json]
+  netwarden audit prune [--older-than 2160h]
+  netwarden audit clear
+  netwarden status [--json]
+  netwarden refresh
+  netwarden pause
+  netwarden resume
   netwarden resolve --gateway IP [--interface NAME] [--timeout 3s]
   netwarden config show
   netwarden config set-interface NAME
@@ -133,6 +162,101 @@ func activeControlCommand(name string, args []string) error {
 	default:
 		return fmt.Errorf("unknown active-control command %q", name)
 	}
+}
+
+func manageAudit(args []string) error {
+	settings, _, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	store := controlaudit.NewStore(settings.Path() + ".control-audit.jsonl")
+	if len(args) > 0 && args[0] == "clear" {
+		if len(args) != 1 {
+			return errors.New("usage: netwarden audit clear")
+		}
+		return store.Clear()
+	}
+	if len(args) > 0 && args[0] == "prune" {
+		flags := flag.NewFlagSet("audit prune", flag.ContinueOnError)
+		olderThan := flags.Duration("older-than", 90*24*time.Hour, "remove audit events older than this duration")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *olderThan <= 0 {
+			return errors.New("older-than must be positive")
+		}
+		return store.Prune(time.Now().UTC().Add(-*olderThan))
+	}
+	flags := flag.NewFlagSet("audit", flag.ContinueOnError)
+	since := flags.Duration("since", 0, "only events within this duration")
+	operation := flags.String("operation", "", "filter by operation")
+	outcome := flags.String("outcome", "", "filter by outcome")
+	jsonOutput := flags.Bool("json", false, "write JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	query := controlaudit.Query{Operation: app.ControlOperation(*operation), Outcome: *outcome}
+	if *since < 0 {
+		return errors.New("since cannot be negative")
+	}
+	if *since > 0 {
+		query.Since = time.Now().UTC().Add(-*since)
+	}
+	events, err := store.Query(query)
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(events)
+	}
+	for _, event := range events {
+		fmt.Printf("%s %-20s %-28s targets=%d\n", event.At.Format(time.RFC3339), event.Operation, event.Outcome, len(event.Targets))
+	}
+	return nil
+}
+
+func runtimeStatePath() (string, error) {
+	settings, _, err := loadConfig()
+	if err != nil {
+		return "", err
+	}
+	return settings.Path() + ".runtime.json", nil
+}
+
+func runtimeStatus(args []string) error {
+	flags := flag.NewFlagSet("status", flag.ContinueOnError)
+	jsonOutput := flags.Bool("json", false, "write JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	path, err := runtimeStatePath()
+	if err != nil {
+		return err
+	}
+	var status app.Status
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := localapi.Call(ctx, path, "GET", "/status", &status); err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(status)
+	}
+	fmt.Printf("running=%t scanning=%t periodic=%t devices=%d dropped=%d\n", status.Running, status.Scanning, status.PeriodicScanEnabled, status.DeviceCount, status.DroppedEvents)
+	if status.LastPersistenceError != "" {
+		fmt.Println("persistence error:", status.LastPersistenceError)
+	}
+	return nil
+}
+
+func runtimeAction(endpoint string) error {
+	path, err := runtimeStatePath()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return localapi.Call(ctx, path, "POST", endpoint, nil)
 }
 
 func recoveryControlCommand(name string, args []string) error {
@@ -331,13 +455,21 @@ func parseControlTarget(ipText, macText string) (app.ControlTarget, error) {
 	return app.ControlTarget{IP: ip, MAC: mac}, nil
 }
 
-func listInterfaces() error {
+func listInterfaces(args []string) error {
+	flags := flag.NewFlagSet("interfaces", flag.ContinueOnError)
+	jsonOutput := flags.Bool("json", false, "write JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
 	interfaces, err := pcapdriver.ListInterfaces()
 	if err != nil {
 		return err
 	}
 	if len(interfaces) == 0 {
 		return errors.New("no IPv4 capture interfaces found")
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(interfaces)
 	}
 	for _, candidate := range interfaces {
 		label := candidate.Name
@@ -356,13 +488,38 @@ func listInterfaces() error {
 	return nil
 }
 
-func showRoute() error {
+func showRoute(args []string) error {
+	flags := flag.NewFlagSet("route", flag.ContinueOnError)
+	jsonOutput := flags.Bool("json", false, "write JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
 	route, err := (networkgateway.SystemDiscoverer{}).Discover(context.Background())
 	if err != nil {
 		return err
 	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(route)
+	}
 	fmt.Println("interface IPv4:", route.InterfaceIP)
 	fmt.Println("default gateway:", route.GatewayIP)
+	return nil
+}
+
+func showVersion(args []string) error {
+	flags := flag.NewFlagSet("version", flag.ContinueOnError)
+	jsonOutput := flags.Bool("json", false, "write JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	info := map[string]string{"version": version, "commit": commit, "build_date": buildDate, "go": runtime.Version(), "os": runtime.GOOS, "arch": runtime.GOARCH}
+	if build, ok := debug.ReadBuildInfo(); ok && version == "dev" && build.Main.Version != "" && build.Main.Version != "(devel)" {
+		info["version"] = build.Main.Version
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(info)
+	}
+	fmt.Printf("NetWarden %s (%s, %s) %s/%s %s\n", info["version"], info["commit"], info["build_date"], info["os"], info["arch"], info["go"])
 	return nil
 }
 
@@ -492,6 +649,19 @@ func monitor(args []string) error {
 			MaximumHosts: *maxHosts, PinnedGatewayMAC: parseStoredMAC(config.GatewayMAC),
 		})
 	}, time.Second)
+	apiServer, err := localapi.Start(store.Path()+".runtime.json", localapi.Handlers{
+		Status:   supervisor.Status,
+		Refresh:  supervisor.ScanNow,
+		Periodic: supervisor.SetPeriodicScanEnabled,
+	})
+	if err != nil {
+		return fmt.Errorf("start local runtime API: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = apiServer.Close(shutdownCtx)
+	}()
 	result := make(chan error, 1)
 	go func() { result <- supervisor.Run(ctx) }()
 	if !*jsonOutput {
@@ -658,8 +828,13 @@ func configure(args []string) error {
 	}
 	switch args[0] {
 	case "show":
-		if len(args) != 1 {
-			return errors.New("usage: netwarden config show")
+		flags := flag.NewFlagSet("config show", flag.ContinueOnError)
+		jsonOutput := flags.Bool("json", false, "write JSON")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *jsonOutput {
+			return json.NewEncoder(os.Stdout).Encode(config)
 		}
 		fmt.Println("path:", store.Path())
 		fmt.Println("interface:", config.Interface)

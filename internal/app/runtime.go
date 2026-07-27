@@ -61,13 +61,18 @@ type Config struct {
 }
 
 type Status struct {
-	Running              bool
-	Stopped              bool
-	Scanning             bool
-	PeriodicScanEnabled  bool
-	DeviceCount          int
-	DroppedEvents        uint64
-	LastPersistenceError error
+	Running                 bool
+	Stopped                 bool
+	Scanning                bool
+	PeriodicScanEnabled     bool
+	DeviceCount             int
+	DroppedEvents           uint64
+	LastPersistenceError    string
+	Generation              uint64
+	RestartCount            uint64
+	Rebuilding              bool
+	LastRestartReason       string
+	SupervisorDroppedEvents uint64
 }
 
 type Runtime struct {
@@ -92,6 +97,8 @@ type Runtime struct {
 	dropped    atomic.Uint64
 	persist    chan struct{}
 	persistErr error
+	done       chan struct{}
+	doneOnce   sync.Once
 }
 
 func DefaultDependencies() Dependencies {
@@ -199,6 +206,7 @@ func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*
 		metadata: dependencies.Metadata, settings: dependencies.Settings,
 		events: make(chan Event, 128), gateway: dependencies.Gateway, route: route,
 		history: dependencies.History, persist: make(chan struct{}, 1),
+		done: make(chan struct{}),
 	}
 	scanner.SetObserver(runtime.handleScanEvent)
 	if pinned && gatewayMAC.String() != baselineMAC.String() {
@@ -210,6 +218,7 @@ func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*
 func (r *Runtime) Network() network.Context { return r.network.Clone() }
 func (r *Runtime) Devices() []device.Device { return r.registry.Snapshot() }
 func (r *Runtime) Events() <-chan Event     { return r.events }
+func (r *Runtime) Done() <-chan struct{}    { return r.done }
 func (r *Runtime) DroppedEvents() uint64 {
 	return r.dropped.Load() + r.service.DroppedEvents() + r.monitor.DroppedEvents()
 }
@@ -221,8 +230,15 @@ func (r *Runtime) Status() Status {
 	return Status{
 		Running: running, Stopped: stopped, Scanning: r.scanner.Scanning(),
 		PeriodicScanEnabled: r.scanner.PeriodicEnabled(), DeviceCount: len(r.Devices()),
-		DroppedEvents: r.DroppedEvents(), LastPersistenceError: persistErr,
+		DroppedEvents: r.DroppedEvents(), LastPersistenceError: errorText(persistErr),
 	}
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func (r *Runtime) ScanNow(ctx context.Context) error {
@@ -286,6 +302,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	r.cancel = cancel
 	r.running = true
 	r.mu.Unlock()
+	defer r.doneOnce.Do(func() { close(r.done) })
 	r.publish(Event{Kind: EventRuntimeStarting})
 
 	workerResults := make(chan error, 3)
@@ -347,6 +364,9 @@ func (r *Runtime) forwardEvents(ctx context.Context) {
 }
 
 func (r *Runtime) publish(event Event) {
+	if event.At.IsZero() {
+		event.At = time.Now().UTC()
+	}
 	select {
 	case r.events <- event:
 	default:
@@ -440,6 +460,7 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	r.stopped = true
+	r.doneOnce.Do(func() { close(r.done) })
 	return r.driver.Close()
 }
 

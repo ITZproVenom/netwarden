@@ -72,6 +72,20 @@ func TestStoreRejectsFutureVersion(t *testing.T) {
 	}
 }
 
+func TestStoreMigratesVersionOneConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"interface":"en0","nicknames":{"02:00:00:00:00:01":"Printer"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := NewStore(path).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Version != CurrentVersion || config.Interface != "en0" || config.Nicknames["02:00:00:00:00:01"] != "Printer" {
+		t.Fatalf("unexpected migrated config: %#v", config)
+	}
+}
+
 func TestSetNicknameValidatesInput(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "config.json"))
 	mac, _ := net.ParseMAC("02:00:00:00:00:01")
