@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { ThemeProvider } from "next-themes"
 import { subscribeRuntimeEvents } from "@/lib/wails/events"
 import { queryKeys } from "@/lib/query-keys"
+import { UnsavedChangesProvider } from "@/app/unsaved-changes"
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: 2_000, retry: 1 } } })
 
@@ -29,11 +30,13 @@ export function AppProviders({ children }: { children: ReactNode }) {
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
       <QueryClientProvider client={queryClient}>
-        <TooltipProvider>
-          <RuntimeEventBridge />
-          {children}
-          <Toaster richColors position="bottom-right" />
-        </TooltipProvider>
+        <UnsavedChangesProvider>
+          <TooltipProvider>
+            <RuntimeEventBridge />
+            {children}
+            <Toaster richColors position="bottom-right" />
+          </TooltipProvider>
+        </UnsavedChangesProvider>
       </QueryClientProvider>
     </ThemeProvider>
   )

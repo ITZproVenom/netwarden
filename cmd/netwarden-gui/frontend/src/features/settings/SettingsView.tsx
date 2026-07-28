@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Database, Router, Trash2 } from "lucide-react"
+import { Database, FolderOpen, Router, Trash2 } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   AlertDialog,
@@ -22,6 +22,8 @@ import { formatDate } from "@/lib/format"
 import { MonitoringSettingsCard } from "./MonitoringSettingsCard"
 import { ApplicationPreferencesCard } from "./ApplicationPreferencesCard"
 import { useClearHistory, useHistorySummary, usePruneHistory, useSetGatewayMAC } from "./settings.queries"
+import { useOpenApplicationDirectory } from "./settings.queries"
+import { useUnsavedChanges } from "@/app/unsaved-changes"
 
 export function SettingsView() {
   const { data: bootstrap } = useBootstrap()
@@ -30,11 +32,16 @@ export function SettingsView() {
   const { data: history } = useHistorySummary()
   const prune = usePruneHistory()
   const clear = useClearHistory()
+  const openConfig = useOpenApplicationDirectory("configuration")
+  const openLogs = useOpenApplicationDirectory("logs")
   const [gatewayMAC, setGatewayMAC] = useState("")
   const [pruneDays, setPruneDays] = useState(90)
   useEffect(() => setGatewayMAC(bootstrap?.gatewayMAC || ""), [bootstrap?.gatewayMAC])
   const running = Boolean(status?.Running || status?.Rebuilding)
   const saved = bootstrap?.gatewayMAC || ""
+  const gatewayChanged = gatewayMAC.trim().toLowerCase() !== saved.toLowerCase()
+  const gatewayError = validateGatewayMAC(gatewayMAC)
+  useUnsavedChanges("gateway-mac", gatewayChanged)
 
   return (
     <div className="settings-view space-y-5">
@@ -74,13 +81,19 @@ export function SettingsView() {
               value={gatewayMAC}
               disabled={running}
               onChange={(event) => setGatewayMAC(event.target.value)}
+              aria-invalid={Boolean(gatewayError)}
             />
+            {gatewayError && (
+              <p className="text-xs text-destructive" role="alert">
+                {gatewayError}
+              </p>
+            )}
             <p className="text-xs text-muted-foreground">
               {saved ? `Pinned to ${saved}` : "Automatically learned when monitoring starts"}
             </p>
             <div className="flex gap-2 pt-2">
               <Button
-                disabled={running || gateway.isPending || gatewayMAC.trim().toLowerCase() === saved.toLowerCase()}
+                disabled={running || gateway.isPending || !gatewayChanged || Boolean(gatewayError)}
                 onClick={() => gateway.mutate(gatewayMAC.trim())}
               >
                 Save baseline
@@ -170,8 +183,32 @@ export function SettingsView() {
           </div>
         </CardContent>
       </Card>
+      <Card className="bg-card/60">
+        <CardHeader className="border-b">
+          <CardTitle>Application data</CardTitle>
+          <CardDescription>Open NetWarden’s local configuration and diagnostic locations</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap gap-2 py-6">
+          <Button variant="outline" disabled={openConfig.isPending} onClick={() => openConfig.mutate()}>
+            <FolderOpen />
+            Open configuration directory
+          </Button>
+          <Button variant="outline" disabled={openLogs.isPending} onClick={() => openLogs.mutate()}>
+            <FolderOpen />
+            Open logs directory
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   )
+}
+
+function validateGatewayMAC(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  if (!/^([0-9a-fA-F]{2})([:-][0-9a-fA-F]{2}){5}$/.test(trimmed))
+    return "Enter six hexadecimal pairs separated by colons or hyphens."
+  return undefined
 }
 
 function HistoryCount({ label, value }: { label: string; value?: number }) {

@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch"
 import { useRuntimeStatus } from "@/features/monitoring/monitoring.queries"
 import type { MonitoringSettings } from "@/lib/wails/types"
 import { useMonitoringSettings, useSetMonitoringSettings } from "./settings.queries"
+import { useUnsavedChanges } from "@/app/unsaved-changes"
 
 const defaults: MonitoringSettings = {
   scanIntervalSeconds: 10,
@@ -27,6 +28,13 @@ export function MonitoringSettingsCard() {
   }, [data])
   const running = Boolean(status?.Running || status?.Rebuilding)
   const changed = Boolean(data && JSON.stringify(form) !== JSON.stringify(data))
+  useUnsavedChanges("monitoring-settings", changed)
+  const errors = {
+    scanIntervalSeconds: validateRange(form.scanIntervalSeconds, 5, 3600, "Scan interval"),
+    offlineAfterSeconds: validateRange(form.offlineAfterSeconds, 30, 86400, "Offline timeout"),
+    historyRetentionDays: validateRange(form.historyRetentionDays, 1, 3650, "History retention"),
+  }
+  const valid = !Object.values(errors).some(Boolean)
   const numberField = (key: "scanIntervalSeconds" | "offlineAfterSeconds" | "historyRetentionDays", value: string) =>
     setForm((current) => ({ ...current, [key]: Number(value) }))
 
@@ -44,7 +52,11 @@ export function MonitoringSettingsCard() {
         </div>
       </CardHeader>
       <CardContent className="grid grid-cols-2 gap-x-16 gap-y-7 py-8">
-        <Setting label="Scan interval" description="Seconds between periodic discovery scans.">
+        <Setting
+          label="Scan interval"
+          description="Seconds between periodic discovery scans."
+          error={errors.scanIntervalSeconds}
+        >
           <Input
             type="number"
             min={5}
@@ -52,9 +64,14 @@ export function MonitoringSettingsCard() {
             disabled={running}
             value={form.scanIntervalSeconds}
             onChange={(event) => numberField("scanIntervalSeconds", event.target.value)}
+            aria-invalid={Boolean(errors.scanIntervalSeconds)}
           />
         </Setting>
-        <Setting label="Offline timeout" description="Seconds without an observation before a peer is marked offline.">
+        <Setting
+          label="Offline timeout"
+          description="Seconds without an observation before a peer is marked offline."
+          error={errors.offlineAfterSeconds}
+        >
           <Input
             type="number"
             min={30}
@@ -62,9 +79,14 @@ export function MonitoringSettingsCard() {
             disabled={running}
             value={form.offlineAfterSeconds}
             onChange={(event) => numberField("offlineAfterSeconds", event.target.value)}
+            aria-invalid={Boolean(errors.offlineAfterSeconds)}
           />
         </Setting>
-        <Setting label="History retention" description="Days to retain device and conflict history.">
+        <Setting
+          label="History retention"
+          description="Days to retain device and conflict history."
+          error={errors.historyRetentionDays}
+        >
           <Input
             type="number"
             min={1}
@@ -72,6 +94,7 @@ export function MonitoringSettingsCard() {
             disabled={running}
             value={form.historyRetentionDays}
             onChange={(event) => numberField("historyRetentionDays", event.target.value)}
+            aria-invalid={Boolean(errors.historyRetentionDays)}
           />
         </Setting>
         <div className="space-y-5">
@@ -100,7 +123,10 @@ export function MonitoringSettingsCard() {
             <Button variant="outline" disabled={!changed || mutation.isPending} onClick={() => data && setForm(data)}>
               Reset
             </Button>
-            <Button disabled={running || !changed || mutation.isPending} onClick={() => mutation.mutate(form)}>
+            <Button
+              disabled={running || !changed || !valid || mutation.isPending}
+              onClick={() => mutation.mutate(form)}
+            >
               Save monitoring settings
             </Button>
           </div>
@@ -110,14 +136,35 @@ export function MonitoringSettingsCard() {
   )
 }
 
-function Setting({ label, description, children }: { label: string; description: string; children: ReactNode }) {
+function Setting({
+  label,
+  description,
+  error,
+  children,
+}: {
+  label: string
+  description: string
+  error?: string
+  children: ReactNode
+}) {
   return (
     <div className="space-y-2">
       <Label>{label}</Label>
       <p className="text-xs text-muted-foreground">{description}</p>
       {children}
+      {error && (
+        <p className="text-xs text-destructive" role="alert">
+          {error}
+        </p>
+      )}
     </div>
   )
+}
+
+function validateRange(value: number, minimum: number, maximum: number, label: string) {
+  if (!Number.isFinite(value) || !Number.isInteger(value)) return `${label} must be a whole number.`
+  if (value < minimum || value > maximum) return `${label} must be between ${minimum} and ${maximum}.`
+  return undefined
 }
 function Toggle({
   label,

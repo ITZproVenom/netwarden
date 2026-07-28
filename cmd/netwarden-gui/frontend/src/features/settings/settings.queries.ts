@@ -25,7 +25,10 @@ export function useSetMonitoringSettings() {
   return useMutation({
     mutationFn: wailsClient.setMonitoringSettings,
     onSuccess: async () => {
-      await client.invalidateQueries({ queryKey: queryKeys.runtime })
+      await Promise.all([
+        client.invalidateQueries({ queryKey: queryKeys.runtime }),
+        client.invalidateQueries({ queryKey: queryKeys.monitoringSettings }),
+      ])
       toast.success("Monitoring settings saved")
     },
     onError: (error) => toast.error("Could not save monitoring settings", { description: errorMessage(error) }),
@@ -53,5 +56,12 @@ export function useClearHistory() {
       toast.success("History cleared")
     },
     onError: (error) => toast.error("Could not clear history", { description: errorMessage(error) }),
+  })
+}
+
+export function useOpenApplicationDirectory(kind: "configuration" | "logs") {
+  return useMutation({
+    mutationFn: kind === "configuration" ? wailsClient.openConfigurationDirectory : wailsClient.openLogDirectory,
+    onError: (error) => toast.error(`Could not open ${kind} directory`, { description: errorMessage(error) }),
   })
 }

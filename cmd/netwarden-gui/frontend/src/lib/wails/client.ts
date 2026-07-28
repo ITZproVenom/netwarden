@@ -38,4 +38,6 @@ export const wailsClient = {
   restoreControl: (ip: string, mac: string) => backend().RestoreControl(ip, mac) as Promise<void>,
   restoreAllControls: () => backend().RestoreAllControls() as Promise<void>,
   stopContinuousControl: (ip: string, mac: string) => backend().StopContinuousControl(ip, mac) as Promise<void>,
+  openConfigurationDirectory: () => backend().OpenConfigurationDirectory() as Promise<void>,
+  openLogDirectory: () => backend().OpenLogDirectory() as Promise<void>,
 }
