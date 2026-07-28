@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -216,8 +217,15 @@ func (a *GUIApp) Devices() ([]DeviceDTO, error) {
 			return nil, err
 		}
 		devices = snapshot.Devices
+		_, config, err := loadSettings()
+		if err != nil {
+			return nil, err
+		}
 		for index := range devices {
 			devices[index].Online = false
+			if nickname := config.Nicknames[devices[index].MAC]; nickname != "" {
+				devices[index].Name = nickname
+			}
 		}
 	}
 	result := make([]DeviceDTO, 0, len(devices))
@@ -281,22 +289,54 @@ func (a *GUIApp) SetPeriodicScanEnabled(enabled bool) error {
 }
 
 func (a *GUIApp) SetNickname(macAddress, nickname string) error {
-	supervisor, err := a.activeSupervisor()
-	if err != nil {
-		return err
-	}
 	mac, err := net.ParseMAC(macAddress)
 	if err != nil {
 		return err
 	}
-	current := supervisor.Current()
-	if current == nil {
-		return errors.New("runtime is not ready")
+	a.mu.RLock()
+	supervisor := a.supervisor
+	a.mu.RUnlock()
+	if supervisor != nil {
+		current := supervisor.Current()
+		if current == nil {
+			return errors.New("runtime is not ready")
+		}
+		if nickname == "" {
+			return current.RemoveNickname(mac)
+		}
+		return current.SetNickname(mac, nickname)
 	}
+
+	store, config, err := loadSettings()
+	if err != nil {
+		return err
+	}
+	key := strings.ToLower(mac.String())
+	previous := config.Nicknames[key]
 	if nickname == "" {
-		return current.RemoveNickname(mac)
+		if _, err := store.RemoveNickname(mac); err != nil {
+			return err
+		}
+	} else if _, err := store.SetNickname(mac, nickname); err != nil {
+		return err
 	}
-	return current.SetNickname(mac, nickname)
+	historyStore := history.NewStore(store.Path() + ".history.json")
+	snapshot, err := historyStore.Load()
+	if err != nil {
+		return err
+	}
+	for index := range snapshot.Devices {
+		if snapshot.Devices[index].MAC != key {
+			continue
+		}
+		if nickname != "" {
+			snapshot.Devices[index].Name = strings.TrimSpace(nickname)
+		} else if previous != "" && snapshot.Devices[index].Name == previous {
+			snapshot.Devices[index].Name = snapshot.Devices[index].IP.String()
+		}
+		break
+	}
+	return historyStore.Save(snapshot)
 }
 
 func (a *GUIApp) SetGatewayMAC(value string) (string, error) {
