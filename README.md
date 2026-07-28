@@ -55,8 +55,10 @@ The new implementation currently provides:
 - Periodic default-route checks that stop the one-shot runtime cleanly when the
   active network changes, allowing the application layer to rebuild it.
 
-The interactive TUI and GUI will be added after the capture and discovery path
-has been exercised across supported operating systems.
+The Wails v2 desktop GUI now has an initial network dashboard backed by the Go
+runtime. It supports interface selection, live device updates, manual and
+periodic discovery, and nickname editing. Packet capture still requires the
+same platform permissions as the CLI.
 
 The `disconnect`, `disconnect-all`, and `poison` CLI paths are reserved stubs.
 They resolve saved device state, filter eligible online peers against the
@@ -110,6 +112,16 @@ subnet, Ethernet destination, ARP operation, and target before transmission.
 go test ./...
 go vet ./...
 ```
+
+To run the desktop GUI, install the Wails v2 CLI and start its development
+server:
+
+```sh
+go install github.com/wailsapp/wails/v2/cmd/wails@latest
+make gui-dev
+```
+
+Use `make gui-build` to create a packaged desktop build.
 
 CI runs tests, vet, and builds on Linux, macOS, and Windows, with an additional
 Linux race-detector and formatting job.

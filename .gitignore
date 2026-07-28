@@ -485,6 +485,13 @@ $RECYCLE.BIN/
 *.swp
 # Go build and test output
 /netwarden
+/netwarden-gui
 /dist/
 /coverage.out
 *.test
+
+# Wails generated output (keep build metadata and frontend source tracked)
+/cmd/netwarden-gui/build/bin/
+/cmd/netwarden-gui/frontend/dist/
+/cmd/netwarden-gui/frontend/wailsjs/
+/cmd/netwarden-gui/build/
