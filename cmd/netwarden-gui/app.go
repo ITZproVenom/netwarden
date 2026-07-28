@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sort"
 	"sync"
@@ -23,6 +24,7 @@ type GUIApp struct {
 	ctx        context.Context
 	supervisor *coreapp.Supervisor
 	cancel     context.CancelFunc
+	activity   []ActivityDTO
 }
 
 type InterfaceDTO struct {
@@ -62,6 +64,21 @@ type ConflictDTO struct {
 	LastSeen   time.Time `json:"lastSeen"`
 	Count      uint64    `json:"count"`
 	Active     bool      `json:"active"`
+}
+
+type HistorySummaryDTO struct {
+	Devices   int       `json:"devices"`
+	Conflicts int       `json:"conflicts"`
+	Oldest    time.Time `json:"oldest,omitempty"`
+	Newest    time.Time `json:"newest,omitempty"`
+}
+
+type ActivityDTO struct {
+	At       time.Time `json:"at"`
+	Kind     string    `json:"kind"`
+	Severity string    `json:"severity"`
+	Title    string    `json:"title"`
+	Detail   string    `json:"detail,omitempty"`
 }
 
 func NewGUIApp() *GUIApp { return &GUIApp{} }
@@ -137,12 +154,14 @@ func (a *GUIApp) StartMonitoring(interfaceName string) error {
 		})
 	}, time.Second)
 	a.supervisor, a.cancel = supervisor, cancel
+	a.appendActivityLocked(ActivityDTO{At: time.Now().UTC(), Kind: "lifecycle", Severity: "info", Title: "Monitoring requested", Detail: selected.SystemName})
 	a.mu.Unlock()
 
 	go a.forwardEvents(ctx, supervisor)
 	go func() {
 		err := supervisor.Run(ctx)
 		if err != nil && !errors.Is(err, context.Canceled) {
+			a.recordActivity(ActivityDTO{At: time.Now().UTC(), Kind: "error", Severity: "error", Title: "Runtime stopped with an error", Detail: err.Error()})
 			runtime.EventsEmit(a.ctx, "runtime:error", err.Error())
 		}
 		a.mu.Lock()
@@ -303,6 +322,79 @@ func (a *GUIApp) SetGatewayMAC(value string) (string, error) {
 	return config.GatewayMAC, err
 }
 
+func (a *GUIApp) HistorySummary() (HistorySummaryDTO, error) {
+	snapshot, err := loadHistorySnapshot()
+	if err != nil {
+		return HistorySummaryDTO{}, err
+	}
+	summary := HistorySummaryDTO{Devices: len(snapshot.Devices), Conflicts: len(snapshot.Conflicts)}
+	include := func(first, last time.Time) {
+		if !first.IsZero() && (summary.Oldest.IsZero() || first.Before(summary.Oldest)) {
+			summary.Oldest = first
+		}
+		if last.After(summary.Newest) {
+			summary.Newest = last
+		}
+	}
+	for _, current := range snapshot.Devices {
+		include(current.FirstSeen, current.LastSeen)
+	}
+	for _, current := range snapshot.Conflicts {
+		include(current.FirstSeen, current.LastSeen)
+	}
+	return summary, nil
+}
+
+func (a *GUIApp) Activity() []ActivityDTO {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	result := make([]ActivityDTO, len(a.activity))
+	for index := range a.activity {
+		result[len(result)-1-index] = a.activity[index]
+	}
+	return result
+}
+
+func (a *GUIApp) PruneHistory(olderThanDays int) error {
+	if olderThanDays <= 0 {
+		return errors.New("history age must be a positive number of days")
+	}
+	if err := a.requireStopped("pruning history"); err != nil {
+		return err
+	}
+	store, _, err := loadSettings()
+	if err != nil {
+		return err
+	}
+	historyStore := history.NewStore(store.Path() + ".history.json")
+	snapshot, err := historyStore.Load()
+	if err != nil {
+		return err
+	}
+	return historyStore.Save(history.Prune(snapshot, time.Now().UTC().Add(-time.Duration(olderThanDays)*24*time.Hour)))
+}
+
+func (a *GUIApp) ClearHistory() error {
+	if err := a.requireStopped("clearing history"); err != nil {
+		return err
+	}
+	store, _, err := loadSettings()
+	if err != nil {
+		return err
+	}
+	return history.NewStore(store.Path() + ".history.json").Clear()
+}
+
+func (a *GUIApp) requireStopped(action string) error {
+	a.mu.RLock()
+	running := a.supervisor != nil
+	a.mu.RUnlock()
+	if running {
+		return fmt.Errorf("stop monitoring before %s", action)
+	}
+	return nil
+}
+
 func (a *GUIApp) activeSupervisor() (*coreapp.Supervisor, error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -318,9 +410,84 @@ func (a *GUIApp) forwardEvents(ctx context.Context, supervisor *coreapp.Supervis
 		case <-ctx.Done():
 			return
 		case event := <-supervisor.Events():
+			a.recordActivity(activityFromEvent(event))
 			runtime.EventsEmit(a.ctx, "network:event", map[string]any{"kind": int(event.Kind), "at": event.At})
 		}
 	}
+}
+
+func (a *GUIApp) recordActivity(event ActivityDTO) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.appendActivityLocked(event)
+}
+
+func (a *GUIApp) appendActivityLocked(event ActivityDTO) {
+	const maximumActivity = 250
+	if event.At.IsZero() {
+		event.At = time.Now().UTC()
+	}
+	a.activity = append(a.activity, event)
+	if len(a.activity) > maximumActivity {
+		copy(a.activity, a.activity[len(a.activity)-maximumActivity:])
+		a.activity = a.activity[:maximumActivity]
+	}
+}
+
+func activityFromEvent(event coreapp.Event) ActivityDTO {
+	activity := ActivityDTO{At: event.At, Kind: "runtime", Severity: "info", Title: "Runtime event"}
+	if event.Err != nil {
+		activity.Detail = event.Err.Error()
+	}
+	switch event.Kind {
+	case coreapp.EventDeviceObserved:
+		activity.Kind, activity.Title = "device", "Device discovered"
+	case coreapp.EventDeviceReturnedOnline:
+		activity.Kind, activity.Title = "device", "Device returned online"
+	case coreapp.EventDeviceAddressChanged:
+		activity.Kind, activity.Title = "device", "Device address changed"
+	case coreapp.EventDeviceIPConflict:
+		activity.Kind, activity.Severity, activity.Title = "device", "warning", "IP address conflict"
+	case coreapp.EventDeviceOffline:
+		activity.Kind, activity.Title = "device", "Device went offline"
+	case coreapp.EventDeviceRemoved:
+		activity.Kind, activity.Title = "device", "Stale device removed"
+	case coreapp.EventDeviceMetadataChanged:
+		activity.Kind, activity.Title = "device", "Device metadata updated"
+	case coreapp.EventIntegrityWarning:
+		activity.Kind, activity.Severity, activity.Title = "integrity", "warning", "Gateway integrity changed"
+	case coreapp.EventScanStarted:
+		activity.Kind, activity.Title = "scan", "Discovery scan started"
+	case coreapp.EventScanCompleted:
+		activity.Kind, activity.Title = "scan", "Discovery scan completed"
+	case coreapp.EventScanFailed:
+		activity.Kind, activity.Severity, activity.Title = "scan", "error", "Discovery scan failed"
+	case coreapp.EventRuntimeStarting:
+		activity.Title = "Runtime starting"
+	case coreapp.EventRuntimeStarted:
+		activity.Title = "Runtime started"
+	case coreapp.EventRuntimeStopping:
+		activity.Title = "Runtime stopping"
+	case coreapp.EventRuntimeStopped:
+		activity.Title = "Runtime stopped"
+	case coreapp.EventPersistenceFailed:
+		activity.Kind, activity.Severity, activity.Title = "persistence", "error", "History persistence failed"
+	case coreapp.EventRuntimeRebuilding:
+		activity.Kind, activity.Severity, activity.Title = "runtime", "warning", "Runtime rebuilding"
+	}
+	if event.Device != nil {
+		activity.Detail = fmt.Sprintf("%s · %s · %s", event.Device.Name, event.Device.IP, event.Device.MAC)
+	}
+	if event.Scan != nil {
+		activity.Detail = fmt.Sprintf("%s · %d addresses · %s", event.Scan.Prefix.Masked(), event.Scan.Probed, event.Scan.Duration.Round(time.Millisecond))
+		if event.Scan.Err != nil {
+			activity.Detail = event.Scan.Err.Error()
+		}
+	}
+	if event.Integrity != nil {
+		activity.Detail = fmt.Sprintf("gateway %s · expected %s · claimed %s", event.Integrity.GatewayIP, event.Integrity.ExpectedMAC, event.Integrity.ClaimedMAC)
+	}
+	return activity
 }
 
 func loadSettings() (*appconfig.Store, appconfig.Config, error) {

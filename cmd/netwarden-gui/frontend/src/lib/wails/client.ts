@@ -1,4 +1,4 @@
-import type { Bootstrap, Conflict, Device, RuntimeStatus } from "./types"
+import type { Activity, Bootstrap, Conflict, Device, HistorySummary, RuntimeStatus } from "./types"
 
 const backend = () => window.go.main.GUIApp
 
@@ -13,4 +13,8 @@ export const wailsClient = {
   setPeriodicScanEnabled: (enabled: boolean) => backend().SetPeriodicScanEnabled(enabled) as Promise<void>,
   setNickname: (mac: string, nickname: string) => backend().SetNickname(mac, nickname) as Promise<void>,
   setGatewayMAC: (mac: string) => backend().SetGatewayMAC(mac) as Promise<string>,
+  historySummary: () => backend().HistorySummary() as Promise<HistorySummary>,
+  pruneHistory: (olderThanDays: number) => backend().PruneHistory(olderThanDays) as Promise<void>,
+  clearHistory: () => backend().ClearHistory() as Promise<void>,
+  activity: () => backend().Activity() as Promise<Activity[]>,
 }

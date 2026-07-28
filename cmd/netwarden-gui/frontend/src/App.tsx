@@ -4,6 +4,7 @@ import { MonitoringOverview } from "@/features/monitoring/MonitoringOverview"
 import { DevicesView } from "@/features/devices/DevicesView"
 import { IntegrityView } from "@/features/integrity/IntegrityView"
 import { SettingsView } from "@/features/settings/SettingsView"
+import { DiagnosticsView } from "@/features/diagnostics/DiagnosticsView"
 
 export default function App() {
   const [view, setView] = useState<AppView>("devices")
@@ -13,6 +14,7 @@ export default function App() {
       <MonitoringOverview />
       {view === "devices" && <DevicesView />}
       {view === "integrity" && <IntegrityView />}
+      {view === "diagnostics" && <DiagnosticsView />}
       {view === "settings" && <SettingsView />}
     </AppShell>
   )
