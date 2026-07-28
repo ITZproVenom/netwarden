@@ -100,7 +100,15 @@ func (l *ControlLifecycle) Restore(ctx context.Context, target ControlTarget, re
 	} else {
 		l.mu.Lock()
 		delete(l.targets, controlTargetKey(target))
+		shouldRelease := len(l.targets) == 0 && !l.stopping
+		cancel := l.cancel
 		l.mu.Unlock()
+		if shouldRelease {
+			if cancel != nil {
+				cancel()
+			}
+			err = l.release()
+		}
 	}
 	l.emit(EventControlRestorationCompleted, ControlRestore, []ControlTarget{target}, state, errorReason(reason, err))
 	l.emit(EventControlTargetStateChanged, ControlRestore, []ControlTarget{target}, state, errorReason(reason, err))

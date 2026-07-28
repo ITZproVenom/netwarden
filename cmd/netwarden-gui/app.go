@@ -253,7 +253,9 @@ func (a *GUIApp) Devices() ([]DeviceDTO, error) {
 	}
 	result := make([]DeviceDTO, 0, len(devices))
 	activeControl := make(map[string]struct{})
+	continuousControl := false
 	if supervisor != nil && supervisor.Current() != nil {
+		continuousControl = supervisor.Status().ContinuousControl
 		for _, target := range supervisor.Current().ControlTargets() {
 			activeControl[strings.ToLower(target.MAC.String())] = struct{}{}
 		}
@@ -261,7 +263,11 @@ func (a *GUIApp) Devices() ([]DeviceDTO, error) {
 	for _, current := range devices {
 		item := deviceDTO(current)
 		if _, active := activeControl[strings.ToLower(current.MAC)]; active {
-			item.ControlState = "active"
+			if continuousControl {
+				item.ControlState = "continuous"
+			} else {
+				item.ControlState = "active"
+			}
 		}
 		result = append(result, item)
 	}

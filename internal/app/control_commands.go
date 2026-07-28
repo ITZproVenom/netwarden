@@ -131,9 +131,15 @@ func (c *ControlCommands) Restore(ctx context.Context, target ControlTarget) err
 }
 
 func (c *ControlCommands) RestoreAll(ctx context.Context) error {
-	targets, err := c.recoveryPeers()
-	if err != nil {
-		return err
+	var targets []ControlTarget
+	if c.deps.Lifecycle != nil {
+		targets = c.deps.Lifecycle.Snapshot()
+	} else {
+		var err error
+		targets, err = c.recoveryPeers()
+		if err != nil {
+			return err
+		}
 	}
 	if len(targets) == 0 {
 		return ErrNoEligibleTargets
@@ -153,17 +159,32 @@ func (c *ControlCommands) restore(ctx context.Context, operation ControlOperatio
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if c.controller == nil {
+	if c.controller == nil && c.deps.Lifecycle == nil {
 		return ErrControlControllerUnavailable
 	}
 	var restoreErrors []error
-	for _, target := range targets {
-		endpoint, err := controlEndpoint(target)
-		if err == nil {
-			err = c.controller.Restore(ctx, endpoint)
+	if c.deps.Lifecycle != nil {
+		var err error
+		switch operation {
+		case ControlRestore:
+			err = c.deps.Lifecycle.Restore(ctx, targets[0], "requested by user")
+		case ControlRestoreAll, ControlStopContinuous:
+			err = c.deps.Lifecycle.RestoreAll(ctx, "requested by user")
+		default:
+			err = errors.New("unsupported recovery operation")
 		}
 		if err != nil {
 			restoreErrors = append(restoreErrors, err)
+		}
+	} else {
+		for _, target := range targets {
+			endpoint, err := controlEndpoint(target)
+			if err == nil {
+				err = c.controller.Restore(ctx, endpoint)
+			}
+			if err != nil {
+				restoreErrors = append(restoreErrors, err)
+			}
 		}
 	}
 	outcome := "restored"

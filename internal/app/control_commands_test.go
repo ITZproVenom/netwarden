@@ -123,6 +123,27 @@ func TestRecoveryBypassesDisruptiveAuthorizationAndCallsRestore(t *testing.T) {
 	}
 }
 
+func TestRuntimeControlCommandsRestoreThroughOwnedLifecycle(t *testing.T) {
+	target := testControlTarget(t)
+	audit := &recordingControlAudit{}
+	deps := testControlDependencies(t, audit)
+	controller := &lifecycleController{run: make(chan struct{})}
+	lifecycle := NewControlLifecycle(nil)
+	if err := lifecycle.AdoptActive(ControlControllerLease{Controller: controller}, ControlDisconnect, []ControlTarget{target}, false); err != nil {
+		t.Fatal(err)
+	}
+	deps.Lifecycle = lifecycle
+	if err := NewControlCommands(nil, deps).Restore(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	if len(controller.restored) != 1 || len(lifecycle.Snapshot()) != 0 {
+		t.Fatalf("restored=%d active=%d", len(controller.restored), len(lifecycle.Snapshot()))
+	}
+	if len(audit.events) != 1 || audit.events[0].Operation != ControlRestore || audit.events[0].Outcome != "restored" {
+		t.Fatalf("unexpected audit: %#v", audit.events)
+	}
+}
+
 func testControlDependencies(t *testing.T, audit ControlAuditor) ControlDependencies {
 	t.Helper()
 	localMAC, _ := net.ParseMAC("02:00:00:00:00:10")
