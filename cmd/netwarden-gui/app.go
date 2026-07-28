@@ -11,6 +11,7 @@ import (
 	coreapp "github.com/amdzy/NetWarden/internal/app"
 	"github.com/amdzy/NetWarden/internal/capture/pcapdriver"
 	appconfig "github.com/amdzy/NetWarden/internal/config"
+	"github.com/amdzy/NetWarden/internal/defense"
 	"github.com/amdzy/NetWarden/internal/device"
 	"github.com/amdzy/NetWarden/internal/history"
 	"github.com/amdzy/NetWarden/internal/metadata"
@@ -35,6 +36,7 @@ type InterfaceDTO struct {
 type BootstrapDTO struct {
 	Interfaces        []InterfaceDTO `json:"interfaces"`
 	SelectedInterface string         `json:"selectedInterface"`
+	GatewayMAC        string         `json:"gatewayMAC"`
 }
 
 type StatusDTO struct {
@@ -78,7 +80,7 @@ func (a *GUIApp) Bootstrap() (BootstrapDTO, error) {
 	if err != nil {
 		return BootstrapDTO{}, err
 	}
-	result := BootstrapDTO{SelectedInterface: config.Interface, Interfaces: make([]InterfaceDTO, 0, len(interfaces))}
+	result := BootstrapDTO{SelectedInterface: config.Interface, GatewayMAC: config.GatewayMAC, Interfaces: make([]InterfaceDTO, 0, len(interfaces))}
 	for _, candidate := range interfaces {
 		item := InterfaceDTO{Name: candidate.Name, SystemName: candidate.SystemName, Description: candidate.Description, MAC: candidate.MAC.String()}
 		for _, prefix := range candidate.Prefixes {
@@ -163,7 +165,12 @@ func (a *GUIApp) Status() StatusDTO {
 	supervisor := a.supervisor
 	a.mu.RUnlock()
 	if supervisor == nil {
-		return StatusDTO{}
+		status := StatusDTO{}
+		if snapshot, err := loadHistorySnapshot(); err == nil {
+			status.ConflictCount = len(snapshot.Conflicts)
+			status.DeviceCount = len(snapshot.Devices)
+		}
+		return status
 	}
 	status := supervisor.Status()
 	if supervisor.Current() == nil {
@@ -172,14 +179,23 @@ func (a *GUIApp) Status() StatusDTO {
 	return StatusDTO{Status: status, ConflictCount: len(supervisor.ConflictHistory())}
 }
 
-func (a *GUIApp) Devices() []DeviceDTO {
+func (a *GUIApp) Devices() ([]DeviceDTO, error) {
 	a.mu.RLock()
 	supervisor := a.supervisor
 	a.mu.RUnlock()
-	if supervisor == nil {
-		return []DeviceDTO{}
+	var devices []device.Device
+	if supervisor != nil && supervisor.Current() != nil {
+		devices = supervisor.Devices()
+	} else {
+		snapshot, err := loadHistorySnapshot()
+		if err != nil {
+			return nil, err
+		}
+		devices = snapshot.Devices
+		for index := range devices {
+			devices[index].Online = false
+		}
 	}
-	devices := supervisor.Devices()
 	result := make([]DeviceDTO, 0, len(devices))
 	for _, current := range devices {
 		result = append(result, deviceDTO(current))
@@ -193,17 +209,23 @@ func (a *GUIApp) Devices() []DeviceDTO {
 		}
 		return result[i].IP < result[j].IP
 	})
-	return result
+	return result, nil
 }
 
-func (a *GUIApp) Conflicts() []ConflictDTO {
+func (a *GUIApp) Conflicts() ([]ConflictDTO, error) {
 	a.mu.RLock()
 	supervisor := a.supervisor
 	a.mu.RUnlock()
-	if supervisor == nil {
-		return []ConflictDTO{}
+	var conflicts []defense.Conflict
+	if supervisor != nil && supervisor.Current() != nil {
+		conflicts = supervisor.ConflictHistory()
+	} else {
+		snapshot, err := loadHistorySnapshot()
+		if err != nil {
+			return nil, err
+		}
+		conflicts = snapshot.Conflicts
 	}
-	conflicts := supervisor.ConflictHistory()
 	result := make([]ConflictDTO, 0, len(conflicts))
 	for _, conflict := range conflicts {
 		result = append(result, ConflictDTO{
@@ -213,7 +235,7 @@ func (a *GUIApp) Conflicts() []ConflictDTO {
 		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].LastSeen.After(result[j].LastSeen) })
-	return result
+	return result, nil
 }
 
 func (a *GUIApp) ScanNow() error {
@@ -253,6 +275,29 @@ func (a *GUIApp) SetNickname(macAddress, nickname string) error {
 	return current.SetNickname(mac, nickname)
 }
 
+func (a *GUIApp) SetGatewayMAC(value string) (string, error) {
+	a.mu.RLock()
+	running := a.supervisor != nil
+	a.mu.RUnlock()
+	if running {
+		return "", errors.New("stop monitoring before changing the trusted gateway identity")
+	}
+	store, _, err := loadSettings()
+	if err != nil {
+		return "", err
+	}
+	if value == "" {
+		_, err = store.RemoveGatewayMAC()
+		return "", err
+	}
+	mac, err := net.ParseMAC(value)
+	if err != nil || len(mac) != 6 {
+		return "", errors.New("enter a valid 6-byte gateway MAC address")
+	}
+	config, err := store.SetGatewayMAC(mac)
+	return config.GatewayMAC, err
+}
+
 func (a *GUIApp) activeSupervisor() (*coreapp.Supervisor, error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -281,6 +326,14 @@ func loadSettings() (*appconfig.Store, appconfig.Config, error) {
 	store := appconfig.NewStore(path)
 	config, err := store.Load()
 	return store, config, err
+}
+
+func loadHistorySnapshot() (history.Snapshot, error) {
+	store, _, err := loadSettings()
+	if err != nil {
+		return history.Snapshot{}, err
+	}
+	return history.NewStore(store.Path() + ".history.json").Load()
 }
 
 func selectInterface(name string) (pcapdriver.Interface, error) {
