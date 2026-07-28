@@ -2,6 +2,8 @@ package main
 
 import (
 	"embed"
+	"fmt"
+	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -12,6 +14,13 @@ import (
 var assets embed.FS
 
 func main() {
+	if handled, err := runHelperMode(); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "NetWarden helper:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	application := NewGUIApp()
 	if err := wails.Run(&options.App{
 		Title:            "NetWarden",

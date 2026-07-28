@@ -41,3 +41,16 @@ func TestARPProberBuildsBroadcastRequest(t *testing.T) {
 		t.Fatalf("destination MAC = %s", got)
 	}
 }
+
+func TestARPProberSkipsLocalAddress(t *testing.T) {
+	driver := &sendingDriver{}
+	mac, _ := net.ParseMAC("02:00:00:00:00:01")
+	localIP := netip.MustParseAddr("192.168.1.10")
+	prober := NewARPProber(driver, mac, localIP)
+	if err := prober.Probe(context.Background(), localIP); err != nil {
+		t.Fatal(err)
+	}
+	if driver.frame != nil {
+		t.Fatalf("sent a self-targeted ARP frame: %x", driver.frame)
+	}
+}

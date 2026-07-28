@@ -58,7 +58,10 @@ The new implementation currently provides:
 The Wails v2 desktop GUI now has an initial network dashboard backed by the Go
 runtime. It supports interface selection, live device updates, manual and
 periodic discovery, and nickname editing. Packet capture still requires the
-same platform permissions as the CLI.
+same platform permissions as the CLI. On macOS the GUI requests administrator
+approval for its restricted capture-helper subprocess while the desktop app
+continues to run as the signed-in user. Other platforms currently retain the
+direct-capture behavior.
 
 The `disconnect`, `disconnect-all`, and `poison` CLI paths are reserved stubs.
 They resolve saved device state, filter eligible online peers against the

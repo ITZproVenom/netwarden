@@ -28,6 +28,12 @@ func NewARPProber(driver capture.Driver, mac net.HardwareAddr, ip netip.Addr) *A
 }
 
 func (p *ARPProber) Probe(ctx context.Context, target netip.Addr) error {
+	// A subnet scan must not probe the address owned by its own sender. Apart
+	// from being unnecessary, the privileged helper intentionally rejects
+	// self-targeted requests as outside its narrow discovery contract.
+	if target == p.ip {
+		return nil
+	}
 	frame, err := packet.MarshalARP(broadcastMAC, p.mac, packet.ARP{
 		Operation: packet.ARPOpRequest,
 		SenderMAC: p.mac,

@@ -27,3 +27,7 @@ npm run build
 
 Add shadcn primitives selectively with `npx shadcn@latest add COMPONENT` and
 commit the generated component source.
+
+On macOS, start the GUI as the normal user. NetWarden prompts for administrator
+approval only when monitoring starts and runs packet access through the
+validated capture-helper protocol.

@@ -118,6 +118,11 @@ func (a *GUIApp) StartMonitoring(interfaceName string) error {
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
 	dependencies := coreapp.DefaultDependencies()
+	if err := configureCapture(ctx, &dependencies); err != nil {
+		cancel()
+		a.mu.Unlock()
+		return err
+	}
 	dependencies.Metadata = resolver
 	dependencies.Settings = store
 	dependencies.History = history.NewStore(store.Path() + ".history.json")

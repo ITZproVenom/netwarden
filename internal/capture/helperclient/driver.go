@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/amdzy/NetWarden/internal/capture"
@@ -25,10 +27,18 @@ type Driver struct {
 }
 
 func Open(ctx context.Context, executable string, arguments ...string) (*Driver, error) {
+	return OpenWithEnv(ctx, executable, nil, arguments...)
+}
+
+// OpenWithEnv starts a helper with narrowly scoped environment overrides. It
+// is used by GUI elevation mechanisms such as sudo askpass without changing
+// the capture protocol or inheriting duplicate values for the same key.
+func OpenWithEnv(ctx context.Context, executable string, environment map[string]string, arguments ...string) (*Driver, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	command := exec.Command(executable, arguments...)
+	command.Env = mergeEnvironment(os.Environ(), environment)
 	input, err := command.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -52,6 +62,21 @@ func Open(ctx context.Context, executable string, arguments ...string) (*Driver,
 	driver := &Driver{command: command, input: input, frames: make(chan capture.Frame, 64), errors: make(chan error, 1)}
 	go driver.read(decoder)
 	return driver, nil
+}
+
+func mergeEnvironment(base []string, overrides map[string]string) []string {
+	result := make([]string, 0, len(base)+len(overrides))
+	for _, entry := range base {
+		key, _, found := strings.Cut(entry, "=")
+		if _, replaced := overrides[key]; found && replaced {
+			continue
+		}
+		result = append(result, entry)
+	}
+	for key, value := range overrides {
+		result = append(result, key+"="+value)
+	}
+	return result
 }
 
 func (d *Driver) read(decoder *json.Decoder) {
