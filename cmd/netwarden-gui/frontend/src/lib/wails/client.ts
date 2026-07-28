@@ -1,4 +1,4 @@
-import type { Activity, Bootstrap, Conflict, Device, HistorySummary, RuntimeStatus } from "./types"
+import type { Activity, Bootstrap, Conflict, Device, HistorySummary, MonitoringSettings, RuntimeStatus } from "./types"
 
 const backend = () => window.go.main.GUIApp
 
@@ -17,4 +17,6 @@ export const wailsClient = {
   pruneHistory: (olderThanDays: number) => backend().PruneHistory(olderThanDays) as Promise<void>,
   clearHistory: () => backend().ClearHistory() as Promise<void>,
   activity: () => backend().Activity() as Promise<Activity[]>,
+  monitoringSettings: () => backend().MonitoringSettings() as Promise<MonitoringSettings>,
+  setMonitoringSettings: (settings: MonitoringSettings) => backend().SetMonitoringSettings(settings) as Promise<void>,
 }

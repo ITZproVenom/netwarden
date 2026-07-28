@@ -84,7 +84,19 @@ type ActivityDTO struct {
 
 func NewGUIApp() *GUIApp { return &GUIApp{} }
 
-func (a *GUIApp) startup(ctx context.Context) { a.ctx = ctx }
+func (a *GUIApp) startup(ctx context.Context) {
+	a.ctx = ctx
+	_, config, err := loadSettings()
+	if err != nil || !config.AutoStart || config.Interface == "" {
+		return
+	}
+	go func() {
+		if err := a.StartMonitoring(config.Interface); err != nil {
+			a.recordActivity(ActivityDTO{At: time.Now().UTC(), Kind: "error", Severity: "error", Title: "Automatic monitoring failed", Detail: err.Error()})
+			runtime.EventsEmit(a.ctx, "runtime:error", err.Error())
+		}
+	}()
+}
 
 func (a *GUIApp) shutdown(context.Context) { _ = a.StopMonitoring() }
 
@@ -145,14 +157,24 @@ func (a *GUIApp) StartMonitoring(interfaceName string) error {
 	dependencies.Settings = store
 	dependencies.History = history.NewStore(store.Path() + ".history.json")
 	supervisor := coreapp.NewSupervisor(func(factoryContext context.Context) (*coreapp.Runtime, error) {
+		_, currentConfig, err := loadSettings()
+		if err != nil {
+			return nil, err
+		}
 		fresh, err := selectInterface(selected.Name)
 		if err != nil {
 			return nil, err
 		}
-		return coreapp.Bootstrap(factoryContext, dependencies, coreapp.Config{
-			Interface: fresh, ScanInterval: 10 * time.Second, ProbeDelay: 2 * time.Millisecond,
-			MaximumHosts: 4094, PinnedGatewayMAC: storedMAC(config.GatewayMAC),
+		runtime, err := coreapp.Bootstrap(factoryContext, dependencies, coreapp.Config{
+			Interface: fresh, ScanInterval: time.Duration(currentConfig.ScanIntervalSeconds) * time.Second,
+			OfflineAfter:     time.Duration(currentConfig.OfflineAfterSeconds) * time.Second,
+			HistoryRetention: time.Duration(currentConfig.HistoryRetentionDays) * 24 * time.Hour,
+			ProbeDelay:       2 * time.Millisecond, MaximumHosts: 4094, PinnedGatewayMAC: storedMAC(currentConfig.GatewayMAC),
 		})
+		if err == nil {
+			runtime.SetPeriodicScanEnabled(currentConfig.PeriodicDiscovery)
+		}
+		return runtime, err
 	}, time.Second)
 	a.supervisor, a.cancel = supervisor, cancel
 	a.appendActivityLocked(ActivityDTO{At: time.Now().UTC(), Kind: "lifecycle", Severity: "info", Title: "Monitoring requested", Detail: selected.SystemName})
@@ -285,7 +307,36 @@ func (a *GUIApp) SetPeriodicScanEnabled(enabled bool) error {
 	if err != nil {
 		return err
 	}
+	store, config, err := loadSettings()
+	if err != nil {
+		return err
+	}
+	settings := config.MonitoringSettings()
+	settings.PeriodicDiscovery = enabled
+	if _, err := store.SetMonitoringSettings(settings); err != nil {
+		return err
+	}
 	return supervisor.SetPeriodicScanEnabled(enabled)
+}
+
+func (a *GUIApp) MonitoringSettings() (appconfig.MonitoringSettings, error) {
+	_, config, err := loadSettings()
+	if err != nil {
+		return appconfig.MonitoringSettings{}, err
+	}
+	return config.MonitoringSettings(), nil
+}
+
+func (a *GUIApp) SetMonitoringSettings(settings appconfig.MonitoringSettings) error {
+	if err := a.requireStopped("changing monitoring settings"); err != nil {
+		return err
+	}
+	store, _, err := loadSettings()
+	if err != nil {
+		return err
+	}
+	_, err = store.SetMonitoringSettings(settings)
+	return err
 }
 
 func (a *GUIApp) SetNickname(macAddress, nickname string) error {

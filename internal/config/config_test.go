@@ -84,6 +84,32 @@ func TestStoreMigratesVersionOneConfiguration(t *testing.T) {
 	if config.Version != CurrentVersion || config.Interface != "en0" || config.Nicknames["02:00:00:00:00:01"] != "Printer" {
 		t.Fatalf("unexpected migrated config: %#v", config)
 	}
+	if config.ScanIntervalSeconds != DefaultScanIntervalSeconds || !config.PeriodicDiscovery {
+		t.Fatalf("monitoring defaults were not migrated: %#v", config)
+	}
+}
+
+func TestStorePersistsMonitoringSettings(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	want := MonitoringSettings{ScanIntervalSeconds: 30, OfflineAfterSeconds: 120, HistoryRetentionDays: 180, AutoStart: true, PeriodicDiscovery: false}
+	if _, err := store.SetMonitoringSettings(want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MonitoringSettings() != want {
+		t.Fatalf("got %#v, want %#v", got.MonitoringSettings(), want)
+	}
+}
+
+func TestStoreRejectsInvalidMonitoringSettings(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	_, err := store.SetMonitoringSettings(MonitoringSettings{ScanIntervalSeconds: 1, OfflineAfterSeconds: 60, HistoryRetentionDays: 90})
+	if err == nil {
+		t.Fatal("expected invalid scan interval error")
+	}
 }
 
 func TestSetNicknameValidatesInput(t *testing.T) {

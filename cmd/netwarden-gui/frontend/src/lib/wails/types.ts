@@ -5,3 +5,4 @@ export type Conflict = { gatewayIP: string; claimedMAC: string; firstSeen: strin
 export type RuntimeStatus = { Running: boolean; Stopped: boolean; Scanning: boolean; PeriodicScanEnabled: boolean; DeviceCount: number; DroppedEvents: number; Generation: number; RestartCount: number; Rebuilding: boolean; LastRestartReason: string; SupervisorDroppedEvents: number; ConflictCount: number; LastPersistenceError: string }
 export type HistorySummary = { devices: number; conflicts: number; oldest?: string; newest?: string }
 export type Activity = { at: string; kind: string; severity: "info" | "warning" | "error"; title: string; detail?: string }
+export type MonitoringSettings = { scanIntervalSeconds: number; offlineAfterSeconds: number; historyRetentionDays: number; autoStart: boolean; periodicDiscovery: boolean }

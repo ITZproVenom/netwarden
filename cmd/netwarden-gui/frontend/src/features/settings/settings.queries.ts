@@ -9,6 +9,12 @@ export function useSetGatewayMAC() {
 }
 
 export const useHistorySummary = () => useQuery({ queryKey: queryKeys.history, queryFn: wailsClient.historySummary })
+export const useMonitoringSettings = () => useQuery({ queryKey: queryKeys.monitoringSettings, queryFn: wailsClient.monitoringSettings })
+
+export function useSetMonitoringSettings() {
+  const client = useQueryClient()
+  return useMutation({ mutationFn: wailsClient.setMonitoringSettings, onSuccess: async () => { await client.invalidateQueries({ queryKey: queryKeys.runtime }); toast.success("Monitoring settings saved") }, onError: error => toast.error("Could not save monitoring settings", { description: String(error) }) })
+}
 
 export function usePruneHistory() {
   const client = useQueryClient()

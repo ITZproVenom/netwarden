@@ -6,4 +6,5 @@ export const queryKeys = {
   conflicts: ["runtime", "conflicts"] as const,
   history: ["runtime", "history"] as const,
   activity: ["runtime", "activity"] as const,
+  monitoringSettings: ["runtime", "monitoring-settings"] as const,
 }

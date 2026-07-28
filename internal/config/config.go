@@ -13,7 +13,13 @@ import (
 	"sync"
 )
 
-const CurrentVersion = 2
+const CurrentVersion = 3
+
+const (
+	DefaultScanIntervalSeconds  = 10
+	DefaultOfflineAfterSeconds  = 60
+	DefaultHistoryRetentionDays = 90
+)
 
 var (
 	ErrUnsupportedVersion = errors.New("unsupported configuration version")
@@ -23,10 +29,37 @@ var (
 )
 
 type Config struct {
-	Version    int               `json:"version"`
-	Interface  string            `json:"interface,omitempty"`
-	GatewayMAC string            `json:"gateway_mac,omitempty"`
-	Nicknames  map[string]string `json:"nicknames,omitempty"`
+	Version              int               `json:"version"`
+	Interface            string            `json:"interface,omitempty"`
+	GatewayMAC           string            `json:"gateway_mac,omitempty"`
+	Nicknames            map[string]string `json:"nicknames,omitempty"`
+	ScanIntervalSeconds  int               `json:"scan_interval_seconds"`
+	OfflineAfterSeconds  int               `json:"offline_after_seconds"`
+	HistoryRetentionDays int               `json:"history_retention_days"`
+	AutoStart            bool              `json:"auto_start,omitempty"`
+	PeriodicDiscovery    bool              `json:"periodic_discovery"`
+}
+
+type MonitoringSettings struct {
+	ScanIntervalSeconds  int  `json:"scanIntervalSeconds"`
+	OfflineAfterSeconds  int  `json:"offlineAfterSeconds"`
+	HistoryRetentionDays int  `json:"historyRetentionDays"`
+	AutoStart            bool `json:"autoStart"`
+	PeriodicDiscovery    bool `json:"periodicDiscovery"`
+}
+
+func (s *Store) SetMonitoringSettings(settings MonitoringSettings) (Config, error) {
+	if err := validateMonitoringSettings(settings); err != nil {
+		return Config{}, err
+	}
+	return s.update(func(config *Config) error {
+		config.ScanIntervalSeconds = settings.ScanIntervalSeconds
+		config.OfflineAfterSeconds = settings.OfflineAfterSeconds
+		config.HistoryRetentionDays = settings.HistoryRetentionDays
+		config.AutoStart = settings.AutoStart
+		config.PeriodicDiscovery = settings.PeriodicDiscovery
+		return nil
+	})
 }
 
 func (s *Store) SetGatewayMAC(mac net.HardwareAddr) (Config, error) {
@@ -174,7 +207,31 @@ func (s *Store) load() (Config, error) {
 		}
 		config.GatewayMAC = strings.ToLower(mac.String())
 	}
+	if err := validateMonitoringSettings(config.MonitoringSettings()); err != nil {
+		return Config{}, fmt.Errorf("%w: %v", ErrCorrupt, err)
+	}
 	return clone(config), nil
+}
+
+func (config Config) MonitoringSettings() MonitoringSettings {
+	return MonitoringSettings{
+		ScanIntervalSeconds: config.ScanIntervalSeconds, OfflineAfterSeconds: config.OfflineAfterSeconds,
+		HistoryRetentionDays: config.HistoryRetentionDays, AutoStart: config.AutoStart,
+		PeriodicDiscovery: config.PeriodicDiscovery,
+	}
+}
+
+func validateMonitoringSettings(settings MonitoringSettings) error {
+	if settings.ScanIntervalSeconds < 5 || settings.ScanIntervalSeconds > 3600 {
+		return errors.New("scan interval must be between 5 and 3600 seconds")
+	}
+	if settings.OfflineAfterSeconds < 30 || settings.OfflineAfterSeconds > 86400 {
+		return errors.New("offline timeout must be between 30 and 86400 seconds")
+	}
+	if settings.HistoryRetentionDays < 1 || settings.HistoryRetentionDays > 3650 {
+		return errors.New("history retention must be between 1 and 3650 days")
+	}
+	return nil
 }
 
 func migrate(config *Config) error {
@@ -183,6 +240,13 @@ func migrate(config *Config) error {
 		// Version 2 formalizes the optional gateway baseline and retains all
 		// version-1 fields without changing their meaning.
 		config.Version = 2
+		return nil
+	case 2:
+		config.ScanIntervalSeconds = DefaultScanIntervalSeconds
+		config.OfflineAfterSeconds = DefaultOfflineAfterSeconds
+		config.HistoryRetentionDays = DefaultHistoryRetentionDays
+		config.PeriodicDiscovery = true
+		config.Version = 3
 		return nil
 	default:
 		return fmt.Errorf("%w: no migration from version %d", ErrUnsupportedVersion, config.Version)
@@ -225,7 +289,13 @@ func (s *Store) save(config Config) error {
 }
 
 func defaultConfig() Config {
-	return Config{Version: CurrentVersion, Nicknames: make(map[string]string)}
+	return Config{
+		Version: CurrentVersion, Nicknames: make(map[string]string),
+		ScanIntervalSeconds:  DefaultScanIntervalSeconds,
+		OfflineAfterSeconds:  DefaultOfflineAfterSeconds,
+		HistoryRetentionDays: DefaultHistoryRetentionDays,
+		PeriodicDiscovery:    true,
+	}
 }
 
 func clone(config Config) Config {
