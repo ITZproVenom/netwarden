@@ -3,9 +3,16 @@ import { wailsClient } from "./client"
 
 describe("wailsClient", () => {
   const backend = {
-    Bootstrap: vi.fn(), Status: vi.fn(), Devices: vi.fn(), Conflicts: vi.fn(),
-    StartMonitoring: vi.fn(), StopMonitoring: vi.fn(), ScanNow: vi.fn(),
-    SetPeriodicScanEnabled: vi.fn(), SetNickname: vi.fn(), SetGatewayMAC: vi.fn(),
+    Bootstrap: vi.fn(),
+    Status: vi.fn(),
+    Devices: vi.fn(),
+    Conflicts: vi.fn(),
+    StartMonitoring: vi.fn(),
+    StopMonitoring: vi.fn(),
+    ScanNow: vi.fn(),
+    SetPeriodicScanEnabled: vi.fn(),
+    SetNickname: vi.fn(),
+    SetGatewayMAC: vi.fn(),
   }
 
   beforeEach(() => {

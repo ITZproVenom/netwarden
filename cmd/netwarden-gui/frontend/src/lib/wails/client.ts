@@ -1,6 +1,19 @@
-import type { Activity, Bootstrap, Conflict, ControlAudit, Device, HistorySummary, MonitoringSettings, RuntimeStatus } from "./types"
+import type {
+  Activity,
+  Bootstrap,
+  Conflict,
+  ControlAudit,
+  Device,
+  HistorySummary,
+  MonitoringSettings,
+  RuntimeStatus,
+} from "./types"
 
-const backend = () => window.go.main.GUIApp
+const backend = () => {
+  const app = window.go?.main?.GUIApp
+  if (!app) throw new Error("Wails backend is unavailable in this browser session.")
+  return app
+}
 
 export const wailsClient = {
   bootstrap: () => backend().Bootstrap() as Promise<Bootstrap>,

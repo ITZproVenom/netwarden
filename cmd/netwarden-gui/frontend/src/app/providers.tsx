@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/reac
 import { toast } from "sonner"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { ThemeProvider } from "next-themes"
 import { subscribeRuntimeEvents } from "@/lib/wails/events"
 import { queryKeys } from "@/lib/query-keys"
 
@@ -10,13 +11,30 @@ const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: 2_
 
 function RuntimeEventBridge() {
   const client = useQueryClient()
-  useEffect(() => subscribeRuntimeEvents({
-    onChange: () => client.invalidateQueries({ queryKey: queryKeys.runtime }),
-    onError: message => { toast.error("Runtime error", { description: message }); client.invalidateQueries({ queryKey: queryKeys.runtime }) },
-  }), [client])
+  useEffect(
+    () =>
+      subscribeRuntimeEvents({
+        onChange: () => client.invalidateQueries({ queryKey: queryKeys.runtime }),
+        onError: (message) => {
+          toast.error("Runtime error", { description: message })
+          client.invalidateQueries({ queryKey: queryKeys.runtime })
+        },
+      }),
+    [client],
+  )
   return null
 }
 
 export function AppProviders({ children }: { children: ReactNode }) {
-  return <QueryClientProvider client={queryClient}><TooltipProvider><RuntimeEventBridge />{children}<Toaster richColors position="bottom-right" /></TooltipProvider></QueryClientProvider>
+  return (
+    <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <RuntimeEventBridge />
+          {children}
+          <Toaster richColors position="bottom-right" />
+        </TooltipProvider>
+      </QueryClientProvider>
+    </ThemeProvider>
+  )
 }
