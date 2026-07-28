@@ -24,6 +24,16 @@ func (a *recordingControlAudit) Record(_ context.Context, event ControlAuditEven
 	return nil
 }
 
+type failSecondControlAudit struct{ calls int }
+
+func (a *failSecondControlAudit) Record(context.Context, ControlAuditEvent) error {
+	a.calls++
+	if a.calls == 2 {
+		return errors.New("audit storage failed")
+	}
+	return nil
+}
+
 type recoverySender struct{ sends int }
 
 func (s *recoverySender) Send(ctx context.Context, _ []byte) error {
@@ -40,31 +50,61 @@ type recordingControllerFactory struct {
 	closed     int
 }
 
+type transactionalControlController struct {
+	isolateCalls int
+	failAt       int
+	restored     []control.Endpoint
+}
+
+func (c *transactionalControlController) Isolate(_ context.Context, _ control.Endpoint) error {
+	c.isolateCalls++
+	if c.isolateCalls == c.failAt {
+		return errors.New("send failed")
+	}
+	return nil
+}
+
+func (c *transactionalControlController) Restore(_ context.Context, target control.Endpoint) error {
+	c.restored = append(c.restored, target)
+	return nil
+}
+
+func (c *transactionalControlController) Run(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func (f *recordingControllerFactory) Prepare(context.Context, ControlRequest, ControlScope) (ControlControllerLease, error) {
 	f.prepared++
 	return ControlControllerLease{Controller: f.controller, Close: func() error { f.closed++; return nil }}, nil
 }
 
-func TestControlCommandsReachAuditedNotImplementedBoundary(t *testing.T) {
+func TestControlCommandsActivateAndAuditSupportedOperations(t *testing.T) {
 	target := testControlTarget(t)
-	audit := &recordingControlAudit{}
-	deps := testControlDependencies(t, audit)
-	commands := NewControlCommands(testActiveController(t, deps), deps)
-	for _, execute := range []func() error{
-		func() error { return commands.Disconnect(context.Background(), target) },
-		func() error { return commands.DisconnectAll(context.Background()) },
-		func() error { return commands.StartContinuous(context.Background(), target) },
-	} {
-		if err := execute(); !errors.Is(err, ErrActiveControlNotImplemented) {
-			t.Fatalf("got %v, want ErrActiveControlNotImplemented", err)
+	operations := []struct {
+		operation ControlOperation
+		execute   func(*ControlCommands) error
+	}{
+		{ControlDisconnect, func(commands *ControlCommands) error { return commands.Disconnect(context.Background(), target) }},
+		{ControlDisconnectAll, func(commands *ControlCommands) error { return commands.DisconnectAll(context.Background()) }},
+		{ControlContinuous, func(commands *ControlCommands) error { return commands.StartContinuous(context.Background(), target) }},
+	}
+	for _, test := range operations {
+		audit := &recordingControlAudit{}
+		deps := testControlDependencies(t, audit)
+		deps.Lifecycle = NewControlLifecycle(nil)
+		commands := NewControlCommands(testActiveController(t, deps), deps)
+		if err := test.execute(commands); err != nil {
+			t.Fatalf("%s: %v", test.operation, err)
 		}
-	}
-	if len(audit.events) != 3 {
-		t.Fatalf("audit events = %d, want 3", len(audit.events))
-	}
-	for _, event := range audit.events {
-		if event.Outcome != "ready_not_implemented" || len(event.Targets) != 1 {
-			t.Fatalf("unexpected audit event: %#v", event)
+		if len(deps.Lifecycle.Snapshot()) != 1 {
+			t.Fatalf("%s active targets = %d", test.operation, len(deps.Lifecycle.Snapshot()))
+		}
+		if len(audit.events) != 2 || audit.events[0].Outcome != "requested" || audit.events[1].Outcome != "active" {
+			t.Fatalf("%s audit events: %#v", test.operation, audit.events)
+		}
+		if err := deps.Lifecycle.RestoreAll(context.Background(), "test cleanup"); err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
 		}
 	}
 }
@@ -72,15 +112,16 @@ func TestControlCommandsReachAuditedNotImplementedBoundary(t *testing.T) {
 func TestControlCommandsFilterIneligibleDevices(t *testing.T) {
 	audit := &recordingControlAudit{}
 	deps := testControlDependencies(t, audit)
+	deps.Lifecycle = NewControlLifecycle(nil)
 	deps.Devices = controlTestDevices{values: append(deps.Devices.Snapshot(),
 		device.Device{IP: netip.MustParseAddr("192.168.1.30"), MAC: "02:00:00:00:00:30", Role: device.RolePeer, Online: false},
 		device.Device{IP: deps.Scope.GatewayIP, MAC: "00:00:0c:00:00:01", Role: device.RoleGateway, Online: true},
 	)}
 	err := NewControlCommands(testActiveController(t, deps), deps).DisconnectAll(context.Background())
-	if !errors.Is(err, ErrActiveControlNotImplemented) {
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(audit.events) != 1 || len(audit.events[0].Targets) != 1 {
+	if len(audit.events) != 2 || len(audit.events[0].Targets) != 1 || len(audit.events[1].Targets) != 1 {
 		t.Fatalf("unexpected targets: %#v", audit.events)
 	}
 }
@@ -88,14 +129,21 @@ func TestControlCommandsFilterIneligibleDevices(t *testing.T) {
 func TestControlCommandsPrepareAndReleaseControllerBeforeExecutionBoundary(t *testing.T) {
 	audit := &recordingControlAudit{}
 	deps := testControlDependencies(t, audit)
+	deps.Lifecycle = NewControlLifecycle(nil)
 	factory := &recordingControllerFactory{controller: testActiveController(t, deps)}
 	deps.ControllerFactory = factory
 	err := NewControlCommands(nil, deps).Disconnect(context.Background(), testControlTarget(t))
-	if !errors.Is(err, ErrActiveControlNotImplemented) {
+	if err != nil {
 		t.Fatalf("got %v", err)
 	}
-	if factory.prepared != 1 || factory.closed != 1 {
+	if factory.prepared != 1 || factory.closed != 0 {
 		t.Fatalf("factory prepared=%d closed=%d", factory.prepared, factory.closed)
+	}
+	if err := deps.Lifecycle.RestoreAll(context.Background(), "test cleanup"); err != nil {
+		t.Fatal(err)
+	}
+	if factory.closed != 1 {
+		t.Fatalf("factory closed=%d, want 1", factory.closed)
 	}
 }
 
@@ -141,6 +189,62 @@ func TestRuntimeControlCommandsRestoreThroughOwnedLifecycle(t *testing.T) {
 	}
 	if len(audit.events) != 1 || audit.events[0].Operation != ControlRestore || audit.events[0].Outcome != "restored" {
 		t.Fatalf("unexpected audit: %#v", audit.events)
+	}
+}
+
+func TestDisconnectAllRollsBackPreviouslyIsolatedTargets(t *testing.T) {
+	audit := &recordingControlAudit{}
+	deps := testControlDependencies(t, audit)
+	secondMAC, _ := net.ParseMAC("02:00:00:00:00:30")
+	deps.Devices = controlTestDevices{values: append(deps.Devices.Snapshot(), device.Device{
+		IP: netip.MustParseAddr("192.168.1.30"), MAC: secondMAC.String(), Role: device.RolePeer, Online: true,
+	})}
+	deps.Lifecycle = NewControlLifecycle(nil)
+	controller := &transactionalControlController{failAt: 2}
+	err := NewControlCommands(controller, deps).DisconnectAll(context.Background())
+	if err == nil || len(controller.restored) != 1 {
+		t.Fatalf("error=%v restored=%d", err, len(controller.restored))
+	}
+	if len(deps.Lifecycle.Snapshot()) != 0 {
+		t.Fatalf("active targets = %d, want 0", len(deps.Lifecycle.Snapshot()))
+	}
+	if len(audit.events) != 2 || audit.events[1].Outcome != "rolled_back" {
+		t.Fatalf("unexpected audit: %#v", audit.events)
+	}
+}
+
+func TestActiveControlRestoresWhenOutcomeAuditFails(t *testing.T) {
+	audit := &failSecondControlAudit{}
+	deps := testControlDependencies(t, audit)
+	deps.Lifecycle = NewControlLifecycle(nil)
+	controller := &transactionalControlController{}
+	err := NewControlCommands(controller, deps).Disconnect(context.Background(), testControlTarget(t))
+	if err == nil {
+		t.Fatal("expected outcome audit failure")
+	}
+	if len(controller.restored) != 1 || len(deps.Lifecycle.Snapshot()) != 0 {
+		t.Fatalf("restored=%d active=%d", len(controller.restored), len(deps.Lifecycle.Snapshot()))
+	}
+}
+
+func TestControlCommandsExtendExistingLifecycleSession(t *testing.T) {
+	audit := &recordingControlAudit{}
+	deps := testControlDependencies(t, audit)
+	secondMAC, _ := net.ParseMAC("02:00:00:00:00:30")
+	second := ControlTarget{IP: netip.MustParseAddr("192.168.1.30"), MAC: secondMAC}
+	deps.Devices = controlTestDevices{values: append(deps.Devices.Snapshot(), device.Device{
+		IP: second.IP, MAC: second.MAC.String(), Role: device.RolePeer, Online: true,
+	})}
+	deps.Lifecycle = NewControlLifecycle(nil)
+	controller := &transactionalControlController{}
+	if err := NewControlCommands(controller, deps).Disconnect(context.Background(), testControlTarget(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewControlCommands(nil, deps).Disconnect(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	if controller.isolateCalls != 2 || len(deps.Lifecycle.Snapshot()) != 2 {
+		t.Fatalf("isolations=%d active=%d", controller.isolateCalls, len(deps.Lifecycle.Snapshot()))
 	}
 }
 

@@ -49,6 +49,28 @@ func (l *ControlLifecycle) Prepared(request ControlRequest) {
 	l.emit(EventControlPrepared, request.Operation, request.Targets, ControlStatePrepared, "")
 }
 
+func (l *ControlLifecycle) Controller() ControlController {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.lease.Controller
+}
+
+func (l *ControlLifecycle) ExtendActive(operation ControlOperation, targets []ControlTarget, continuous bool) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.lease.Controller == nil {
+		return ErrControlControllerUnavailable
+	}
+	for _, target := range sortedUniqueTargets(targets) {
+		l.targets[controlTargetKey(target)] = cloneTarget(target)
+	}
+	l.emitLocked(EventControlTargetStateChanged, operation, targets, ControlStateActive, "")
+	if continuous && l.worker == nil {
+		l.startWorkerLocked()
+	}
+	return nil
+}
+
 // AdoptActive transfers ownership of a prepared controller and its cleanup
 // lease to the runtime. It intentionally does not perform network disruption.
 func (l *ControlLifecycle) AdoptActive(lease ControlControllerLease, operation ControlOperation, targets []ControlTarget, continuous bool) error {
@@ -66,16 +88,20 @@ func (l *ControlLifecycle) AdoptActive(lease ControlControllerLease, operation C
 	}
 	l.emitLocked(EventControlTargetStateChanged, operation, targets, ControlStateActive, "")
 	if continuous {
-		ctx, cancel := context.WithCancel(context.Background())
-		l.cancel = cancel
-		l.worker = make(chan error, 1)
-		go func(controller ControlController, done chan error) {
-			err := controller.Run(ctx)
-			l.workerStopped(done, err)
-			done <- err
-		}(lease.Controller, l.worker)
+		l.startWorkerLocked()
 	}
 	return nil
+}
+
+func (l *ControlLifecycle) startWorkerLocked() {
+	ctx, cancel := context.WithCancel(context.Background())
+	l.cancel = cancel
+	l.worker = make(chan error, 1)
+	go func(controller ControlController, done chan error) {
+		err := controller.Run(ctx)
+		l.workerStopped(done, err)
+		done <- err
+	}(l.lease.Controller, l.worker)
 }
 
 func (l *ControlLifecycle) Snapshot() []ControlTarget {

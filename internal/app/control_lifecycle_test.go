@@ -15,6 +15,8 @@ type lifecycleController struct {
 	run      chan struct{}
 }
 
+func (c *lifecycleController) Isolate(_ context.Context, _ control.Endpoint) error { return nil }
+
 func (c *lifecycleController) Restore(_ context.Context, target control.Endpoint) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

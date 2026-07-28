@@ -15,7 +15,6 @@ import (
 )
 
 var (
-	ErrActiveControlNotImplemented  = errors.New("active network control is not implemented")
 	ErrControlRegistryUnavailable   = errors.New("control device registry is unavailable")
 	ErrNoEligibleTargets            = errors.New("no eligible control targets")
 	ErrControlControllerUnavailable = errors.New("control controller is unavailable")
@@ -58,6 +57,7 @@ type ControlControllerFactory interface {
 }
 
 type ControlController interface {
+	Isolate(context.Context, control.Endpoint) error
 	Restore(context.Context, control.Endpoint) error
 	Run(context.Context) error
 }
@@ -85,11 +85,11 @@ type ControlDependencies struct {
 }
 
 type ControlCommands struct {
-	controller *control.Controller
+	controller ControlController
 	deps       ControlDependencies
 }
 
-func NewControlCommands(controller *control.Controller, dependencies ControlDependencies) *ControlCommands {
+func NewControlCommands(controller ControlController, dependencies ControlDependencies) *ControlCommands {
 	return &ControlCommands{controller: controller, deps: dependencies}
 }
 
@@ -223,8 +223,13 @@ func (c *ControlCommands) prepare(ctx context.Context, request ControlRequest) e
 		endpoints = append(endpoints, endpoint)
 	}
 	lease := ControlControllerLease{}
+	reusedLifecycleController := false
 	if c.controller != nil {
 		lease.Controller = c.controller
+	}
+	if lease.Controller == nil && c.deps.Lifecycle != nil {
+		lease.Controller = c.deps.Lifecycle.Controller()
+		reusedLifecycleController = lease.Controller != nil
 	}
 	if lease.Controller == nil {
 		if c.deps.ControllerFactory == nil {
@@ -239,10 +244,13 @@ func (c *ControlCommands) prepare(ctx context.Context, request ControlRequest) e
 	if lease.Controller == nil {
 		return ErrControlControllerUnavailable
 	}
-	if lease.Close != nil {
-		defer lease.Close()
-	}
-	event := ControlAuditEvent{At: time.Now().UTC(), Operation: request.Operation, Targets: cloneTargets(request.Targets), Outcome: "ready_not_implemented"}
+	owned := false
+	defer func() {
+		if !owned && lease.Close != nil {
+			_ = lease.Close()
+		}
+	}()
+	event := ControlAuditEvent{At: time.Now().UTC(), Operation: request.Operation, Targets: cloneTargets(request.Targets), Outcome: "requested"}
 	if err := c.deps.Auditor.Record(ctx, event); err != nil {
 		c.publishAuditFailure(request, err)
 		return fmt.Errorf("record control audit: %w", err)
@@ -253,20 +261,100 @@ func (c *ControlCommands) prepare(ctx context.Context, request ControlRequest) e
 		c.deps.Publish(Event{Kind: EventControlPrepared, Control: &ControlEvent{Operation: request.Operation, Targets: cloneTargets(request.Targets), State: ControlStatePrepared}})
 	}
 
-	_ = endpoints
-	switch request.Operation {
-	case ControlDisconnect:
-		// TODO: call lease.Controller.Isolate(ctx, endpoints[0]), then hand the
-		// successful target and lease to c.deps.Lifecycle.AdoptActive.
-	case ControlDisconnectAll:
-		// TODO: call lease.Controller.Isolate(ctx, endpoint) for each endpoint;
-		// on failure call c.deps.Lifecycle.Rollback for every changed endpoint,
-		// otherwise hand all successful targets to AdoptActive.
-	case ControlContinuous:
-		// TODO: call lease.Controller.Isolate(ctx, endpoints[0]), then transfer
-		// ownership with c.deps.Lifecycle.AdoptActive(..., continuous=true).
+	isolated := make([]ControlTarget, 0, len(request.Targets))
+	for index, endpoint := range endpoints {
+		if reusedLifecycleController && lifecycleContainsTarget(c.deps.Lifecycle, request.Targets[index]) {
+			continue
+		}
+		if err := lease.Controller.Isolate(ctx, endpoint); err != nil {
+			c.publishPreparedRollback(EventControlBulkRollbackStarted, isolated, ControlStateRestoring, err)
+			rollbackErr := restorePreparedTargets(lease.Controller, isolated)
+			state := ControlStateRestored
+			if rollbackErr != nil {
+				state = ControlStateFailed
+			}
+			c.publishPreparedRollback(EventControlBulkRollbackCompleted, isolated, state, rollbackErr)
+			failure := errors.Join(fmt.Errorf("isolate target %s: %w", request.Targets[index].IP, err), rollbackErr)
+			_ = c.recordControlOutcome(ctx, request, outcomeForRollback(rollbackErr))
+			return failure
+		}
+		isolated = append(isolated, request.Targets[index])
 	}
-	return fmt.Errorf("%w: %s", ErrActiveControlNotImplemented, request.Operation)
+	if c.deps.Lifecycle == nil {
+		rollbackErr := restorePreparedTargets(lease.Controller, isolated)
+		_ = c.recordControlOutcome(ctx, request, outcomeForRollback(rollbackErr))
+		return errors.Join(errors.New("control lifecycle is unavailable"), rollbackErr)
+	}
+	continuous := request.Operation == ControlContinuous
+	var adoptErr error
+	if reusedLifecycleController {
+		adoptErr = c.deps.Lifecycle.ExtendActive(request.Operation, request.Targets, continuous)
+	} else {
+		adoptErr = c.deps.Lifecycle.AdoptActive(lease, request.Operation, request.Targets, continuous)
+	}
+	if adoptErr != nil {
+		rollbackErr := restorePreparedTargets(lease.Controller, isolated)
+		_ = c.recordControlOutcome(ctx, request, outcomeForRollback(rollbackErr))
+		return errors.Join(fmt.Errorf("adopt active control: %w", adoptErr), rollbackErr)
+	}
+	owned = true
+	if err := c.recordControlOutcome(ctx, request, "active"); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return errors.Join(err, c.deps.Lifecycle.RestoreAll(cleanupCtx, "control outcome audit failed"))
+	}
+	return nil
+}
+
+func lifecycleContainsTarget(lifecycle *ControlLifecycle, target ControlTarget) bool {
+	if lifecycle == nil {
+		return false
+	}
+	wanted := controlTargetKey(target)
+	for _, active := range lifecycle.Snapshot() {
+		if controlTargetKey(active) == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *ControlCommands) publishPreparedRollback(kind EventKind, targets []ControlTarget, state ControlState, err error) {
+	if c.deps.Publish == nil || len(targets) == 0 {
+		return
+	}
+	c.deps.Publish(Event{Kind: kind, Control: &ControlEvent{Operation: ControlDisconnectAll, Targets: cloneTargets(targets), State: state, Reason: errorReason("partial control rollback", err)}})
+}
+
+func (c *ControlCommands) recordControlOutcome(ctx context.Context, request ControlRequest, outcome string) error {
+	if err := c.deps.Auditor.Record(ctx, ControlAuditEvent{At: time.Now().UTC(), Operation: request.Operation, Targets: cloneTargets(request.Targets), Outcome: outcome}); err != nil {
+		c.publishAuditFailure(request, err)
+		return fmt.Errorf("record control outcome: %w", err)
+	}
+	return nil
+}
+
+func restorePreparedTargets(controller ControlController, targets []ControlTarget) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var failures []error
+	for index := len(targets) - 1; index >= 0; index-- {
+		endpoint, err := controlEndpoint(targets[index])
+		if err == nil {
+			err = controller.Restore(cleanupCtx, endpoint)
+		}
+		if err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func outcomeForRollback(err error) string {
+	if err != nil {
+		return "rollback_failed"
+	}
+	return "rolled_back"
 }
 
 func (c *ControlCommands) publishAuditFailure(request ControlRequest, err error) {

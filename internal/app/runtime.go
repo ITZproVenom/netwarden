@@ -14,6 +14,7 @@ import (
 	"github.com/amdzy/NetWarden/internal/capture"
 	"github.com/amdzy/NetWarden/internal/capture/pcapdriver"
 	appconfig "github.com/amdzy/NetWarden/internal/config"
+	"github.com/amdzy/NetWarden/internal/control"
 	"github.com/amdzy/NetWarden/internal/core"
 	"github.com/amdzy/NetWarden/internal/defense"
 	"github.com/amdzy/NetWarden/internal/device"
@@ -257,6 +258,9 @@ func (r *Runtime) ControlTargets() []ControlTarget     { return r.control.Snapsh
 
 func (r *Runtime) ControlCommands(auditor ControlAuditor, factory ControlControllerFactory) *ControlCommands {
 	networkContext := r.Network()
+	if factory == nil {
+		factory = runtimeControlControllerFactory{driver: r.driver}
+	}
 	return NewControlCommands(nil, ControlDependencies{
 		Devices: r.registry,
 		Scope: ControlScope{
@@ -266,6 +270,20 @@ func (r *Runtime) ControlCommands(auditor ControlAuditor, factory ControlControl
 		},
 		Auditor: auditor, ControllerFactory: factory, Lifecycle: r.control, Publish: r.publish,
 	})
+}
+
+type runtimeControlControllerFactory struct{ driver capture.Driver }
+
+func (f runtimeControlControllerFactory) Prepare(_ context.Context, _ ControlRequest, scope ControlScope) (ControlControllerLease, error) {
+	controller, err := control.NewController(f.driver,
+		control.Endpoint{IP: scope.LocalIP, MAC: scope.LocalMAC},
+		control.Endpoint{IP: scope.GatewayIP, MAC: scope.GatewayMAC},
+		scope.Prefix, control.Options{},
+	)
+	if err != nil {
+		return ControlControllerLease{}, err
+	}
+	return ControlControllerLease{Controller: controller}, nil
 }
 
 func (r *Runtime) SetNickname(mac net.HardwareAddr, nickname string) error {
