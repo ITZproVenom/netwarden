@@ -1,4 +1,4 @@
-import type { Activity, Bootstrap, Conflict, Device, HistorySummary, MonitoringSettings, RuntimeStatus } from "./types"
+import type { Activity, Bootstrap, Conflict, ControlAudit, Device, HistorySummary, MonitoringSettings, RuntimeStatus } from "./types"
 
 const backend = () => window.go.main.GUIApp
 
@@ -19,4 +19,10 @@ export const wailsClient = {
   activity: () => backend().Activity() as Promise<Activity[]>,
   monitoringSettings: () => backend().MonitoringSettings() as Promise<MonitoringSettings>,
   setMonitoringSettings: (settings: MonitoringSettings) => backend().SetMonitoringSettings(settings) as Promise<void>,
+  controlAudit: () => backend().ControlAudit() as Promise<ControlAudit[]>,
+  disconnectDevice: (ip: string, mac: string) => backend().DisconnectDevice(ip, mac) as Promise<void>,
+  startContinuousControl: (ip: string, mac: string) => backend().StartContinuousControl(ip, mac) as Promise<void>,
+  restoreControl: (ip: string, mac: string) => backend().RestoreControl(ip, mac) as Promise<void>,
+  restoreAllControls: () => backend().RestoreAllControls() as Promise<void>,
+  stopContinuousControl: (ip: string, mac: string) => backend().StopContinuousControl(ip, mac) as Promise<void>,
 }

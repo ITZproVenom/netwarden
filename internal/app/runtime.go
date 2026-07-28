@@ -253,6 +253,7 @@ func (r *Runtime) ScanNow(ctx context.Context) error {
 func (r *Runtime) SetPeriodicScanEnabled(enabled bool) { r.scanner.SetPeriodicEnabled(enabled) }
 
 func (r *Runtime) ConflictHistory() []defense.Conflict { return r.monitor.History() }
+func (r *Runtime) ControlTargets() []ControlTarget     { return r.control.Snapshot() }
 
 func (r *Runtime) ControlCommands(auditor ControlAuditor, factory ControlControllerFactory) *ControlCommands {
 	networkContext := r.Network()

@@ -48,14 +48,15 @@ type StatusDTO struct {
 }
 
 type DeviceDTO struct {
-	IP        string    `json:"ip"`
-	MAC       string    `json:"mac"`
-	Name      string    `json:"name"`
-	Vendor    string    `json:"vendor"`
-	Role      string    `json:"role"`
-	FirstSeen time.Time `json:"firstSeen"`
-	LastSeen  time.Time `json:"lastSeen"`
-	Online    bool      `json:"online"`
+	IP           string    `json:"ip"`
+	MAC          string    `json:"mac"`
+	Name         string    `json:"name"`
+	Vendor       string    `json:"vendor"`
+	Role         string    `json:"role"`
+	FirstSeen    time.Time `json:"firstSeen"`
+	LastSeen     time.Time `json:"lastSeen"`
+	Online       bool      `json:"online"`
+	ControlState string    `json:"controlState"`
 }
 
 type ConflictDTO struct {
@@ -251,8 +252,18 @@ func (a *GUIApp) Devices() ([]DeviceDTO, error) {
 		}
 	}
 	result := make([]DeviceDTO, 0, len(devices))
+	activeControl := make(map[string]struct{})
+	if supervisor != nil && supervisor.Current() != nil {
+		for _, target := range supervisor.Current().ControlTargets() {
+			activeControl[strings.ToLower(target.MAC.String())] = struct{}{}
+		}
+	}
 	for _, current := range devices {
-		result = append(result, deviceDTO(current))
+		item := deviceDTO(current)
+		if _, active := activeControl[strings.ToLower(current.MAC)]; active {
+			item.ControlState = "active"
+		}
+		result = append(result, item)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Online != result[j].Online {
@@ -565,6 +576,14 @@ func activityFromEvent(event coreapp.Event) ActivityDTO {
 		activity.Kind, activity.Severity, activity.Title = "persistence", "error", "History persistence failed"
 	case coreapp.EventRuntimeRebuilding:
 		activity.Kind, activity.Severity, activity.Title = "runtime", "warning", "Runtime rebuilding"
+	case coreapp.EventControlPrepared:
+		activity.Kind, activity.Title = "control", "Control request prepared"
+	case coreapp.EventControlTargetStateChanged:
+		activity.Kind, activity.Severity, activity.Title = "control", "warning", "Control target state changed"
+	case coreapp.EventControlRestorationStarted:
+		activity.Kind, activity.Title = "control", "Control restoration started"
+	case coreapp.EventControlRestorationCompleted:
+		activity.Kind, activity.Title = "control", "Control restoration completed"
 	}
 	if event.Device != nil {
 		activity.Detail = fmt.Sprintf("%s · %s · %s", event.Device.Name, event.Device.IP, event.Device.MAC)
@@ -577,6 +596,12 @@ func activityFromEvent(event coreapp.Event) ActivityDTO {
 	}
 	if event.Integrity != nil {
 		activity.Detail = fmt.Sprintf("gateway %s · expected %s · claimed %s", event.Integrity.GatewayIP, event.Integrity.ExpectedMAC, event.Integrity.ClaimedMAC)
+	}
+	if event.Control != nil {
+		activity.Detail = fmt.Sprintf("%s · %s · %d targets", event.Control.Operation, event.Control.State, len(event.Control.Targets))
+		if event.Control.Reason != "" {
+			activity.Detail += " · " + event.Control.Reason
+		}
 	}
 	return activity
 }
