@@ -24,6 +24,7 @@ import { ApplicationPreferencesCard } from "./ApplicationPreferencesCard"
 import { useClearHistory, useHistorySummary, usePruneHistory, useSetGatewayMAC } from "./settings.queries"
 import { useOpenApplicationDirectory } from "./settings.queries"
 import { useUnsavedChanges } from "@/app/unsaved-changes"
+import { validateGatewayMAC } from "./validation"
 
 export function SettingsView() {
   const { data: bootstrap } = useBootstrap()
@@ -201,14 +202,6 @@ export function SettingsView() {
       </Card>
     </div>
   )
-}
-
-function validateGatewayMAC(value: string) {
-  const trimmed = value.trim()
-  if (!trimmed) return undefined
-  if (!/^([0-9a-fA-F]{2})([:-][0-9a-fA-F]{2}){5}$/.test(trimmed))
-    return "Enter six hexadecimal pairs separated by colons or hyphens."
-  return undefined
 }
 
 function HistoryCount({ label, value }: { label: string; value?: number }) {

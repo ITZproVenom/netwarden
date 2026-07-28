@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"sort"
@@ -26,7 +27,20 @@ func (a *GUIApp) DisconnectDevice(ipText, macText string) error {
 		return err
 	}
 	defer cancel()
-	return commands.Disconnect(ctx, target)
+	err = commands.Disconnect(ctx, target)
+	a.logControlResult("disconnect", ipText, macText, err)
+	return err
+}
+
+func (a *GUIApp) DisconnectAllDevices() error {
+	commands, ctx, cancel, err := a.controlCommands()
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	err = commands.DisconnectAll(ctx)
+	a.logControlResult("disconnect_all", "", "", err)
+	return err
 }
 
 func (a *GUIApp) StartContinuousControl(ipText, macText string) error {
@@ -35,7 +49,9 @@ func (a *GUIApp) StartContinuousControl(ipText, macText string) error {
 		return err
 	}
 	defer cancel()
-	return commands.StartContinuous(ctx, target)
+	err = commands.StartContinuous(ctx, target)
+	a.logControlResult("continuous", ipText, macText, err)
+	return err
 }
 
 func (a *GUIApp) RestoreControl(ipText, macText string) error {
@@ -44,7 +60,9 @@ func (a *GUIApp) RestoreControl(ipText, macText string) error {
 		return err
 	}
 	defer cancel()
-	return commands.Restore(ctx, target)
+	err = commands.Restore(ctx, target)
+	a.logControlResult("restore", ipText, macText, err)
+	return err
 }
 
 func (a *GUIApp) RestoreAllControls() error {
@@ -53,7 +71,9 @@ func (a *GUIApp) RestoreAllControls() error {
 		return err
 	}
 	defer cancel()
-	return commands.RestoreAll(ctx)
+	err = commands.RestoreAll(ctx)
+	a.logControlResult("restore_all", "", "", err)
+	return err
 }
 
 func (a *GUIApp) StopContinuousControl(ipText, macText string) error {
@@ -62,7 +82,17 @@ func (a *GUIApp) StopContinuousControl(ipText, macText string) error {
 		return err
 	}
 	defer cancel()
-	return commands.StopContinuous(ctx, target)
+	err = commands.StopContinuous(ctx, target)
+	a.logControlResult("stop_continuous", ipText, macText, err)
+	return err
+}
+
+func (a *GUIApp) logControlResult(operation, ip, mac string, err error) {
+	level, message := slog.LevelInfo, "control action completed"
+	if err != nil {
+		level, message = slog.LevelError, "control action failed"
+	}
+	a.log(level, message, "component", "control", "operation", operation, "ip", ip, "mac", mac, "error", err)
 }
 
 func (a *GUIApp) controlCommand(ipText, macText string) (*coreapp.ControlCommands, coreapp.ControlTarget, context.Context, context.CancelFunc, error) {

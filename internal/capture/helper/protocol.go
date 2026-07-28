@@ -24,8 +24,9 @@ type Message struct {
 	Error      string    `json:"error,omitempty"`
 }
 
-// Serve exposes only filtered capture and locally sourced ARP requests.
-func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr, localIP netip.Addr, prefix netip.Prefix, input io.Reader, output io.Writer) error {
+// Serve exposes filtered capture and only tightly scoped discovery, isolation,
+// and restoration ARP transmissions.
+func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr, localIP, gatewayIP netip.Addr, prefix netip.Prefix, input io.Reader, output io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer driver.Close()
@@ -40,8 +41,20 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 		return err
 	}
 	runResult := make(chan error, 1)
+	var gatewayMu sync.RWMutex
+	var gatewayMAC net.HardwareAddr
 	go func() {
 		runResult <- driver.Run(ctx, func(frame capture.Frame) error {
+			if message, err := packet.ParseARP(frame.Data); err == nil && message.SenderIP == gatewayIP && !bytes.Equal(message.SenderMAC, localMAC) {
+				gatewayMu.Lock()
+				if len(gatewayMAC) == 0 {
+					gatewayMAC = append(net.HardwareAddr(nil), message.SenderMAC...)
+				}
+				gatewayMu.Unlock()
+			}
+			if len(frame.Data) >= packet.EthernetHeaderLen && bytes.Equal(frame.Data[6:12], localMAC) {
+				return nil
+			}
 			return write(Message{Type: "frame", Data: frame.Data, CapturedAt: frame.CapturedAt})
 		})
 	}()
@@ -57,7 +70,10 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 		}
 		switch command.Type {
 		case "send":
-			if err := ValidateDiscoveryFrame(command.Data, localMAC, localIP, prefix); err != nil {
+			gatewayMu.RLock()
+			verifiedGatewayMAC := append(net.HardwareAddr(nil), gatewayMAC...)
+			gatewayMu.RUnlock()
+			if err := ValidateOutboundFrame(command.Data, localMAC, verifiedGatewayMAC, localIP, gatewayIP, prefix); err != nil {
 				_ = write(Message{Type: "error", Error: err.Error()})
 				continue
 			}
@@ -71,6 +87,36 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 			_ = write(Message{Type: "error", Error: "unsupported helper command"})
 		}
 	}
+}
+
+func ValidateOutboundFrame(frame []byte, localMAC, gatewayMAC net.HardwareAddr, localIP, gatewayIP netip.Addr, prefix netip.Prefix) error {
+	if err := ValidateDiscoveryFrame(frame, localMAC, localIP, prefix); err == nil {
+		return nil
+	}
+	return ValidateControlFrame(frame, localMAC, gatewayMAC, localIP, gatewayIP, prefix)
+}
+
+func ValidateControlFrame(frame []byte, localMAC, gatewayMAC net.HardwareAddr, localIP, gatewayIP netip.Addr, prefix netip.Prefix) error {
+	message, err := packet.ParseARP(frame)
+	if err != nil || len(frame) < packet.EthernetHeaderLen {
+		return errors.New("helper accepts only Ethernet/IPv4 ARP frames")
+	}
+	if message.Operation != packet.ARPOpReply || message.SenderIP != gatewayIP {
+		return errors.New("control frame must be an ARP reply for the active gateway")
+	}
+	if !prefix.Masked().Contains(message.TargetIP) || message.TargetIP == localIP || message.TargetIP == gatewayIP ||
+		len(message.TargetMAC) != 6 || message.TargetMAC[0]&1 != 0 || bytes.Equal(message.TargetMAC, localMAC) || bytes.Equal(message.TargetMAC, gatewayMAC) {
+		return errors.New("control target is outside the eligible local network")
+	}
+	if !bytes.Equal(frame[0:6], message.TargetMAC) || !bytes.Equal(frame[6:12], message.SenderMAC) {
+		return errors.New("control Ethernet and ARP identities do not match")
+	}
+	isolation := bytes.Equal(message.SenderMAC, localMAC)
+	restoration := len(gatewayMAC) == 6 && bytes.Equal(message.SenderMAC, gatewayMAC)
+	if !isolation && !restoration {
+		return errors.New("control sender is neither the local interface nor verified gateway")
+	}
+	return nil
 }
 
 func normalizeRunError(err error) error {

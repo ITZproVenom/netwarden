@@ -51,5 +51,5 @@ func runHelperMode() (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	return true, helper.Serve(context.Background(), driver, selected.MAC, prefix.Addr(), prefix, os.Stdin, os.Stdout)
+	return true, helper.Serve(context.Background(), driver, selected.MAC, prefix.Addr(), route.GatewayIP, prefix, os.Stdin, os.Stdout)
 }

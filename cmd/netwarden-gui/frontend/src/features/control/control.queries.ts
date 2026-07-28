@@ -26,6 +26,21 @@ export const useDisconnectDevice = () =>
 export const useStartContinuousControl = () =>
   useControlAction((target) => wailsClient.startContinuousControl(target.ip, target.mac), "Continuous control started")
 
+export function useDisconnectAllDevices() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: wailsClient.disconnectAllDevices,
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: queryKeys.runtime }),
+        client.invalidateQueries({ queryKey: queryKeys.controlAudit }),
+      ])
+      toast.success("All eligible devices disconnected")
+    },
+    onError: (error) => toast.error("Bulk disconnect failed", { description: errorMessage(error) }),
+  })
+}
+
 function useRecovery(action: (target: { ip: string; mac: string }) => Promise<void>, success: string) {
   const client = useQueryClient()
   return useMutation({

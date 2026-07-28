@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { ArrowDownAZ, ChevronRight, LoaderCircle, RotateCcw, Search, X } from "lucide-react"
+import { ArrowDownAZ, Ban, ChevronRight, LoaderCircle, RotateCcw, Search, X } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { QueryError } from "@/components/QueryError"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { useRestoreAllControls } from "@/features/control/control.queries"
+import { useDisconnectAllDevices, useRestoreAllControls } from "@/features/control/control.queries"
 import { formatDate } from "@/lib/format"
 import { useStoredState } from "@/lib/preferences"
 import type { Device } from "@/lib/wails/types"
@@ -34,6 +34,7 @@ export function DevicesView() {
   const [preferences, setPreferences] = useStoredState<DevicePreferences>("netwarden.devices", defaults)
   const [selectedMAC, setSelectedMAC] = useState("")
   const restoreAll = useRestoreAllControls()
+  const disconnectAll = useDisconnectAllDevices()
   const update = <K extends keyof DevicePreferences>(key: K, value: DevicePreferences[K]) =>
     setPreferences((current) => ({ ...current, [key]: value }))
   const filtered =
@@ -43,6 +44,9 @@ export function DevicesView() {
     preferences.sortBy !== defaults.sortBy ||
     preferences.descending
   const controlledCount = devices.filter((device) => device.controlState !== "").length
+  const eligibleCount = devices.filter(
+    (device) => device.online && device.role === "Device" && device.controlState === "",
+  ).length
   const visible = useMemo(
     () =>
       devices
@@ -83,6 +87,13 @@ export function DevicesView() {
               </CardDescription>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+              {eligibleCount > 0 && (
+                <DisconnectAll
+                  count={eligibleCount}
+                  pending={disconnectAll.isPending}
+                  disconnect={() => disconnectAll.mutate()}
+                />
+              )}
               {controlledCount > 0 && (
                 <RestoreAll
                   count={controlledCount}
@@ -194,6 +205,33 @@ export function DevicesView() {
       </Card>
       <DeviceDetails device={selected} onClose={() => setSelectedMAC("")} />
     </>
+  )
+}
+
+function DisconnectAll({ count, pending, disconnect }: { count: number; pending: boolean; disconnect: () => void }) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="destructive" disabled={pending}>
+          {pending ? <LoaderCircle className="animate-spin" /> : <Ban />}Disconnect all ({count})
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Disconnect every eligible device?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This will interrupt gateway access for {count} online device{count === 1 ? "" : "s"}. NetWarden will roll
+            back previously changed targets if any device fails. Your computer and gateway are always excluded.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" onClick={disconnect}>
+            Disconnect all devices
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }
 

@@ -192,7 +192,7 @@ func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*
 		monitor = defense.NewPinnedMonitor(networkContext.Gateway.IP, networkContext.Gateway.MAC, config.ConflictCooldown)
 	}
 	monitor.RestoreHistory(durableHistory.Conflicts)
-	options := []core.Option{core.WithARPObserver(monitor), core.WithRemovalAfter(config.DeviceRetention)}
+	options := []core.Option{core.WithARPObserver(monitor), core.WithRemovalAfter(config.DeviceRetention), core.WithIgnoredSenderMAC(config.Interface.MAC)}
 	if dependencies.Metadata != nil {
 		options = append(options, core.WithEnricher(dependencies.Metadata))
 	} else if dependencies.Enricher != nil {

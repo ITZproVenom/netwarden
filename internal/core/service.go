@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -63,16 +64,25 @@ func WithRemovalAfter(retention time.Duration) Option {
 	return func(service *Service) { service.removeAfter = retention }
 }
 
+func WithIgnoredSenderMAC(mac net.HardwareAddr) Option {
+	return func(service *Service) {
+		if len(mac) == 6 {
+			service.ignoredSenderMAC = strings.ToLower(mac.String())
+		}
+	}
+}
+
 type Service struct {
-	driver        capture.Driver
-	registry      *device.Registry
-	offlineAfter  time.Duration
-	checkInterval time.Duration
-	removeAfter   time.Duration
-	events        chan Event
-	enricher      Enricher
-	observers     []ARPObserver
-	dropped       atomic.Uint64
+	driver           capture.Driver
+	registry         *device.Registry
+	offlineAfter     time.Duration
+	checkInterval    time.Duration
+	removeAfter      time.Duration
+	events           chan Event
+	enricher         Enricher
+	observers        []ARPObserver
+	ignoredSenderMAC string
+	dropped          atomic.Uint64
 
 	mu      sync.Mutex
 	running bool
@@ -156,6 +166,9 @@ func (s *Service) handleFrame(frame capture.Frame) error {
 		return nil
 	}
 	if message.Operation != packet.ARPOpRequest && message.Operation != packet.ARPOpReply {
+		return nil
+	}
+	if s.ignoredSenderMAC != "" && strings.EqualFold(message.SenderMAC.String(), s.ignoredSenderMAC) {
 		return nil
 	}
 	seenAt := frame.CapturedAt

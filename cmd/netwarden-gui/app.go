@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	coreapp "github.com/amdzy/NetWarden/internal/app"
+	"github.com/amdzy/NetWarden/internal/applog"
 	"github.com/amdzy/NetWarden/internal/capture/pcapdriver"
 	appconfig "github.com/amdzy/NetWarden/internal/config"
 	"github.com/amdzy/NetWarden/internal/defense"
@@ -26,6 +29,7 @@ type GUIApp struct {
 	supervisor *coreapp.Supervisor
 	cancel     context.CancelFunc
 	activity   []ActivityDTO
+	logger     *slog.Logger
 }
 
 type InterfaceDTO struct {
@@ -87,6 +91,8 @@ func NewGUIApp() *GUIApp { return &GUIApp{} }
 
 func (a *GUIApp) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.initializeLogger()
+	a.log(slog.LevelInfo, "application started", "component", "lifecycle")
 	_, config, err := loadSettings()
 	if err != nil || !config.AutoStart || config.Interface == "" {
 		return
@@ -99,7 +105,10 @@ func (a *GUIApp) startup(ctx context.Context) {
 	}()
 }
 
-func (a *GUIApp) shutdown(context.Context) { _ = a.StopMonitoring() }
+func (a *GUIApp) shutdown(context.Context) {
+	a.log(slog.LevelInfo, "application shutting down", "component", "lifecycle")
+	_ = a.StopMonitoring()
+}
 
 func (a *GUIApp) Bootstrap() (BootstrapDTO, error) {
 	store, config, err := loadSettings()
@@ -122,7 +131,13 @@ func (a *GUIApp) Bootstrap() (BootstrapDTO, error) {
 	return result, nil
 }
 
-func (a *GUIApp) StartMonitoring(interfaceName string) error {
+func (a *GUIApp) StartMonitoring(interfaceName string) (resultErr error) {
+	a.log(slog.LevelInfo, "monitoring requested", "component", "lifecycle", "interface", interfaceName)
+	defer func() {
+		if resultErr != nil {
+			a.log(slog.LevelError, "monitoring failed", "component", "lifecycle", "interface", interfaceName, "error", resultErr)
+		}
+	}()
 	a.mu.Lock()
 	if a.cancel != nil {
 		a.mu.Unlock()
@@ -199,6 +214,7 @@ func (a *GUIApp) StartMonitoring(interfaceName string) error {
 }
 
 func (a *GUIApp) StopMonitoring() error {
+	a.log(slog.LevelInfo, "monitoring stop requested", "component", "lifecycle")
 	a.mu.RLock()
 	cancel := a.cancel
 	a.mu.RUnlock()
@@ -528,6 +544,32 @@ func (a *GUIApp) recordActivity(event ActivityDTO) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.appendActivityLocked(event)
+	level := slog.LevelInfo
+	if event.Severity == "warning" {
+		level = slog.LevelWarn
+	}
+	if event.Severity == "error" {
+		level = slog.LevelError
+	}
+	a.log(level, event.Title, "component", event.Kind, "detail", event.Detail, "at", event.At)
+}
+
+func (a *GUIApp) initializeLogger() {
+	path, err := appconfig.DefaultPath()
+	if err != nil {
+		return
+	}
+	writer, err := applog.Open(filepath.Join(filepath.Dir(path), "logs", "netwarden.jsonl"), applog.Options{})
+	if err != nil {
+		return
+	}
+	a.logger = slog.New(slog.NewJSONHandler(writer, &slog.HandlerOptions{Level: slog.LevelInfo}))
+}
+
+func (a *GUIApp) log(level slog.Level, message string, attributes ...any) {
+	if a.logger != nil {
+		a.logger.Log(context.Background(), level, message, attributes...)
+	}
 }
 
 func (a *GUIApp) appendActivityLocked(event ActivityDTO) {

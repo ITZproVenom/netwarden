@@ -9,6 +9,7 @@ import { useRuntimeStatus } from "@/features/monitoring/monitoring.queries"
 import type { MonitoringSettings } from "@/lib/wails/types"
 import { useMonitoringSettings, useSetMonitoringSettings } from "./settings.queries"
 import { useUnsavedChanges } from "@/app/unsaved-changes"
+import { validateRange } from "./validation"
 
 const defaults: MonitoringSettings = {
   scanIntervalSeconds: 10,
@@ -161,11 +162,6 @@ function Setting({
   )
 }
 
-function validateRange(value: number, minimum: number, maximum: number, label: string) {
-  if (!Number.isFinite(value) || !Number.isInteger(value)) return `${label} must be a whole number.`
-  if (value < minimum || value > maximum) return `${label} must be between ${minimum} and ${maximum}.`
-  return undefined
-}
 function Toggle({
   label,
   description,

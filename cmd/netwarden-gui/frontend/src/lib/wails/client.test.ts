@@ -13,6 +13,7 @@ describe("wailsClient", () => {
     SetPeriodicScanEnabled: vi.fn(),
     SetNickname: vi.fn(),
     SetGatewayMAC: vi.fn(),
+    DisconnectAllDevices: vi.fn(),
   }
 
   beforeEach(() => {
@@ -29,5 +30,11 @@ describe("wailsClient", () => {
   it("returns the canonical gateway address from the backend", async () => {
     backend.SetGatewayMAC.mockResolvedValue("00:11:22:33:44:55")
     await expect(wailsClient.setGatewayMAC("00-11-22-33-44-55")).resolves.toBe("00:11:22:33:44:55")
+  })
+
+  it("dispatches bulk disconnect to the backend", async () => {
+    backend.DisconnectAllDevices.mockResolvedValue(undefined)
+    await wailsClient.disconnectAllDevices()
+    expect(backend.DisconnectAllDevices).toHaveBeenCalledOnce()
   })
 })

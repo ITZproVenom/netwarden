@@ -89,3 +89,23 @@ func TestServiceAccountsForDroppedEvents(t *testing.T) {
 		t.Fatalf("got %d dropped events, want 3", got)
 	}
 }
+
+func TestServiceIgnoresLocallySourcedFrames(t *testing.T) {
+	localMAC, _ := net.ParseMAC("02:00:00:00:00:10")
+	targetMAC, _ := net.ParseMAC("02:00:00:00:00:20")
+	registry := device.NewRegistry()
+	service := NewService(&memoryDriver{}, registry, time.Minute, time.Second, WithIgnoredSenderMAC(localMAC))
+	frame, err := packet.MarshalARP(targetMAC, localMAC, packet.ARP{
+		Operation: packet.ARPOpReply, SenderMAC: localMAC, SenderIP: netip.MustParseAddr("192.168.1.1"),
+		TargetMAC: targetMAC, TargetIP: netip.MustParseAddr("192.168.1.20"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.handleFrame(capture.Frame{Data: frame}); err != nil {
+		t.Fatal(err)
+	}
+	if devices := registry.Snapshot(); len(devices) != 0 {
+		t.Fatalf("locally sourced frame created %d devices", len(devices))
+	}
+}

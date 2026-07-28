@@ -34,6 +34,7 @@ export const wailsClient = {
   setMonitoringSettings: (settings: MonitoringSettings) => backend().SetMonitoringSettings(settings) as Promise<void>,
   controlAudit: () => backend().ControlAudit() as Promise<ControlAudit[]>,
   disconnectDevice: (ip: string, mac: string) => backend().DisconnectDevice(ip, mac) as Promise<void>,
+  disconnectAllDevices: () => backend().DisconnectAllDevices() as Promise<void>,
   startContinuousControl: (ip: string, mac: string) => backend().StartContinuousControl(ip, mac) as Promise<void>,
   restoreControl: (ip: string, mac: string) => backend().RestoreControl(ip, mac) as Promise<void>,
   restoreAllControls: () => backend().RestoreAllControls() as Promise<void>,

@@ -708,11 +708,15 @@ func serveCaptureHelper(args []string) error {
 	if err != nil {
 		return err
 	}
+	route, err := (networkgateway.SystemDiscoverer{}).Discover(context.Background())
+	if err != nil {
+		return err
+	}
 	driver, err := pcapdriver.Open(selected.Name, pcapdriver.Config{Promiscuous: true, Filter: "arp"})
 	if err != nil {
 		return err
 	}
-	return helper.Serve(context.Background(), driver, selected.MAC, prefix.Addr(), prefix, os.Stdin, os.Stdout)
+	return helper.Serve(context.Background(), driver, selected.MAC, prefix.Addr(), route.GatewayIP, prefix, os.Stdin, os.Stdout)
 }
 
 func printRuntimeEvent(event app.Event, jsonOutput bool) {
