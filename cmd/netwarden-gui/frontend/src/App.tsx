@@ -1,5 +1,4 @@
 import { AppShell, type AppView } from "@/app/AppShell"
-import { MonitoringOverview } from "@/features/monitoring/MonitoringOverview"
 import { DevicesView } from "@/features/devices/DevicesView"
 import { IntegrityView } from "@/features/integrity/IntegrityView"
 import { SettingsView } from "@/features/settings/SettingsView"
@@ -16,11 +15,22 @@ export default function App() {
 
   return (
     <AppShell view={view} onViewChange={changeView}>
-      <MonitoringOverview />
       {view === "devices" && <DevicesView />}
-      {view === "integrity" && <IntegrityView />}
-      {view === "diagnostics" && <DiagnosticsView />}
-      {view === "settings" && <SettingsView />}
+      {view === "integrity" && (
+        <section className="py-7 sm:py-9">
+          <IntegrityView />
+        </section>
+      )}
+      {view === "diagnostics" && (
+        <section className="py-7 sm:py-9">
+          <DiagnosticsView />
+        </section>
+      )}
+      {view === "settings" && (
+        <section className="py-7 sm:py-9">
+          <SettingsView />
+        </section>
+      )}
     </AppShell>
   )
 }

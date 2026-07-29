@@ -1,184 +1,85 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { ArrowDownAZ, Ban, ChevronRight, LoaderCircle, RotateCcw, Search, X } from "lucide-react"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
+import { Card, CardContent } from "@/components/ui/card"
 import { QueryError } from "@/components/QueryError"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useDisconnectSelectedDevices, useRestoreAllControls } from "@/features/control/control.queries"
-import { formatDate } from "@/lib/format"
-import { useStoredState } from "@/lib/preferences"
+import { MonitoringOverview } from "@/features/monitoring/MonitoringOverview"
 import type { Device } from "@/lib/wails/types"
+import { BulkProgress } from "./DeviceBulkActions"
 import { DeviceDetails } from "./DeviceDetails"
+import { defaultDevicePreferences, type DevicePreferences, isControlEligible } from "./device-list"
+import { DeviceTable } from "./DeviceTable"
+import { DeviceToolbar } from "./DeviceToolbar"
 import { useDevices } from "./devices.queries"
-
-type SortKey = "name" | "ip" | "vendor" | "type" | "role" | "lastSeen" | "online" | "controlState"
-type DevicePreferences = { query: string; presence: string; role: string; sortBy: SortKey; descending: boolean }
-const defaults: DevicePreferences = { query: "", presence: "online", role: "Device", sortBy: "name", descending: false }
-const isEligible = (device: Device) => device.online && device.role === "Device" && device.controlState === ""
 
 export function DevicesView() {
   const { data: devices = [], isLoading, error, refetch } = useDevices()
-  const [preferences, setPreferences] = useStoredState<DevicePreferences>("netwarden.devices", defaults)
-  const [selectedMAC, setSelectedMAC] = useState("")
+  const [preferences, setPreferences] = useState<DevicePreferences>(defaultDevicePreferences)
+  const [detailsMAC, setDetailsMAC] = useState("")
   const [checkedMACs, setCheckedMACs] = useState<Set<string>>(() => new Set())
   const drawerTrigger = useRef<HTMLElement | null>(null)
   const restoreAll = useRestoreAllControls()
   const disconnectSelected = useDisconnectSelectedDevices()
-  const update = <K extends keyof DevicePreferences>(key: K, value: DevicePreferences[K]) =>
-    setPreferences((current) => ({ ...current, [key]: value }))
   const filtered =
     preferences.query !== "" ||
-    preferences.presence !== defaults.presence ||
-    preferences.role !== defaults.role ||
-    preferences.sortBy !== defaults.sortBy ||
+    preferences.presence !== defaultDevicePreferences.presence ||
+    preferences.role !== defaultDevicePreferences.role ||
+    preferences.sortBy !== defaultDevicePreferences.sortBy ||
     preferences.descending
   const controlledCount = devices.filter((device) => device.controlState !== "").length
-  const visible = useMemo(
-    () =>
-      devices
-        .filter((device) =>
-          `${device.name} ${device.ip} ${device.mac} ${device.vendor} ${device.type}`
-            .toLowerCase()
-            .includes(preferences.query.toLowerCase()),
-        )
-        .filter((device) => preferences.presence === "all" || (preferences.presence === "online") === device.online)
-        .filter((device) => preferences.role === "all" || device.role === preferences.role)
-        .sort((left, right) => {
-          const leftValue =
-            preferences.sortBy === "lastSeen" ? new Date(left.lastSeen).getTime() : left[preferences.sortBy]
-          const rightValue =
-            preferences.sortBy === "lastSeen" ? new Date(right.lastSeen).getTime() : right[preferences.sortBy]
-          const result =
-            typeof leftValue === "number" || typeof leftValue === "boolean"
-              ? Number(leftValue) - Number(rightValue)
-              : String(leftValue).localeCompare(String(rightValue), undefined, {
-                  numeric: preferences.sortBy === "ip",
-                  sensitivity: "base",
-                })
-          return preferences.descending ? -result : result
-        }),
-    [devices, preferences],
-  )
-  const visibleEligible = visible.filter(isEligible)
+  const visible = useMemo(() => filterAndSortDevices(devices, preferences), [devices, preferences])
   const selectedTargets = devices
-    .filter((device) => checkedMACs.has(device.mac) && isEligible(device))
+    .filter((device) => checkedMACs.has(device.mac) && isControlEligible(device))
     .map(({ ip, mac }) => ({ ip, mac }))
+
   useEffect(() => {
-    const eligibleMACs = new Set(devices.filter(isEligible).map((device) => device.mac))
+    const eligibleMACs = new Set(devices.filter(isControlEligible).map((device) => device.mac))
     setCheckedMACs((current) => {
       const next = new Set([...current].filter((mac) => eligibleMACs.has(mac)))
       return next.size === current.size ? current : next
     })
   }, [devices])
-  const selected = devices.find((device) => device.mac === selectedMAC)
+
+  const setChecked = (mac: string, checked: boolean) =>
+    setCheckedMACs((current) => {
+      const next = new Set(current)
+      if (checked) next.add(mac)
+      else next.delete(mac)
+      return next
+    })
+  const setVisibleChecked = (checked: boolean) =>
+    setCheckedMACs((current) => {
+      const next = new Set(current)
+      for (const device of visible.filter(isControlEligible)) {
+        if (checked) next.add(device.mac)
+        else next.delete(device.mac)
+      }
+      return next
+    })
+  const selected = devices.find((device) => device.mac === detailsMAC)
   const closeDetails = () => {
-    setSelectedMAC("")
+    setDetailsMAC("")
     window.requestAnimationFrame(() => drawerTrigger.current?.focus())
   }
 
   return (
     <>
+      <MonitoringOverview />
       <Card className="overflow-hidden bg-card/60">
-        <CardHeader className="gap-4 border-b">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <CardTitle>Devices</CardTitle>
-              <CardDescription>
-                {visible.length} of {devices.length} known hosts
-              </CardDescription>
-            </div>
-            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-              {selectedTargets.length > 0 && (
-                <DisconnectSelected
-                  count={selectedTargets.length}
-                  pending={disconnectSelected.isPending}
-                  disconnect={() =>
-                    disconnectSelected.mutate(selectedTargets, { onSuccess: () => setCheckedMACs(new Set()) })
-                  }
-                />
-              )}
-              {controlledCount > 0 && (
-                <RestoreAll
-                  count={controlledCount}
-                  pending={restoreAll.isPending}
-                  restore={() => restoreAll.mutate()}
-                />
-              )}
-              <div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
-                <Search className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  className="pl-9"
-                  placeholder="Search devices…"
-                  value={preferences.query}
-                  onChange={(event) => update("query", event.target.value)}
-                />
-              </div>
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <NativeSelect
-              aria-label="Filter by status"
-              value={preferences.presence}
-              onChange={(event) => update("presence", event.target.value)}
-            >
-              <NativeSelectOption value="all">All statuses</NativeSelectOption>
-              <NativeSelectOption value="online">Online</NativeSelectOption>
-              <NativeSelectOption value="offline">Offline</NativeSelectOption>
-            </NativeSelect>
-            <NativeSelect
-              aria-label="Filter by role"
-              value={preferences.role}
-              onChange={(event) => update("role", event.target.value)}
-            >
-              <NativeSelectOption value="all">All roles</NativeSelectOption>
-              <NativeSelectOption value="Device">Devices</NativeSelectOption>
-              <NativeSelectOption value="Gateway">Gateway</NativeSelectOption>
-              <NativeSelectOption value="This device">This device</NativeSelectOption>
-            </NativeSelect>
-            <NativeSelect
-              aria-label="Sort devices"
-              value={preferences.sortBy}
-              onChange={(event) => update("sortBy", event.target.value as SortKey)}
-            >
-              <NativeSelectOption value="name">Sort by name</NativeSelectOption>
-              <NativeSelectOption value="ip">Sort by IP address</NativeSelectOption>
-              <NativeSelectOption value="vendor">Sort by vendor</NativeSelectOption>
-              <NativeSelectOption value="type">Sort by type</NativeSelectOption>
-              <NativeSelectOption value="role">Sort by role</NativeSelectOption>
-              <NativeSelectOption value="online">Sort by online status</NativeSelectOption>
-              <NativeSelectOption value="controlState">Sort by control status</NativeSelectOption>
-              <NativeSelectOption value="lastSeen">Sort by last seen</NativeSelectOption>
-            </NativeSelect>
-            <Button
-              variant="outline"
-              size="icon"
-              aria-label={preferences.descending ? "Sort ascending" : "Sort descending"}
-              onClick={() => update("descending", !preferences.descending)}
-            >
-              <ArrowDownAZ className={preferences.descending ? "rotate-180" : ""} />
-            </Button>
-            {filtered && (
-              <Button variant="ghost" size="sm" onClick={() => setPreferences(defaults)}>
-                <X />
-                Clear filters
-              </Button>
-            )}
-          </div>
-        </CardHeader>
+        <DeviceToolbar
+          visibleCount={visible.length}
+          totalCount={devices.length}
+          selectedCount={selectedTargets.length}
+          controlledCount={controlledCount}
+          disconnectPending={disconnectSelected.isPending}
+          restorePending={restoreAll.isPending}
+          preferences={preferences}
+          onPreferencesChange={setPreferences}
+          onDisconnect={() =>
+            disconnectSelected.mutate(selectedTargets, { onSuccess: () => setCheckedMACs(new Set()) })
+          }
+          onRestore={() => restoreAll.mutate()}
+        />
         <CardContent className="p-0">
           {(disconnectSelected.isPending || restoreAll.isPending) && (
             <BulkProgress
@@ -193,74 +94,27 @@ export function DevicesView() {
           ) : isLoading ? (
             <div className="p-12 text-center text-sm text-muted-foreground">Loading devices…</div>
           ) : visible.length ? (
-            <div className="overflow-x-auto">
-              <Table className="min-w-[1000px]">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-10">
-                      <SelectionCheckbox
-                        label="Select all eligible visible devices"
-                        checked={
-                          visibleEligible.length > 0 && visibleEligible.every((device) => checkedMACs.has(device.mac))
-                        }
-                        indeterminate={
-                          visibleEligible.some((device) => checkedMACs.has(device.mac)) &&
-                          !visibleEligible.every((device) => checkedMACs.has(device.mac))
-                        }
-                        disabled={visibleEligible.length === 0}
-                        onChange={(checked) =>
-                          setCheckedMACs((current) => {
-                            const next = new Set(current)
-                            for (const device of visibleEligible) {
-                              if (checked) next.add(device.mac)
-                              else next.delete(device.mac)
-                            }
-                            return next
-                          })
-                        }
-                      />
-                    </TableHead>
-                    <TableHead>Device</TableHead>
-                    <TableHead>Address</TableHead>
-                    <TableHead>Vendor</TableHead>
-                    <TableHead>Type</TableHead>
-                    <TableHead>Role</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Control</TableHead>
-                    <TableHead>Last seen</TableHead>
-                    <TableHead />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {visible.map((device) => (
-                    <DeviceRow
-                      key={device.mac}
-                      device={device}
-                      checked={checkedMACs.has(device.mac)}
-                      selectable={isEligible(device)}
-                      onCheckedChange={(checked) =>
-                        setCheckedMACs((current) => {
-                          const next = new Set(current)
-                          if (checked) next.add(device.mac)
-                          else next.delete(device.mac)
-                          return next
-                        })
-                      }
-                      onOpen={(trigger) => {
-                        drawerTrigger.current = trigger
-                        setSelectedMAC(device.mac)
-                      }}
-                    />
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+            <DeviceTable
+              devices={visible}
+              checkedMACs={checkedMACs}
+              onCheckedChange={setChecked}
+              onCheckVisible={setVisibleChecked}
+              onOpen={(device, trigger) => {
+                drawerTrigger.current = trigger
+                setDetailsMAC(device.mac)
+              }}
+            />
           ) : (
             <div className="p-16 text-center">
               <h3 className="text-sm font-medium">No devices match these filters</h3>
               <p className="mt-1 text-xs text-muted-foreground">Adjust or clear the filters to see more hosts.</p>
               {filtered && (
-                <Button className="mt-4" variant="outline" size="sm" onClick={() => setPreferences(defaults)}>
+                <Button
+                  className="mt-4"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPreferences(defaultDevicePreferences)}
+                >
                   Clear filters
                 </Button>
               )}
@@ -273,199 +127,26 @@ export function DevicesView() {
   )
 }
 
-function BulkProgress({ count, operation }: { count: number; operation: string }) {
-  return (
-    <div className="border-b bg-primary/8 px-4 py-4" role="status" aria-live="polite" aria-atomic="true">
-      <div className="mb-2 flex items-center justify-between gap-4 text-sm font-medium">
-        <span className="flex items-center gap-2">
-          <LoaderCircle className="size-4 animate-spin text-primary" />
-          {operation}
-        </span>
-        <span className="text-xs text-muted-foreground">
-          {count} target{count === 1 ? "" : "s"}
-        </span>
-      </div>
-      <div className="h-2 overflow-hidden rounded-full bg-muted" aria-hidden="true">
-        <div className="h-full w-2/3 animate-pulse rounded-full bg-primary shadow-[0_0_12px_var(--primary)]" />
-      </div>
-      <p className="mt-2 text-xs text-muted-foreground">Keep NetWarden open while the network operation completes.</p>
-    </div>
-  )
-}
-
-function DisconnectSelected({
-  count,
-  pending,
-  disconnect,
-}: {
-  count: number
-  pending: boolean
-  disconnect: () => void
-}) {
-  return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button variant="destructive" disabled={pending}>
-          {pending ? <LoaderCircle className="animate-spin" /> : <Ban />}Disconnect selected ({count})
-        </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Disconnect selected devices?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This will interrupt gateway access for {count} selected online device{count === 1 ? "" : "s"}. NetWarden
-            will roll back previously changed targets if any device fails.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" onClick={disconnect}>
-            Disconnect selected devices
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
-}
-
-function RestoreAll({ count, pending, restore }: { count: number; pending: boolean; restore: () => void }) {
-  return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button variant="outline" disabled={pending}>
-          {pending ? <LoaderCircle className="animate-spin" /> : <RotateCcw />}Restore all ({count})
-        </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Restore all controlled devices?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This stops active control and restores normal network access for {count} device{count === 1 ? "" : "s"}.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={restore}>Restore all</AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
-}
-
-function DeviceRow({
-  device,
-  checked,
-  selectable,
-  onCheckedChange,
-  onOpen,
-}: {
-  device: Device
-  checked: boolean
-  selectable: boolean
-  onCheckedChange: (checked: boolean) => void
-  onOpen: (trigger: HTMLElement) => void
-}) {
-  const controlled = device.controlState !== ""
-  const control =
-    device.controlState === "active"
-      ? "Disconnected"
-      : device.controlState === "continuous"
-        ? "Continuous"
-        : device.controlState === "restoring"
-          ? "Restoring"
-          : device.controlState === "failed"
-            ? "Recovery failed"
-            : device.role !== "Device"
-              ? "Protected"
-              : device.online
-                ? "Available"
-                : "Offline"
-  return (
-    <TableRow
-      tabIndex={0}
-      role="button"
-      aria-label={`Open details for ${device.name || device.ip}`}
-      className="cursor-pointer focus-visible:bg-accent focus-visible:outline-none"
-      onClick={(event) => onOpen(event.currentTarget)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault()
-          onOpen(event.currentTarget)
-        }
-      }}
-    >
-      <TableCell onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
-        <SelectionCheckbox
-          label={`Select ${device.name || device.ip}`}
-          checked={checked}
-          disabled={!selectable}
-          onChange={onCheckedChange}
-        />
-      </TableCell>
-      <TableCell>
-        <div className="flex items-center gap-3">
-          <span
-            className={`size-2 rounded-full ${device.online ? "bg-primary shadow-[0_0_8px_var(--primary)]" : "bg-muted-foreground/60"}`}
-          />
-          <div>
-            <p className="font-medium">{device.name || device.ip}</p>
-            <p className="font-mono text-[10px] text-muted-foreground">{device.mac}</p>
-          </div>
-        </div>
-      </TableCell>
-      <TableCell>{device.ip}</TableCell>
-      <TableCell className="max-w-48 truncate text-muted-foreground" title={device.vendor}>
-        {device.vendor || "Unknown"}
-      </TableCell>
-      <TableCell>
-        <Badge variant="secondary">{device.type || "Unknown"}</Badge>
-      </TableCell>
-      <TableCell>
-        <Badge variant="outline">{device.role}</Badge>
-      </TableCell>
-      <TableCell>
-        <Badge variant={device.online ? "default" : "secondary"}>{device.online ? "Online" : "Offline"}</Badge>
-      </TableCell>
-      <TableCell>
-        <Badge variant={controlled ? "destructive" : "secondary"}>
-          {device.controlState === "restoring" && <LoaderCircle className="animate-spin" />}
-          {control}
-        </Badge>
-      </TableCell>
-      <TableCell className="text-xs text-muted-foreground">{formatDate(device.lastSeen)}</TableCell>
-      <TableCell>
-        <ChevronRight className="size-4 text-muted-foreground" />
-      </TableCell>
-    </TableRow>
-  )
-}
-
-function SelectionCheckbox({
-  label,
-  checked,
-  indeterminate = false,
-  disabled = false,
-  onChange,
-}: {
-  label: string
-  checked: boolean
-  indeterminate?: boolean
-  disabled?: boolean
-  onChange: (checked: boolean) => void
-}) {
-  const ref = useRef<HTMLInputElement>(null)
-  useEffect(() => {
-    if (ref.current) ref.current.indeterminate = indeterminate
-  }, [indeterminate])
-  return (
-    <input
-      ref={ref}
-      type="checkbox"
-      className="size-4 rounded border-border accent-primary disabled:cursor-not-allowed disabled:opacity-40"
-      aria-label={label}
-      checked={checked}
-      disabled={disabled}
-      onChange={(event) => onChange(event.target.checked)}
-    />
-  )
+function filterAndSortDevices(devices: Device[], preferences: DevicePreferences) {
+  return devices
+    .filter((device) =>
+      `${device.name} ${device.ip} ${device.mac} ${device.vendor} ${device.type}`
+        .toLowerCase()
+        .includes(preferences.query.toLowerCase()),
+    )
+    .filter((device) => preferences.presence === "all" || (preferences.presence === "online") === device.online)
+    .filter((device) => preferences.role === "all" || device.role === preferences.role)
+    .sort((left, right) => {
+      const leftValue = preferences.sortBy === "lastSeen" ? new Date(left.lastSeen).getTime() : left[preferences.sortBy]
+      const rightValue =
+        preferences.sortBy === "lastSeen" ? new Date(right.lastSeen).getTime() : right[preferences.sortBy]
+      const result =
+        typeof leftValue === "number" || typeof leftValue === "boolean"
+          ? Number(leftValue) - Number(rightValue)
+          : String(leftValue).localeCompare(String(rightValue), undefined, {
+              numeric: preferences.sortBy === "ip",
+              sensitivity: "base",
+            })
+      return preferences.descending ? -result : result
+    })
 }
