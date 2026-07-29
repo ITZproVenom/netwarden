@@ -27,9 +27,6 @@ jobs:
         run: go test ./...
       - name: Vet
         run: go vet ./...
-      - name: Build diagnostic CLI
-        run: go build -trimpath ./cmd/netwarden
-
   race-and-format:
     runs-on: ubuntu-latest
     steps:

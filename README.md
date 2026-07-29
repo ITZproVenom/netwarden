@@ -17,8 +17,6 @@ The new implementation currently provides:
 - Interfaces that keep privileged packet capture outside the application core.
 - A libpcap/Npcap adapter for interface enumeration, filtered capture, and
   Ethernet frame transmission.
-- Diagnostic commands for interface listing, ARP scanning, and explicit ARP
-  address resolution.
 - Versioned, atomic JSON configuration with saved interface selection, device
   nicknames, and an optional pinned gateway MAC baseline.
 - Embedded OUI vendor resolution for observed MAC addresses.
@@ -43,13 +41,11 @@ The new implementation currently provides:
 - Durable device and gateway-conflict history stored separately from settings;
   restored peers remain offline until observed on the current run.
 - Runtime APIs for manual scans, periodic-scan pause/resume, status snapshots,
-  and gateway-conflict history.
+  and gateway-conflict history used by the desktop GUI.
 - A restart supervisor that rebuilds capture and discovery after interface or
   default-route changes while keeping one stable event stream for frontends.
-- Queryable and pruneable history through `devices`, `conflicts`, and `history`
-  CLI commands, with a default 90-day retention window.
-- Timestamped human monitor output and newline-delimited JSON output for
-  integrations and log collectors.
+- Queryable and pruneable history in the desktop GUI, with a default 90-day
+  retention window.
 - An optional cross-platform subprocess privilege boundary. The helper only
   permits filtered capture and strictly validated local ARP discovery requests.
 - Periodic default-route checks that stop the one-shot runtime cleanly when the
@@ -57,57 +53,21 @@ The new implementation currently provides:
 
 The Wails v2 desktop GUI now has an initial network dashboard backed by the Go
 runtime. It supports interface selection, live device updates, manual and
-periodic discovery, and nickname editing. Packet capture still requires the
-same platform permissions as the CLI. On macOS the GUI requests administrator
-approval for its restricted capture-helper subprocess while the desktop app
-continues to run as the signed-in user. Other platforms currently retain the
-direct-capture behavior.
-
-The `disconnect`, `disconnect-all`, and `poison` CLI paths are reserved stubs.
-They resolve saved device state, filter eligible online peers against the
-current network, append an audit record, verify the live gateway, prepare and
-release the controller/capture lease, stop
-immediately before `Isolate`/`Run`, and return a typed
-`active network control is not implemented` error. The existing controller's
-active methods remain disconnected from the CLI execution path and privileged
-helper.
-
-Recovery is implemented separately: `restore`, `restore-all`, and
-`stop-poison` resolve the live verified gateway identity and send corrective
-gateway mappings. They do not require disruptive-action authorization, but are
-scope-validated and audited. Disruptive CLI paths remain stopped at their
-explicit not-implemented execution boundary.
-
-## Diagnostic CLI
-
-```sh
-go run ./cmd/netwarden interfaces
-go run ./cmd/netwarden route
-go run ./cmd/netwarden config set-interface en0
-go run ./cmd/netwarden config set-gateway-mac 00:11:22:33:44:55
-go run ./cmd/netwarden nickname set 00:11:22:33:44:55 "Living Room TV"
-sudo go run ./cmd/netwarden scan --interface en0 --duration 5s
-sudo go run ./cmd/netwarden monitor --interface en0 --interval 10s
-sudo go run ./cmd/netwarden monitor --interface en0 --json
-go run ./cmd/netwarden devices --since 24h
-go run ./cmd/netwarden conflicts --json
-sudo go run ./cmd/netwarden restore 192.168.1.20 02:00:00:00:00:20
-sudo go run ./cmd/netwarden restore-all
-sudo go run ./cmd/netwarden resolve --interface en0 --gateway 192.168.1.1
-```
+periodic discovery, nickname editing, history management, and diagnostics.
+Packet capture requires platform-specific permissions. On macOS the GUI
+requests administrator approval for its restricted capture-helper subprocess
+while the desktop app continues to run as the signed-in user. Other platforms
+currently retain the direct-capture behavior.
 
 Configuration is stored beneath the operating system's user configuration
-directory. Set `NETWARDEN_CONFIG` to use an explicit file, which is useful for
-development and for the future privileged-helper boundary.
+directory. Set `NETWARDEN_CONFIG` to use an explicit file during development.
 
 Linux and macOS builds require libpcap development files; Windows builds use
 Npcap. Capture and transmission generally require elevated privileges.
 
-For a split privilege boundary, build the binary first and pass an elevation
-command to the unprivileged monitor process, for example
-`netwarden monitor --helper-command "sudo /path/to/netwarden"`. The elevated
-subprocess cannot send arbitrary frames; it validates the interface identity,
-subnet, Ethernet destination, ARP operation, and target before transmission.
+The GUI's elevated capture-helper subprocess cannot send arbitrary frames; it
+validates the interface identity, subnet, Ethernet destination, ARP operation,
+and target before transmission.
 
 ## Development
 
