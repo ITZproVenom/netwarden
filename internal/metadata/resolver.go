@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -56,7 +57,7 @@ func NewResolver(nicknames map[string]string) (*Resolver, error) {
 		}
 		vendorIndex.values = make(map[string]string, len(records))
 		for _, record := range records {
-			prefix := strings.ToUpper(strings.TrimSpace(record.Prefix))
+			prefix := normalizeHardwareAddress(record.Prefix)
 			if prefix != "" && record.Name != "" {
 				vendorIndex.values[prefix] = record.Name
 			}
@@ -86,16 +87,44 @@ func (r *Resolver) Enrich(snapshot device.Device) device.Metadata {
 	} else if cached, ok := r.hostnames[snapshot.IP]; ok && time.Now().Before(cached.expires) && cached.name != "" {
 		result.Name = cached.name
 	}
-	if len(mac) >= 8 {
-		if vendor := r.vendors[strings.ToUpper(mac[:8])]; vendor != "" {
-			result.Vendor = vendor
-		}
+	if normalizedMAC := normalizeHardwareAddress(mac); len(normalizedMAC) == 12 {
+		result.Vendor = resolveVendor(normalizedMAC, r.vendors)
 	}
+	result.Type = identifyType(result.Name, result.Vendor)
 	r.mu.RUnlock()
 	if nickname == "" {
 		r.resolveHostname(snapshot.IP, mac)
 	}
 	return result
+}
+
+func resolveVendor(mac string, vendors map[string]string) string {
+	if len(mac) != 12 {
+		return "Unknown"
+	}
+	// IEEE assignments use 36-, 28-, and 24-bit prefixes. Checking the most
+	// specific assignment first prevents a broad OUI from hiding MA-M/MA-S data.
+	for _, length := range [...]int{9, 7, 6} {
+		if vendor := vendors[mac[:length]]; vendor != "" {
+			return vendor
+		}
+	}
+	firstOctet, err := strconv.ParseUint(mac[:2], 16, 8)
+	if err == nil && firstOctet&0x02 != 0 {
+		return "Private / randomized"
+	}
+	return "Unknown"
+}
+
+func normalizeHardwareAddress(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	value = strings.NewReplacer(":", "", "-", "", ".", "").Replace(value)
+	for _, character := range value {
+		if !strings.ContainsRune("0123456789ABCDEF", character) {
+			return ""
+		}
+	}
+	return value
 }
 
 // SetRefresh installs the non-blocking callback used when an asynchronous

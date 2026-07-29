@@ -21,6 +21,24 @@ const (
 	RoleGateway
 )
 
+// Type is the best-effort category inferred from a device's role and metadata.
+// Its empty zero value lets older history files load and is presented as Unknown.
+type Type string
+
+const (
+	TypeUnknown     Type = "Unknown"
+	TypeComputer    Type = "Computer"
+	TypePhone       Type = "Phone"
+	TypeTablet      Type = "Tablet"
+	TypeNetwork     Type = "Network device"
+	TypePrinter     Type = "Printer"
+	TypeTV          Type = "TV / streaming"
+	TypeGameConsole Type = "Game console"
+	TypeSpeaker     Type = "Smart speaker"
+	TypeCamera      Type = "Camera"
+	TypeSmartHome   Type = "Smart home"
+)
+
 type Observation struct {
 	IP     netip.Addr
 	MAC    net.HardwareAddr
@@ -33,6 +51,7 @@ type Device struct {
 	MAC       string
 	Name      string
 	Vendor    string
+	Type      Type
 	Role      Role
 	FirstSeen time.Time
 	LastSeen  time.Time
@@ -42,6 +61,7 @@ type Device struct {
 type Metadata struct {
 	Name   string
 	Vendor string
+	Type   Type
 }
 
 type ChangeKind uint8
@@ -227,6 +247,11 @@ func (r *Registry) SetRole(mac net.HardwareAddr, role Role) bool {
 		return false
 	}
 	current.Role = role
+	if role == RoleGateway {
+		current.Type = TypeNetwork
+	} else if role == RoleLocal {
+		current.Type = TypeComputer
+	}
 	return true
 }
 
@@ -245,6 +270,10 @@ func (r *Registry) ApplyMetadata(mac string, metadata Metadata) (Device, bool) {
 	}
 	if metadata.Vendor != "" && current.Vendor != metadata.Vendor {
 		current.Vendor = metadata.Vendor
+		changed = true
+	}
+	if metadata.Type != "" && current.Role == RolePeer && current.Type != metadata.Type {
+		current.Type = metadata.Type
 		changed = true
 	}
 	return current.Device, changed

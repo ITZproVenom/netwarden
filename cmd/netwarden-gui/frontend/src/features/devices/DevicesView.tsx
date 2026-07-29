@@ -25,7 +25,7 @@ import type { Device } from "@/lib/wails/types"
 import { DeviceDetails } from "./DeviceDetails"
 import { useDevices } from "./devices.queries"
 
-type SortKey = "name" | "ip" | "vendor" | "role" | "lastSeen" | "online" | "controlState"
+type SortKey = "name" | "ip" | "vendor" | "type" | "role" | "lastSeen" | "online" | "controlState"
 type DevicePreferences = { query: string; presence: string; role: string; sortBy: SortKey; descending: boolean }
 const defaults: DevicePreferences = { query: "", presence: "online", role: "Device", sortBy: "name", descending: false }
 
@@ -52,7 +52,7 @@ export function DevicesView() {
     () =>
       devices
         .filter((device) =>
-          `${device.name} ${device.ip} ${device.mac} ${device.vendor}`
+          `${device.name} ${device.ip} ${device.mac} ${device.vendor} ${device.type}`
             .toLowerCase()
             .includes(preferences.query.toLowerCase()),
         )
@@ -145,6 +145,7 @@ export function DevicesView() {
               <NativeSelectOption value="name">Sort by name</NativeSelectOption>
               <NativeSelectOption value="ip">Sort by IP address</NativeSelectOption>
               <NativeSelectOption value="vendor">Sort by vendor</NativeSelectOption>
+              <NativeSelectOption value="type">Sort by type</NativeSelectOption>
               <NativeSelectOption value="role">Sort by role</NativeSelectOption>
               <NativeSelectOption value="online">Sort by online status</NativeSelectOption>
               <NativeSelectOption value="controlState">Sort by control status</NativeSelectOption>
@@ -181,12 +182,13 @@ export function DevicesView() {
             <div className="p-12 text-center text-sm text-muted-foreground">Loading devices…</div>
           ) : visible.length ? (
             <div className="overflow-x-auto">
-              <Table className="min-w-[900px]">
+              <Table className="min-w-[1000px]">
                 <TableHeader>
                   <TableRow>
                     <TableHead>Device</TableHead>
                     <TableHead>Address</TableHead>
                     <TableHead>Vendor</TableHead>
+                    <TableHead>Type</TableHead>
                     <TableHead>Role</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Control</TableHead>
@@ -341,6 +343,9 @@ function DeviceRow({ device, onOpen }: { device: Device; onOpen: (trigger: HTMLE
       <TableCell>{device.ip}</TableCell>
       <TableCell className="max-w-48 truncate text-muted-foreground" title={device.vendor}>
         {device.vendor || "Unknown"}
+      </TableCell>
+      <TableCell>
+        <Badge variant="secondary">{device.type || "Unknown"}</Badge>
       </TableCell>
       <TableCell>
         <Badge variant="outline">{device.role}</Badge>

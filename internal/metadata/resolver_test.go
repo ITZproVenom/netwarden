@@ -71,7 +71,63 @@ func TestResolverReturnsUnknownVendor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := resolver.Enrich(device.Device{MAC: "02:00:00:00:00:01"}); got.Vendor != "Unknown" {
+	if got := resolver.Enrich(device.Device{MAC: "04:ff:ff:00:00:01"}); got.Vendor != "Unknown" {
 		t.Fatalf("unexpected metadata: %#v", got)
+	}
+}
+
+func TestResolveVendorUsesLongestRegisteredPrefix(t *testing.T) {
+	vendors := map[string]string{
+		"0050C2":    "MA-L vendor",
+		"0050C20":   "MA-M vendor",
+		"0050C2000": "MA-S vendor",
+	}
+	tests := []struct {
+		mac  string
+		want string
+	}{
+		{"0050C2000001", "MA-S vendor"},
+		{"0050C20F0001", "MA-M vendor"},
+		{"0050C2FF0001", "MA-L vendor"},
+	}
+	for _, test := range tests {
+		if got := resolveVendor(test.mac, vendors); got != test.want {
+			t.Errorf("resolveVendor(%q) = %q, want %q", test.mac, got, test.want)
+		}
+	}
+}
+
+func TestNormalizeHardwareAddressAcceptsCommonSeparators(t *testing.T) {
+	for _, input := range []string{"00:50:C2:00:00:01", "00-50-c2-00-00-01", "0050.C200.0001"} {
+		if got := normalizeHardwareAddress(input); got != "0050C2000001" {
+			t.Errorf("normalizeHardwareAddress(%q) = %q", input, got)
+		}
+	}
+}
+
+func TestResolverLabelsLocallyAdministeredMAC(t *testing.T) {
+	resolver, err := NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolver.Enrich(device.Device{MAC: "02:00:00:00:00:01"}); got.Vendor != "Private / randomized" {
+		t.Fatalf("vendor = %q", got.Vendor)
+	}
+}
+
+func TestResolverIdentifiesDeviceTypeFromHostname(t *testing.T) {
+	resolver, err := NewResolver(map[string]string{"02:00:00:00:00:01": "living-room-roku"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := resolver.Enrich(device.Device{MAC: "02:00:00:00:00:01"})
+	if got.Type != device.TypeTV {
+		t.Fatalf("type = %q, want %q", got.Type, device.TypeTV)
+	}
+}
+
+func TestIdentifyTypeLeavesAmbiguousDevicesUnknown(t *testing.T) {
+	if got := identifyType("192.168.1.10", "Apple, Inc."); got != device.TypeUnknown {
+		t.Fatalf("type = %q, want unknown", got)
 	}
 }

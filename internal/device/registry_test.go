@@ -52,6 +52,9 @@ func TestRegistryDoesNotExpireGateway(t *testing.T) {
 	if !registry.SetRole(mac, RoleGateway) {
 		t.Fatal("expected role change")
 	}
+	if got, _ := registry.Get(mac.String()); got.Type != TypeNetwork {
+		t.Fatalf("gateway type = %q", got.Type)
+	}
 	if changed := registry.MarkOffline(seen.Add(time.Hour), time.Minute); len(changed) != 0 {
 		t.Fatalf("gateway expired: %#v", changed)
 	}

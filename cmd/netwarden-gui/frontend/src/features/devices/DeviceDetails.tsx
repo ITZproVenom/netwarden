@@ -91,6 +91,7 @@ export function DeviceDetails({ device, onClose }: { device?: Device; onClose: (
                 <CopyDetail label="IP address" value={device.ip} />
                 <CopyDetail label="MAC address" value={device.mac} />
                 <Detail label="Vendor" value={device.vendor || "Unknown"} />
+                <Detail label="Type" value={device.type || "Unknown"} />
                 <div className="flex justify-between py-2 text-xs">
                   <dt className="text-muted-foreground">Status</dt>
                   <dd>

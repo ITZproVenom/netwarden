@@ -6,6 +6,7 @@ export type Device = {
   mac: string
   name: string
   vendor: string
+  type: string
   role: string
   firstSeen: string
   lastSeen: string

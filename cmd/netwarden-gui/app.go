@@ -56,6 +56,7 @@ type DeviceDTO struct {
 	MAC          string    `json:"mac"`
 	Name         string    `json:"name"`
 	Vendor       string    `json:"vendor"`
+	Type         string    `json:"type"`
 	Role         string    `json:"role"`
 	FirstSeen    time.Time `json:"firstSeen"`
 	LastSeen     time.Time `json:"lastSeen"`
@@ -723,5 +724,9 @@ func storedMAC(value string) net.HardwareAddr {
 
 func deviceDTO(value device.Device) DeviceDTO {
 	roles := map[device.Role]string{device.RolePeer: "Device", device.RoleLocal: "This device", device.RoleGateway: "Gateway"}
-	return DeviceDTO{IP: value.IP.String(), MAC: value.MAC, Name: value.Name, Vendor: value.Vendor, Role: roles[value.Role], FirstSeen: value.FirstSeen, LastSeen: value.LastSeen, Online: value.Online}
+	deviceType := value.Type
+	if deviceType == "" {
+		deviceType = device.TypeUnknown
+	}
+	return DeviceDTO{IP: value.IP.String(), MAC: value.MAC, Name: value.Name, Vendor: value.Vendor, Type: string(deviceType), Role: roles[value.Role], FirstSeen: value.FirstSeen, LastSeen: value.LastSeen, Online: value.Online}
 }
