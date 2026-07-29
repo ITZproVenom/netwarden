@@ -1,12 +1,15 @@
 import { Info, MonitorCog, Palette } from "lucide-react"
 import { useTheme } from "next-themes"
-import packageInfo from "../../../package.json"
+import { useQuery } from "@tanstack/react-query"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
+import { queryKeys } from "@/lib/query-keys"
+import { wailsClient } from "@/lib/wails/client"
 
 export function ApplicationPreferencesCard() {
   const { theme, setTheme } = useTheme()
+  const { data: appInfo } = useQuery({ queryKey: queryKeys.appInfo, queryFn: wailsClient.appInfo, retry: false })
   return (
     <Card className="bg-card/60">
       <CardHeader className="border-b">
@@ -41,12 +44,17 @@ export function ApplicationPreferencesCard() {
         <div className="rounded-lg border bg-background/30 p-4">
           <div className="flex items-center gap-2">
             <Info className="size-4 text-primary" />
-            <p className="text-sm font-medium">NetWarden {packageInfo.version}</p>
+            <p className="text-sm font-medium">
+              {appInfo?.name || "NetWarden"} {appInfo?.version || "2.0.0"}
+            </p>
           </div>
           <p className="mt-3 text-xs leading-5 text-muted-foreground">
             Local network monitoring and gateway-integrity protection. Configuration, history, audit records, and logs
             remain in the operating system’s application-data directory.
           </p>
+          {appInfo?.build && appInfo.build !== "development" && (
+            <p className="mt-2 font-mono text-[10px] text-muted-foreground">Build {appInfo.build}</p>
+          )}
         </div>
       </CardContent>
     </Card>

@@ -7,6 +7,8 @@ import { ThemeProvider } from "next-themes"
 import { subscribeRuntimeEvents } from "@/lib/wails/events"
 import { queryKeys } from "@/lib/query-keys"
 import { UnsavedChangesProvider } from "@/app/unsaved-changes"
+import { LiveAnnouncer } from "@/components/LiveAnnouncer"
+import { announce } from "@/lib/accessibility"
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: 2_000, retry: 1 } } })
 
@@ -15,9 +17,17 @@ function RuntimeEventBridge() {
   useEffect(
     () =>
       subscribeRuntimeEvents({
-        onChange: () => client.invalidateQueries({ queryKey: queryKeys.runtime }),
+        onChange: (event) => {
+          client.invalidateQueries({ queryKey: queryKeys.runtime })
+          if (event?.title)
+            announce(
+              [event.title, event.detail].filter(Boolean).join(". "),
+              event.severity === "error" ? "assertive" : "polite",
+            )
+        },
         onError: (message) => {
           toast.error("Runtime error", { description: message })
+          announce(`Runtime error. ${message}`, "assertive")
           client.invalidateQueries({ queryKey: queryKeys.runtime })
         },
       }),
@@ -33,6 +43,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
         <UnsavedChangesProvider>
           <TooltipProvider>
             <RuntimeEventBridge />
+            <LiveAnnouncer />
             {children}
             <Toaster richColors position="bottom-right" />
           </TooltipProvider>

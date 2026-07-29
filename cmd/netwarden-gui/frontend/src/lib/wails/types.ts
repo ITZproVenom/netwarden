@@ -51,3 +51,4 @@ export type MonitoringSettings = {
   periodicDiscovery: boolean
 }
 export type ControlAudit = { at: string; operation: string; outcome: string; targets: string[] }
+export type AppInfo = { name: string; version: string; build: string }

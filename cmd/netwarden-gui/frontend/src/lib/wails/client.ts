@@ -1,5 +1,6 @@
 import type {
   Activity,
+  AppInfo,
   Bootstrap,
   Conflict,
   ControlAudit,
@@ -16,6 +17,7 @@ const backend = () => {
 }
 
 export const wailsClient = {
+  appInfo: () => backend().AppInfo() as Promise<AppInfo>,
   bootstrap: () => backend().Bootstrap() as Promise<Bootstrap>,
   status: () => backend().Status() as Promise<RuntimeStatus>,
   devices: () => backend().Devices() as Promise<Device[]>,

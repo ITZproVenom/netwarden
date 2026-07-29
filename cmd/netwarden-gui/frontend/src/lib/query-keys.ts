@@ -1,4 +1,5 @@
 export const queryKeys = {
+  appInfo: ["app-info"] as const,
   runtime: ["runtime"] as const,
   bootstrap: ["runtime", "bootstrap"] as const,
   status: ["runtime", "status"] as const,

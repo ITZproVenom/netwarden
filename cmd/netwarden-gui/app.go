@@ -87,6 +87,16 @@ type ActivityDTO struct {
 	Detail   string    `json:"detail,omitempty"`
 }
 
+type AppInfoDTO struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Build   string `json:"build"`
+}
+
+func (a *GUIApp) AppInfo() AppInfoDTO {
+	return AppInfoDTO{Name: applicationName, Version: applicationVersion, Build: buildVersion}
+}
+
 func NewGUIApp() *GUIApp { return &GUIApp{} }
 
 func (a *GUIApp) startup(ctx context.Context) {
@@ -534,10 +544,25 @@ func (a *GUIApp) forwardEvents(ctx context.Context, supervisor *coreapp.Supervis
 		case <-ctx.Done():
 			return
 		case event := <-supervisor.Events():
-			a.recordActivity(activityFromEvent(event))
-			runtime.EventsEmit(a.ctx, "network:event", map[string]any{"kind": int(event.Kind), "at": event.At})
+			activity := activityFromEvent(event)
+			a.recordActivity(activity)
+			runtime.EventsEmit(a.ctx, "network:event", activity)
+			if shouldNotify(event) {
+				go func() {
+					if err := sendNativeNotification(activity.Title, activity.Detail); err != nil {
+						a.log(slog.LevelWarn, "native notification failed", "component", "notification", "error", err)
+					}
+				}()
+			}
 		}
 	}
+}
+
+func shouldNotify(event coreapp.Event) bool {
+	if event.Kind == coreapp.EventIntegrityWarning {
+		return true
+	}
+	return event.Kind == coreapp.EventControlRestorationCompleted && event.Control != nil && event.Control.State == coreapp.ControlStateFailed
 }
 
 func (a *GUIApp) recordActivity(event ActivityDTO) {
@@ -632,6 +657,17 @@ func activityFromEvent(event coreapp.Event) ActivityDTO {
 		activity.Kind, activity.Title = "control", "Control restoration started"
 	case coreapp.EventControlRestorationCompleted:
 		activity.Kind, activity.Title = "control", "Control restoration completed"
+		if event.Control != nil && event.Control.State == coreapp.ControlStateFailed {
+			activity.Severity, activity.Title = "error", "Control restoration failed"
+		}
+	case coreapp.EventControlBulkRollbackStarted:
+		activity.Kind, activity.Severity, activity.Title = "control", "warning", "Bulk control rollback started"
+	case coreapp.EventControlBulkRollbackCompleted:
+		activity.Kind, activity.Title = "control", "Bulk control rollback completed"
+	case coreapp.EventControlContinuousWorkerStopped:
+		activity.Kind, activity.Title = "control", "Continuous control stopped"
+	case coreapp.EventControlAuditFailed:
+		activity.Kind, activity.Severity, activity.Title = "control", "error", "Control audit failed"
 	}
 	if event.Device != nil {
 		activity.Detail = fmt.Sprintf("%s · %s · %s", event.Device.Name, event.Device.IP, event.Device.MAC)

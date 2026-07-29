@@ -1,4 +1,10 @@
-type Handlers = { onChange: () => void; onError: (message: string) => void }
+export type RuntimeEvent = {
+  title?: string
+  detail?: string
+  severity?: "info" | "warning" | "error"
+}
+
+type Handlers = { onChange: (event?: RuntimeEvent) => void; onError: (message: string) => void }
 
 export function subscribeRuntimeEvents(handlers: Handlers) {
   if (!window.runtime?.EventsOn) return () => undefined
