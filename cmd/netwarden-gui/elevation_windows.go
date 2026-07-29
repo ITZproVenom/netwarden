@@ -87,15 +87,22 @@ func joinWindowsArguments(arguments ...string) string {
 
 func acceptAuthenticatedHelper(ctx context.Context, listener net.Listener, expectedToken string) (net.Conn, error) {
 	deadline := time.Now().Add(45 * time.Second)
-	if deadlineListener, ok := listener.(*net.TCPListener); ok {
-		_ = deadlineListener.SetDeadline(deadline)
-	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		if time.Now().After(deadline) {
+			return nil, errors.New("elevated capture helper did not authenticate")
+		}
+		if deadlineListener, ok := listener.(*net.TCPListener); ok {
+			_ = deadlineListener.SetDeadline(time.Now().Add(500 * time.Millisecond))
+		}
 		connection, err := listener.Accept()
 		if err != nil {
+			var networkError net.Error
+			if errors.As(err, &networkError) && networkError.Timeout() {
+				continue
+			}
 			return nil, fmt.Errorf("wait for elevated capture helper: %w", err)
 		}
 		_ = connection.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -109,9 +116,6 @@ func acceptAuthenticatedHelper(ctx context.Context, listener net.Listener, expec
 			return connection, nil
 		}
 		_ = connection.Close()
-		if time.Now().After(deadline) {
-			return nil, errors.New("elevated capture helper did not authenticate")
-		}
 	}
 }
 

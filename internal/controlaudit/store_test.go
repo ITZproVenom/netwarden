@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -77,5 +78,24 @@ func TestStoreQueriesAndPrunesAuditEvents(t *testing.T) {
 	events, err = store.Query(Query{})
 	if err != nil || len(events) != 1 {
 		t.Fatalf("after prune: %#v, %v", events, err)
+	}
+}
+
+func TestStoreQueryLimitReturnsNewestMatchingEvents(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "control.jsonl"))
+	now := time.Now().UTC()
+	for index := 0; index < 5; index++ {
+		if err := store.Record(context.Background(), app.ControlAuditEvent{
+			At: now.Add(time.Duration(index) * time.Minute), Operation: app.ControlDisconnect, Outcome: fmt.Sprintf("event-%d", index),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err := store.Query(Query{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Outcome != "event-3" || events[1].Outcome != "event-4" {
+		t.Fatalf("limited events = %#v", events)
 	}
 }

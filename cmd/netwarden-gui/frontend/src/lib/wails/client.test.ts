@@ -13,6 +13,7 @@ describe("wailsClient", () => {
     SetPeriodicScanEnabled: vi.fn(),
     SetNickname: vi.fn(),
     SetGatewayMAC: vi.fn(),
+    ControlAudit: vi.fn(),
     DisconnectAllDevices: vi.fn(),
     DisconnectSelectedDevices: vi.fn(),
   }
@@ -44,5 +45,11 @@ describe("wailsClient", () => {
     backend.DisconnectAllDevices.mockResolvedValue(undefined)
     await wailsClient.disconnectAllDevices()
     expect(backend.DisconnectAllDevices).toHaveBeenCalledOnce()
+  })
+
+  it("bounds control audit requests by default", async () => {
+    backend.ControlAudit.mockResolvedValue([])
+    await wailsClient.controlAudit()
+    expect(backend.ControlAudit).toHaveBeenCalledWith(250)
   })
 })

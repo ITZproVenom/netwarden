@@ -158,12 +158,18 @@ func (a *GUIApp) controlCommands() (*coreapp.ControlCommands, context.Context, c
 	return runtime.ControlCommands(controlaudit.NewStore(store.Path()+".control-audit.jsonl"), nil), ctx, cancel, nil
 }
 
-func (a *GUIApp) ControlAudit() ([]ControlAuditDTO, error) {
+func (a *GUIApp) ControlAudit(limit int) ([]ControlAuditDTO, error) {
+	if limit <= 0 {
+		limit = 250
+	}
+	if limit > 5000 {
+		limit = 5000
+	}
 	store, _, err := loadSettings()
 	if err != nil {
 		return nil, err
 	}
-	events, err := controlaudit.NewStore(store.Path() + ".control-audit.jsonl").Query(controlaudit.Query{})
+	events, err := controlaudit.NewStore(store.Path() + ".control-audit.jsonl").Query(controlaudit.Query{Limit: limit})
 	if err != nil {
 		return nil, err
 	}

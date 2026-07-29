@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/amdzy/NetWarden/internal/capture"
 	"github.com/amdzy/NetWarden/internal/capture/helper"
@@ -20,11 +21,20 @@ import (
 type Driver struct {
 	command *exec.Cmd
 	input   io.WriteCloser
+	output  io.Closer
+	wait    <-chan error
+	done    chan struct{}
 	frames  chan capture.Frame
 	errors  chan error
 	mu      sync.Mutex
 	closed  bool
+	stop    sync.Once
 }
+
+const (
+	helperReadyTimeout    = 45 * time.Second
+	helperShutdownTimeout = 5 * time.Second
+)
 
 func Open(ctx context.Context, executable string, arguments ...string) (*Driver, error) {
 	return OpenWithEnv(ctx, executable, nil, arguments...)
@@ -37,7 +47,7 @@ func OpenWithEnv(ctx context.Context, executable string, environment map[string]
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	command := exec.Command(executable, arguments...)
+	command := exec.CommandContext(ctx, executable, arguments...)
 	command.Env = mergeEnvironment(os.Environ(), environment)
 	input, err := command.StdinPipe()
 	if err != nil {
@@ -50,16 +60,21 @@ func OpenWithEnv(ctx context.Context, executable string, environment map[string]
 	if err := command.Start(); err != nil {
 		return nil, err
 	}
+	wait := make(chan error, 1)
+	go func() { wait <- command.Wait() }()
 	decoder := json.NewDecoder(bufio.NewReader(output))
-	var ready helper.Message
-	if err := decoder.Decode(&ready); err != nil || ready.Type != "ready" {
+	ready, err := waitUntilReady(ctx, decoder)
+	if err != nil || ready.Type != "ready" {
 		_ = command.Process.Kill()
+		_ = output.Close()
+		<-wait
 		if err == nil {
 			err = errors.New("helper did not become ready")
 		}
 		return nil, fmt.Errorf("start capture helper: %w", err)
 	}
-	driver := &Driver{command: command, input: input, frames: make(chan capture.Frame, 64), errors: make(chan error, 1)}
+	driver := newDriver(input, output, wait)
+	driver.command = command
 	go driver.read(decoder)
 	return driver, nil
 }
@@ -73,17 +88,44 @@ func OpenConnection(ctx context.Context, connection io.ReadWriteCloser) (*Driver
 		return nil, err
 	}
 	decoder := json.NewDecoder(bufio.NewReader(connection))
-	var ready helper.Message
-	if err := decoder.Decode(&ready); err != nil || ready.Type != "ready" {
+	ready, err := waitUntilReady(ctx, decoder)
+	if err != nil || ready.Type != "ready" {
 		_ = connection.Close()
 		if err == nil {
 			err = errors.New("helper did not become ready")
 		}
 		return nil, fmt.Errorf("start capture helper: %w", err)
 	}
-	driver := &Driver{input: connection, frames: make(chan capture.Frame, 64), errors: make(chan error, 1)}
+	driver := newDriver(connection, connection, nil)
 	go driver.read(decoder)
 	return driver, nil
+}
+
+func newDriver(input io.WriteCloser, output io.Closer, wait <-chan error) *Driver {
+	return &Driver{input: input, output: output, wait: wait, done: make(chan struct{}), frames: make(chan capture.Frame, 64), errors: make(chan error, 1)}
+}
+
+func waitUntilReady(ctx context.Context, decoder *json.Decoder) (helper.Message, error) {
+	type result struct {
+		message helper.Message
+		err     error
+	}
+	ready := make(chan result, 1)
+	go func() {
+		var message helper.Message
+		err := decoder.Decode(&message)
+		ready <- result{message: message, err: err}
+	}()
+	timer := time.NewTimer(helperReadyTimeout)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return helper.Message{}, ctx.Err()
+	case <-timer.C:
+		return helper.Message{}, errors.New("capture helper readiness timed out")
+	case result := <-ready:
+		return result.message, result.err
+	}
 }
 
 func mergeEnvironment(base []string, overrides map[string]string) []string {
@@ -110,7 +152,11 @@ func (d *Driver) read(decoder *json.Decoder) {
 		}
 		switch message.Type {
 		case "frame":
-			d.frames <- capture.Frame{Data: message.Data, CapturedAt: message.CapturedAt}
+			select {
+			case d.frames <- capture.Frame{Data: message.Data, CapturedAt: message.CapturedAt}:
+			case <-d.done:
+				return
+			}
 		case "error":
 			d.report(errors.New(message.Error))
 		}
@@ -151,13 +197,41 @@ func (d *Driver) Close() error {
 		return nil
 	}
 	d.closed = true
+	d.stop.Do(func() { close(d.done) })
 	_ = json.NewEncoder(d.input).Encode(helper.Message{Type: "close"})
 	_ = d.input.Close()
+	if d.output != nil {
+		_ = d.output.Close()
+	}
+	wait := d.wait
+	command := d.command
 	d.mu.Unlock()
-	if d.command != nil {
-		return d.command.Wait()
+	if wait != nil {
+		timer := time.NewTimer(helperShutdownTimeout)
+		defer timer.Stop()
+		select {
+		case err := <-wait:
+			return normalizeWaitError(err)
+		case <-timer.C:
+			if command != nil && command.Process != nil {
+				_ = command.Process.Kill()
+			}
+			<-wait
+			return errors.New("capture helper shutdown timed out")
+		}
 	}
 	return nil
+}
+
+func normalizeWaitError(err error) error {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return nil
+	}
+	var exitError *exec.ExitError
+	if errors.As(err, &exitError) {
+		return nil
+	}
+	return err
 }
 
 func (d *Driver) report(err error) {

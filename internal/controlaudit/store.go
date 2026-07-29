@@ -25,6 +25,7 @@ type Query struct {
 	Since     time.Time
 	Operation app.ControlOperation
 	Outcome   string
+	Limit     int
 }
 
 func NewStore(path string) *Store { return &Store{path: path, maxBytes: 10 << 20} }
@@ -75,6 +76,7 @@ func (s *Store) queryUnlocked(query Query) ([]app.ControlAuditEvent, error) {
 	defer file.Close()
 	decoder := json.NewDecoder(file)
 	var result []app.ControlAuditEvent
+	ringIndex := 0
 	for {
 		var event app.ControlAuditEvent
 		err := decoder.Decode(&event)
@@ -87,7 +89,18 @@ func (s *Store) queryUnlocked(query Query) ([]app.ControlAuditEvent, error) {
 		if !query.Since.IsZero() && event.At.Before(query.Since) || query.Operation != "" && event.Operation != query.Operation || query.Outcome != "" && event.Outcome != query.Outcome {
 			continue
 		}
-		result = append(result, event)
+		if query.Limit <= 0 || len(result) < query.Limit {
+			result = append(result, event)
+			continue
+		}
+		result[ringIndex] = event
+		ringIndex = (ringIndex + 1) % query.Limit
+	}
+	if query.Limit > 0 && len(result) == query.Limit && ringIndex > 0 {
+		ordered := make([]app.ControlAuditEvent, 0, len(result))
+		ordered = append(ordered, result[ringIndex:]...)
+		ordered = append(ordered, result[:ringIndex]...)
+		result = ordered
 	}
 	return result, nil
 }

@@ -5,7 +5,8 @@ import { wailsClient } from "@/lib/wails/client"
 import { errorMessage } from "@/lib/errors"
 import { announce } from "@/lib/accessibility"
 
-export const useControlAudit = () => useQuery({ queryKey: queryKeys.controlAudit, queryFn: wailsClient.controlAudit })
+export const useControlAudit = (limit = 250) =>
+  useQuery({ queryKey: [...queryKeys.controlAudit, limit], queryFn: () => wailsClient.controlAudit(limit) })
 
 function useControlAction(action: (target: { ip: string; mac: string }) => Promise<void>, success: string) {
   const client = useQueryClient()

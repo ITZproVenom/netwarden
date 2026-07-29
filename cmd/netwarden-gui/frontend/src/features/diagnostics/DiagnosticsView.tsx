@@ -31,7 +31,8 @@ type UnifiedEvent = ActivityEvent & { source: "runtime" | "control" }
 export function DiagnosticsView() {
   const { data: status } = useRuntimeStatus()
   const runtime = useActivity()
-  const control = useControlAudit()
+  const [auditLimit, setAuditLimit] = useState(250)
+  const control = useControlAudit(auditLimit)
   const [query, setQuery] = useState("")
   const [severity, setSeverity] = useState("all")
   const [kind, setKind] = useState("all")
@@ -181,23 +182,32 @@ export function DiagnosticsView() {
           ) : runtime.isLoading || control.isLoading ? (
             <div className="p-12 text-center text-sm text-muted-foreground">Loading activity…</div>
           ) : visible.length ? (
-            <div className="overflow-x-auto">
-              <Table className="min-w-[760px]">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-36">Time</TableHead>
-                    <TableHead className="w-36">Type</TableHead>
-                    <TableHead>Event</TableHead>
-                    <TableHead>Details</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {visible.map((event, index) => (
-                    <ActivityRow key={`${event.source}-${event.at}-${event.kind}-${index}`} event={event} />
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+            <>
+              <div className="overflow-x-auto">
+                <Table className="min-w-[760px]">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-36">Time</TableHead>
+                      <TableHead className="w-36">Type</TableHead>
+                      <TableHead>Event</TableHead>
+                      <TableHead>Details</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {visible.map((event, index) => (
+                      <ActivityRow key={`${event.source}-${event.at}-${event.kind}-${index}`} event={event} />
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              {(control.data?.length || 0) >= auditLimit && auditLimit < 5000 && (
+                <div className="border-t p-4 text-center">
+                  <Button variant="outline" size="sm" onClick={() => setAuditLimit((current) => current + 250)}>
+                    Load older control activity
+                  </Button>
+                </div>
+              )}
+            </>
           ) : (
             <div className="p-16 text-center">
               <Activity className="mx-auto size-9 text-muted-foreground" />
