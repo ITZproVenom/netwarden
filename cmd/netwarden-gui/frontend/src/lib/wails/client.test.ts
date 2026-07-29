@@ -14,11 +14,19 @@ describe("wailsClient", () => {
     SetNickname: vi.fn(),
     SetGatewayMAC: vi.fn(),
     DisconnectAllDevices: vi.fn(),
+    DisconnectSelectedDevices: vi.fn(),
   }
 
   beforeEach(() => {
     vi.clearAllMocks()
     window.go = { main: { GUIApp: backend } }
+  })
+
+  it("passes selected disconnect targets to the backend", async () => {
+    const targets = [{ ip: "192.168.1.20", mac: "00:11:22:33:44:55" }]
+    backend.DisconnectSelectedDevices.mockResolvedValue(undefined)
+    await wailsClient.disconnectSelectedDevices(targets)
+    expect(backend.DisconnectSelectedDevices).toHaveBeenCalledWith(targets)
   })
 
   it("keeps Wails method names out of feature components", async () => {

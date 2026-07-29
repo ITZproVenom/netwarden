@@ -52,6 +52,27 @@ export function useDisconnectAllDevices() {
   })
 }
 
+export function useDisconnectSelectedDevices() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (targets: Array<{ ip: string; mac: string }>) => wailsClient.disconnectSelectedDevices(targets),
+    onSuccess: async (_, targets) => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: queryKeys.runtime }),
+        client.invalidateQueries({ queryKey: queryKeys.controlAudit }),
+      ])
+      const message = `${targets.length} selected device${targets.length === 1 ? "" : "s"} disconnected`
+      toast.success(message)
+      announce(message)
+    },
+    onError: (error) => {
+      const message = errorMessage(error)
+      toast.error("Selected disconnect failed", { description: message })
+      announce(`Selected disconnect failed. ${message}`, "assertive")
+    },
+  })
+}
+
 function useRecovery(action: (target: { ip: string; mac: string }) => Promise<void>, success: string) {
   const client = useQueryClient()
   return useMutation({

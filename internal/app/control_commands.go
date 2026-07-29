@@ -112,6 +112,23 @@ func (c *ControlCommands) DisconnectAll(ctx context.Context) error {
 	return c.prepare(ctx, ControlRequest{Operation: ControlDisconnectAll, Targets: targets})
 }
 
+// DisconnectSelected validates the requested snapshot against current registry
+// state before preparing one rollback-safe bulk operation.
+func (c *ControlCommands) DisconnectSelected(ctx context.Context, requested []ControlTarget) error {
+	if len(requested) == 0 {
+		return ErrNoEligibleTargets
+	}
+	targets := make([]ControlTarget, 0, len(requested))
+	for _, target := range requested {
+		resolved, err := c.resolveTarget(target)
+		if err != nil {
+			return err
+		}
+		targets = append(targets, resolved)
+	}
+	return c.prepare(ctx, ControlRequest{Operation: ControlDisconnectAll, Targets: targets})
+}
+
 func (c *ControlCommands) StartContinuous(ctx context.Context, target ControlTarget) error {
 	eligible, err := c.resolveTarget(target)
 	if err != nil {

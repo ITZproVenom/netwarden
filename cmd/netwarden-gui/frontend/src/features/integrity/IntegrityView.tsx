@@ -14,8 +14,8 @@ export function IntegrityView() {
     <Card className="overflow-hidden bg-card/60">
       <CardHeader className="flex-row items-center justify-between border-b">
         <div>
-          <CardTitle>Gateway integrity</CardTitle>
-          <CardDescription>Claims that differed from the trusted gateway identity</CardDescription>
+          <CardTitle>Gateway security</CardTitle>
+          <CardDescription>Detect devices attempting to impersonate your router</CardDescription>
         </div>
         <Badge variant={active ? "destructive" : "outline"}>
           {active ? `${active} active warning${active === 1 ? "" : "s"}` : "No active warnings"}
@@ -36,10 +36,10 @@ export function IntegrityView() {
         )}
         {error ? (
           <div className="p-4 sm:p-8">
-            <QueryError error={error} retry={() => void refetch()} title="Could not load integrity history" />
+            <QueryError error={error} retry={() => void refetch()} title="Could not load gateway security history" />
           </div>
         ) : isLoading ? (
-          <div className="p-12 text-center text-sm text-muted-foreground">Loading integrity history…</div>
+          <div className="p-12 text-center text-sm text-muted-foreground">Loading gateway security history…</div>
         ) : conflicts.length ? (
           <div className="overflow-x-auto">
             <Table className="min-w-[760px]">

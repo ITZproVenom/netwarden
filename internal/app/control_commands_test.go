@@ -126,6 +126,27 @@ func TestControlCommandsFilterIneligibleDevices(t *testing.T) {
 	}
 }
 
+func TestDisconnectSelectedUsesOnlyRequestedCurrentTargets(t *testing.T) {
+	audit := &recordingControlAudit{}
+	deps := testControlDependencies(t, audit)
+	secondMAC, _ := net.ParseMAC("02:00:00:00:00:30")
+	second := ControlTarget{IP: netip.MustParseAddr("192.168.1.30"), MAC: secondMAC}
+	deps.Devices = controlTestDevices{values: append(deps.Devices.Snapshot(), device.Device{
+		IP: second.IP, MAC: second.MAC.String(), Role: device.RolePeer, Online: true,
+	})}
+	deps.Lifecycle = NewControlLifecycle(nil)
+	commands := NewControlCommands(testActiveController(t, deps), deps)
+	if err := commands.DisconnectSelected(context.Background(), []ControlTarget{second}); err != nil {
+		t.Fatal(err)
+	}
+	if len(audit.events) != 2 || len(audit.events[0].Targets) != 1 || audit.events[0].Targets[0].MAC.String() != second.MAC.String() {
+		t.Fatalf("unexpected selected targets: %#v", audit.events)
+	}
+	if err := deps.Lifecycle.RestoreAll(context.Background(), "test cleanup"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestControlCommandsPrepareAndReleaseControllerBeforeExecutionBoundary(t *testing.T) {
 	audit := &recordingControlAudit{}
 	deps := testControlDependencies(t, audit)

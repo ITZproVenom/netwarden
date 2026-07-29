@@ -116,7 +116,7 @@ export function DiagnosticsView() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <CardTitle>Unified activity</CardTitle>
-              <CardDescription>Runtime, discovery, integrity, device, and control audit events</CardDescription>
+              <CardDescription>Runtime, discovery, gateway security, device, and control audit events</CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" size="sm" onClick={() => void copySummary()}>

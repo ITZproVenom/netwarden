@@ -116,7 +116,7 @@ export function SettingsView() {
             </span>
             <div>
               <CardTitle>History</CardTitle>
-              <CardDescription>Manage durable device and gateway-integrity records</CardDescription>
+              <CardDescription>Manage durable device and gateway-security records</CardDescription>
             </div>
           </div>
         </CardHeader>

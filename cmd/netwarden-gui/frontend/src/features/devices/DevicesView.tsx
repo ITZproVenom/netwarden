@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { ArrowDownAZ, Ban, ChevronRight, LoaderCircle, RotateCcw, Search, X } from "lucide-react"
 import {
   AlertDialog,
@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { QueryError } from "@/components/QueryError"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { useDisconnectAllDevices, useRestoreAllControls } from "@/features/control/control.queries"
+import { useDisconnectSelectedDevices, useRestoreAllControls } from "@/features/control/control.queries"
 import { formatDate } from "@/lib/format"
 import { useStoredState } from "@/lib/preferences"
 import type { Device } from "@/lib/wails/types"
@@ -28,14 +28,16 @@ import { useDevices } from "./devices.queries"
 type SortKey = "name" | "ip" | "vendor" | "type" | "role" | "lastSeen" | "online" | "controlState"
 type DevicePreferences = { query: string; presence: string; role: string; sortBy: SortKey; descending: boolean }
 const defaults: DevicePreferences = { query: "", presence: "online", role: "Device", sortBy: "name", descending: false }
+const isEligible = (device: Device) => device.online && device.role === "Device" && device.controlState === ""
 
 export function DevicesView() {
   const { data: devices = [], isLoading, error, refetch } = useDevices()
   const [preferences, setPreferences] = useStoredState<DevicePreferences>("netwarden.devices", defaults)
   const [selectedMAC, setSelectedMAC] = useState("")
+  const [checkedMACs, setCheckedMACs] = useState<Set<string>>(() => new Set())
   const drawerTrigger = useRef<HTMLElement | null>(null)
   const restoreAll = useRestoreAllControls()
-  const disconnectAll = useDisconnectAllDevices()
+  const disconnectSelected = useDisconnectSelectedDevices()
   const update = <K extends keyof DevicePreferences>(key: K, value: DevicePreferences[K]) =>
     setPreferences((current) => ({ ...current, [key]: value }))
   const filtered =
@@ -45,9 +47,6 @@ export function DevicesView() {
     preferences.sortBy !== defaults.sortBy ||
     preferences.descending
   const controlledCount = devices.filter((device) => device.controlState !== "").length
-  const eligibleCount = devices.filter(
-    (device) => device.online && device.role === "Device" && device.controlState === "",
-  ).length
   const visible = useMemo(
     () =>
       devices
@@ -74,6 +73,17 @@ export function DevicesView() {
         }),
     [devices, preferences],
   )
+  const visibleEligible = visible.filter(isEligible)
+  const selectedTargets = devices
+    .filter((device) => checkedMACs.has(device.mac) && isEligible(device))
+    .map(({ ip, mac }) => ({ ip, mac }))
+  useEffect(() => {
+    const eligibleMACs = new Set(devices.filter(isEligible).map((device) => device.mac))
+    setCheckedMACs((current) => {
+      const next = new Set([...current].filter((mac) => eligibleMACs.has(mac)))
+      return next.size === current.size ? current : next
+    })
+  }, [devices])
   const selected = devices.find((device) => device.mac === selectedMAC)
   const closeDetails = () => {
     setSelectedMAC("")
@@ -92,11 +102,13 @@ export function DevicesView() {
               </CardDescription>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-              {eligibleCount > 0 && (
-                <DisconnectAll
-                  count={eligibleCount}
-                  pending={disconnectAll.isPending}
-                  disconnect={() => disconnectAll.mutate()}
+              {selectedTargets.length > 0 && (
+                <DisconnectSelected
+                  count={selectedTargets.length}
+                  pending={disconnectSelected.isPending}
+                  disconnect={() =>
+                    disconnectSelected.mutate(selectedTargets, { onSuccess: () => setCheckedMACs(new Set()) })
+                  }
                 />
               )}
               {controlledCount > 0 && (
@@ -168,10 +180,10 @@ export function DevicesView() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          {(disconnectAll.isPending || restoreAll.isPending) && (
+          {(disconnectSelected.isPending || restoreAll.isPending) && (
             <BulkProgress
-              count={disconnectAll.isPending ? eligibleCount : controlledCount}
-              operation={disconnectAll.isPending ? "Disconnecting devices" : "Restoring devices"}
+              count={disconnectSelected.isPending ? selectedTargets.length : controlledCount}
+              operation={disconnectSelected.isPending ? "Disconnecting selected devices" : "Restoring devices"}
             />
           )}
           {error ? (
@@ -185,6 +197,29 @@ export function DevicesView() {
               <Table className="min-w-[1000px]">
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-10">
+                      <SelectionCheckbox
+                        label="Select all eligible visible devices"
+                        checked={
+                          visibleEligible.length > 0 && visibleEligible.every((device) => checkedMACs.has(device.mac))
+                        }
+                        indeterminate={
+                          visibleEligible.some((device) => checkedMACs.has(device.mac)) &&
+                          !visibleEligible.every((device) => checkedMACs.has(device.mac))
+                        }
+                        disabled={visibleEligible.length === 0}
+                        onChange={(checked) =>
+                          setCheckedMACs((current) => {
+                            const next = new Set(current)
+                            for (const device of visibleEligible) {
+                              if (checked) next.add(device.mac)
+                              else next.delete(device.mac)
+                            }
+                            return next
+                          })
+                        }
+                      />
+                    </TableHead>
                     <TableHead>Device</TableHead>
                     <TableHead>Address</TableHead>
                     <TableHead>Vendor</TableHead>
@@ -201,6 +236,16 @@ export function DevicesView() {
                     <DeviceRow
                       key={device.mac}
                       device={device}
+                      checked={checkedMACs.has(device.mac)}
+                      selectable={isEligible(device)}
+                      onCheckedChange={(checked) =>
+                        setCheckedMACs((current) => {
+                          const next = new Set(current)
+                          if (checked) next.add(device.mac)
+                          else next.delete(device.mac)
+                          return next
+                        })
+                      }
                       onOpen={(trigger) => {
                         drawerTrigger.current = trigger
                         setSelectedMAC(device.mac)
@@ -248,26 +293,34 @@ function BulkProgress({ count, operation }: { count: number; operation: string }
   )
 }
 
-function DisconnectAll({ count, pending, disconnect }: { count: number; pending: boolean; disconnect: () => void }) {
+function DisconnectSelected({
+  count,
+  pending,
+  disconnect,
+}: {
+  count: number
+  pending: boolean
+  disconnect: () => void
+}) {
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
         <Button variant="destructive" disabled={pending}>
-          {pending ? <LoaderCircle className="animate-spin" /> : <Ban />}Disconnect all ({count})
+          {pending ? <LoaderCircle className="animate-spin" /> : <Ban />}Disconnect selected ({count})
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Disconnect every eligible device?</AlertDialogTitle>
+          <AlertDialogTitle>Disconnect selected devices?</AlertDialogTitle>
           <AlertDialogDescription>
-            This will interrupt gateway access for {count} online device{count === 1 ? "" : "s"}. NetWarden will roll
-            back previously changed targets if any device fails. Your computer and gateway are always excluded.
+            This will interrupt gateway access for {count} selected online device{count === 1 ? "" : "s"}. NetWarden
+            will roll back previously changed targets if any device fails.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction variant="destructive" onClick={disconnect}>
-            Disconnect all devices
+            Disconnect selected devices
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -299,7 +352,19 @@ function RestoreAll({ count, pending, restore }: { count: number; pending: boole
   )
 }
 
-function DeviceRow({ device, onOpen }: { device: Device; onOpen: (trigger: HTMLElement) => void }) {
+function DeviceRow({
+  device,
+  checked,
+  selectable,
+  onCheckedChange,
+  onOpen,
+}: {
+  device: Device
+  checked: boolean
+  selectable: boolean
+  onCheckedChange: (checked: boolean) => void
+  onOpen: (trigger: HTMLElement) => void
+}) {
   const controlled = device.controlState !== ""
   const control =
     device.controlState === "active"
@@ -329,6 +394,14 @@ function DeviceRow({ device, onOpen }: { device: Device; onOpen: (trigger: HTMLE
         }
       }}
     >
+      <TableCell onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+        <SelectionCheckbox
+          label={`Select ${device.name || device.ip}`}
+          checked={checked}
+          disabled={!selectable}
+          onChange={onCheckedChange}
+        />
+      </TableCell>
       <TableCell>
         <div className="flex items-center gap-3">
           <span
@@ -364,5 +437,35 @@ function DeviceRow({ device, onOpen }: { device: Device; onOpen: (trigger: HTMLE
         <ChevronRight className="size-4 text-muted-foreground" />
       </TableCell>
     </TableRow>
+  )
+}
+
+function SelectionCheckbox({
+  label,
+  checked,
+  indeterminate = false,
+  disabled = false,
+  onChange,
+}: {
+  label: string
+  checked: boolean
+  indeterminate?: boolean
+  disabled?: boolean
+  onChange: (checked: boolean) => void
+}) {
+  const ref = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = indeterminate
+  }, [indeterminate])
+  return (
+    <input
+      ref={ref}
+      type="checkbox"
+      className="size-4 rounded border-border accent-primary disabled:cursor-not-allowed disabled:opacity-40"
+      aria-label={label}
+      checked={checked}
+      disabled={disabled}
+      onChange={(event) => onChange(event.target.checked)}
+    />
   )
 }

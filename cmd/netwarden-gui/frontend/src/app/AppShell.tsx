@@ -9,7 +9,7 @@ export type AppView = "devices" | "integrity" | "diagnostics" | "settings"
 
 const navigation: Array<{ value: AppView; label: string; icon: typeof LaptopMinimal }> = [
   { value: "devices", label: "Devices", icon: LaptopMinimal },
-  { value: "integrity", label: "Integrity", icon: ShieldCheck },
+  { value: "integrity", label: "Gateway Security", icon: ShieldCheck },
   { value: "diagnostics", label: "Diagnostics", icon: Logs },
   { value: "settings", label: "Settings", icon: Settings },
 ]

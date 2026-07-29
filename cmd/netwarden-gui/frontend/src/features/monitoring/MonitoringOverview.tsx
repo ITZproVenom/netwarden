@@ -49,7 +49,7 @@ export function MonitoringOverview() {
           <p className="mb-2 text-[10px] font-semibold tracking-[.18em] text-primary uppercase">Network overview</p>
           <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">Know what’s on your network.</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            Discover devices and watch gateway integrity from one local dashboard.
+            Discover devices and monitor gateway security from one local dashboard.
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row">

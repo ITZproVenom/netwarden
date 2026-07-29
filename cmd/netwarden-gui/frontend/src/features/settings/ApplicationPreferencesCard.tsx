@@ -49,7 +49,7 @@ export function ApplicationPreferencesCard() {
             </p>
           </div>
           <p className="mt-3 text-xs leading-5 text-muted-foreground">
-            Local network monitoring and gateway-integrity protection. Configuration, history, audit records, and logs
+            Local network monitoring and gateway-security protection. Configuration, history, audit records, and logs
             remain in the operating system’s application-data directory.
           </p>
           {appInfo?.build && appInfo.build !== "development" && (

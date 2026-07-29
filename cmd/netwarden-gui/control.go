@@ -21,6 +21,11 @@ type ControlAuditDTO struct {
 	Targets   []string  `json:"targets"`
 }
 
+type ControlTargetDTO struct {
+	IP  string `json:"ip"`
+	MAC string `json:"mac"`
+}
+
 func (a *GUIApp) DisconnectDevice(ipText, macText string) error {
 	commands, target, ctx, cancel, err := a.controlCommand(ipText, macText)
 	if err != nil {
@@ -40,6 +45,29 @@ func (a *GUIApp) DisconnectAllDevices() error {
 	defer cancel()
 	err = commands.DisconnectAll(ctx)
 	a.logControlResult("disconnect_all", "", "", err)
+	return err
+}
+
+func (a *GUIApp) DisconnectSelectedDevices(selected []ControlTargetDTO) error {
+	commands, ctx, cancel, err := a.controlCommands()
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	targets := make([]coreapp.ControlTarget, 0, len(selected))
+	for _, value := range selected {
+		ip, parseErr := netip.ParseAddr(value.IP)
+		if parseErr != nil {
+			return fmt.Errorf("parse target IP: %w", parseErr)
+		}
+		mac, parseErr := net.ParseMAC(value.MAC)
+		if parseErr != nil {
+			return fmt.Errorf("parse target MAC: %w", parseErr)
+		}
+		targets = append(targets, coreapp.ControlTarget{IP: ip, MAC: mac})
+	}
+	err = commands.DisconnectSelected(ctx, targets)
+	a.logControlResult("disconnect_selected", "", "", err)
 	return err
 }
 
