@@ -53,6 +53,17 @@ func (m *Manager) Remove(mac net.HardwareAddr) error {
 	return nil
 }
 
+func (m *Manager) Has(mac net.HardwareAddr) bool {
+	key, err := normalizeDeviceMAC(mac)
+	if err != nil {
+		return false
+	}
+	m.mu.RLock()
+	_, found := m.policies[key]
+	m.mu.RUnlock()
+	return found
+}
+
 func (m *Manager) Wait(ctx context.Context, mac net.HardwareAddr, direction Direction, packetBytes int) error {
 	key, err := normalizeDeviceMAC(mac)
 	if err != nil {
