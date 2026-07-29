@@ -1,10 +1,12 @@
 package main
 
 const (
-	applicationName    = "NetWarden"
-	applicationVersion = "2.0.0"
+	applicationName = "NetWarden"
 )
 
-// buildVersion may be overridden by release builds with:
-// -ldflags "-X main.buildVersion=<commit-or-build-id>"
-var buildVersion = "development"
+// Release builds override these values with -ldflags. The defaults keep local
+// development builds useful without requiring a generated source file.
+var (
+	applicationVersion = "2.0.0"
+	buildVersion       = "development"
+)

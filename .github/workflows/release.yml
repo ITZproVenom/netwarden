@@ -1,0 +1,201 @@
+name: Preview release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semantic version without the v prefix"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.25.x"
+  NODE_VERSION: "22"
+  WAILS_VERSION: "v2.13.0"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Validate release version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag="$GITHUB_REF_NAME"
+            version="${tag#v}"
+          else
+            version="$INPUT_VERSION"
+            tag="v$version"
+          fi
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid semantic version: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: cmd/netwarden-gui/frontend/package-lock.json
+      - name: Install native test dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+      - name: Test and vet Go code
+        run: go test ./... && go vet ./...
+      - name: Check frontend
+        working-directory: cmd/netwarden-gui/frontend
+        run: npm ci && npm test -- --run && npm run build && npm run lint
+
+  build-linux:
+    needs: validate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: cmd/netwarden-gui/frontend/package-lock.json
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential libgtk-3-dev libwebkit2gtk-4.1-dev libpcap-dev pkg-config
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
+      - name: Prepare version metadata
+        run: go run ./tools/prepare-release -version "${{ needs.validate.outputs.version }}"
+      - name: Build Linux application
+        working-directory: cmd/netwarden-gui
+        run: wails build -clean -trimpath -tags webkit2_41 -ldflags "-X main.applicationVersion=${{ needs.validate.outputs.version }} -X main.buildVersion=${GITHUB_SHA}"
+      - name: Package Linux application
+        shell: bash
+        run: tar -C cmd/netwarden-gui/build/bin -czf "NetWarden-${{ needs.validate.outputs.version }}-linux-amd64.tar.gz" NetWarden
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-amd64
+          path: NetWarden-*.tar.gz
+          if-no-files-found: error
+
+  build-windows:
+    needs: validate
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: cmd/netwarden-gui/frontend/package-lock.json
+      - name: Install Wails
+        shell: pwsh
+        run: go install "github.com/wailsapp/wails/v2/cmd/wails@${env:WAILS_VERSION}"
+      - name: Install Npcap SDK
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://npcap.com/dist/npcap-sdk-1.16.zip -OutFile "$env:RUNNER_TEMP\npcap-sdk.zip"
+          Expand-Archive "$env:RUNNER_TEMP\npcap-sdk.zip" "$env:RUNNER_TEMP\npcap-sdk"
+          "CGO_CFLAGS=-I$env:RUNNER_TEMP\npcap-sdk\Include" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "CGO_LDFLAGS=-L$env:RUNNER_TEMP\npcap-sdk\Lib\x64 -lwpcap -lPacket" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Prepare version metadata
+        run: go run ./tools/prepare-release -version "${{ needs.validate.outputs.version }}"
+      - name: Build Windows application
+        working-directory: cmd/netwarden-gui
+        shell: pwsh
+        run: wails build -clean -trimpath -webview2 download -ldflags "-X main.applicationVersion=${{ needs.validate.outputs.version }} -X main.buildVersion=${env:GITHUB_SHA}"
+      - name: Package Windows application
+        shell: pwsh
+        run: Compress-Archive "cmd/netwarden-gui/build/bin/NetWarden.exe" "NetWarden-${{ needs.validate.outputs.version }}-windows-amd64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-amd64
+          path: NetWarden-*.zip
+          if-no-files-found: error
+
+  build-macos:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: amd64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: cmd/netwarden-gui/frontend/package-lock.json
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
+      - name: Prepare version metadata
+        run: go run ./tools/prepare-release -version "${{ needs.validate.outputs.version }}"
+      - name: Build macOS application
+        working-directory: cmd/netwarden-gui
+        run: wails build -clean -trimpath -platform darwin/${{ matrix.arch }} -ldflags "-X main.applicationVersion=${{ needs.validate.outputs.version }} -X main.buildVersion=${GITHUB_SHA}"
+      - name: Package macOS application
+        run: ditto -c -k --sequesterRsrc --keepParent cmd/netwarden-gui/build/bin/NetWarden.app "NetWarden-${{ needs.validate.outputs.version }}-macos-${{ matrix.arch }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: NetWarden-*.zip
+          if-no-files-found: error
+
+  publish-draft:
+    needs: [validate, build-linux, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-amd64"
+          path: release-assets
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64
+          path: release-assets
+      - name: Generate checksums
+        working-directory: release-assets
+        run: sha256sum NetWarden-* > SHA256SUMS
+      - name: Create or update draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release-assets/* --draft --generate-notes --title "NetWarden $RELEASE_TAG"
+          fi

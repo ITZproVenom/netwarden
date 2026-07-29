@@ -89,8 +89,29 @@ make gui-dev
 
 Use `make gui-build` to create a packaged desktop build.
 
-CI runs tests, vet, and builds on Linux, macOS, and Windows, with an additional
-Linux race-detector and formatting job.
+CI runs Go tests and vet on Linux, macOS, and Windows, frontend checks on Linux,
+and an additional Linux race-detector and formatting job. Tagged release builds
+compile the desktop application on each target operating system.
+
+## Preview releases
+
+Unsigned preview builds are produced by pushing a semantic-version tag:
+
+```sh
+git tag v2.0.1
+git push origin v2.0.1
+```
+
+The release workflow tests the Go and frontend code, builds on native GitHub
+runners, and creates a draft GitHub Release containing Windows x64, Linux x64,
+macOS Apple Silicon, and macOS Intel archives plus SHA-256 checksums. Review the
+draft and its generated notes before publishing it.
+
+These previews are not signed or notarized. Windows may display an unknown
+publisher warning and requires Npcap to be installed. macOS users must approve
+the app through Privacy & Security if Gatekeeper blocks it. Linux users need
+GTK 3, WebKit2GTK 4.1, libpcap, `pkexec`, and a desktop PolicyKit agent. Release
+builds request elevation only for NetWarden's restricted capture helper.
 
 NetWarden should only be used on networks you own or are explicitly authorized
 to administer.
