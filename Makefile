@@ -1,4 +1,4 @@
-.PHONY: test vet fmt check gui-dev gui-build
+.PHONY: test vet fmt check gui-dev gui-build update-vendors
 
 test:
 	go test ./...
@@ -7,7 +7,7 @@ vet:
 	go vet ./...
 
 fmt:
-	gofmt -w $$(find cmd internal -name '*.go' -type f)
+	gofmt -w $$(find cmd internal tools -name '*.go' -type f)
 
 check: test vet
 
@@ -16,3 +16,6 @@ gui-dev:
 
 gui-build:
 	cd cmd/netwarden-gui && wails build
+
+update-vendors:
+	go run ./tools/update-vendors
