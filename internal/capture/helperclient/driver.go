@@ -64,6 +64,28 @@ func OpenWithEnv(ctx context.Context, executable string, environment map[string]
 	return driver, nil
 }
 
+// OpenConnection attaches the capture protocol to an already authenticated
+// full-duplex connection. Platform launchers use this when an elevation API
+// cannot preserve a child process's standard input and output handles.
+func OpenConnection(ctx context.Context, connection io.ReadWriteCloser) (*Driver, error) {
+	if err := ctx.Err(); err != nil {
+		_ = connection.Close()
+		return nil, err
+	}
+	decoder := json.NewDecoder(bufio.NewReader(connection))
+	var ready helper.Message
+	if err := decoder.Decode(&ready); err != nil || ready.Type != "ready" {
+		_ = connection.Close()
+		if err == nil {
+			err = errors.New("helper did not become ready")
+		}
+		return nil, fmt.Errorf("start capture helper: %w", err)
+	}
+	driver := &Driver{input: connection, frames: make(chan capture.Frame, 64), errors: make(chan error, 1)}
+	go driver.read(decoder)
+	return driver, nil
+}
+
 func mergeEnvironment(base []string, overrides map[string]string) []string {
 	result := make([]string, 0, len(base)+len(overrides))
 	for _, entry := range base {
@@ -132,7 +154,10 @@ func (d *Driver) Close() error {
 	_ = json.NewEncoder(d.input).Encode(helper.Message{Type: "close"})
 	_ = d.input.Close()
 	d.mu.Unlock()
-	return d.command.Wait()
+	if d.command != nil {
+		return d.command.Wait()
+	}
+	return nil
 }
 
 func (d *Driver) report(err error) {

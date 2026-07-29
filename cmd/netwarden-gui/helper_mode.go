@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
+	"fmt"
+	"io"
+	"net"
 	"net/netip"
 	"os"
+	"time"
 
 	"github.com/amdzy/NetWarden/internal/capture/helper"
 	"github.com/amdzy/NetWarden/internal/capture/pcapdriver"
@@ -23,6 +28,8 @@ func runHelperMode() (bool, error) {
 	}
 	flags := flag.NewFlagSet("capture-helper", flag.ContinueOnError)
 	interfaceName := flags.String("interface", "", "capture interface")
+	connectAddress := flags.String("connect", "", "authenticated parent connection")
+	connectToken := flags.String("token", "", "one-time parent authentication token")
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		return true, err
 	}
@@ -51,5 +58,35 @@ func runHelperMode() (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	return true, helper.Serve(context.Background(), driver, selected.MAC, prefix.Addr(), route.GatewayIP, prefix, os.Stdin, os.Stdout)
+	input, output, closeTransport, err := helperTransport(*connectAddress, *connectToken)
+	if err != nil {
+		_ = driver.Close()
+		return true, err
+	}
+	defer closeTransport()
+	return true, helper.Serve(context.Background(), driver, selected.MAC, prefix.Addr(), route.GatewayIP, prefix, input, output)
+}
+
+func helperTransport(address, token string) (io.Reader, io.Writer, func() error, error) {
+	if address == "" && token == "" {
+		return os.Stdin, os.Stdout, func() error { return nil }, nil
+	}
+	if address == "" || token == "" {
+		return nil, nil, nil, errors.New("helper connection and token must be provided together")
+	}
+	connection, err := net.DialTimeout("tcp", address, 10*time.Second)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("connect to NetWarden: %w", err)
+	}
+	if _, err := fmt.Fprintln(connection, token); err != nil {
+		_ = connection.Close()
+		return nil, nil, nil, fmt.Errorf("authenticate to NetWarden: %w", err)
+	}
+	reader := bufio.NewReader(connection)
+	acknowledgement, err := reader.ReadString('\n')
+	if err != nil || acknowledgement != "ok\n" {
+		_ = connection.Close()
+		return nil, nil, nil, errors.New("NetWarden rejected the helper connection")
+	}
+	return reader, connection, connection.Close, nil
 }

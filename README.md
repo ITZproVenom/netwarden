@@ -54,16 +54,19 @@ The new implementation currently provides:
 The Wails v2 desktop GUI now has an initial network dashboard backed by the Go
 runtime. It supports interface selection, live device updates, manual and
 periodic discovery, nickname editing, history management, and diagnostics.
-Packet capture requires platform-specific permissions. On macOS the GUI
-requests administrator approval for its restricted capture-helper subprocess
-while the desktop app continues to run as the signed-in user. Other platforms
-currently retain the direct-capture behavior.
+Packet capture requires platform-specific permissions. The GUI remains signed
+in as the desktop user and requests elevation only for its restricted capture
+helper: macOS uses `sudo` with a native password dialog, Windows uses a UAC
+prompt and an authenticated local helper connection, and Linux uses PolicyKit's
+`pkexec` prompt.
 
 Configuration is stored beneath the operating system's user configuration
 directory. Set `NETWARDEN_CONFIG` to use an explicit file during development.
 
 Linux and macOS builds require libpcap development files; Windows builds use
-Npcap. Capture and transmission generally require elevated privileges.
+Npcap. Linux desktop systems must provide `pkexec` and an active PolicyKit
+authentication agent. Windows users must approve the UAC prompt when monitoring
+starts. The complete GUI does not need to run as root or Administrator.
 
 The GUI's elevated capture-helper subprocess cannot send arbitrary frames; it
 validates the interface identity, subnet, Ethernet destination, ARP operation,
