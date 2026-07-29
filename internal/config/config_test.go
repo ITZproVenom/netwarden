@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -36,7 +37,9 @@ func TestStorePersistsInterfaceAndNickname(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	// Windows reports synthesized POSIX permission bits; access is governed
+	// by the file's ACL instead of chmod-style mode bits.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("configuration permissions are too broad: %o", info.Mode().Perm())
 	}
 }

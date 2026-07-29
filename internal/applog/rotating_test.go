@@ -3,6 +3,7 @@ package applog
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -25,7 +26,9 @@ func TestRotatingFileBoundsAndRetainsLogs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("missing %s: %v", candidate, err)
 		}
-		if info.Mode().Perm() != 0o600 {
+		// Windows reports synthesized POSIX permission bits; access is governed
+		// by the file's ACL instead of chmod-style mode bits.
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 			t.Fatalf("%s mode = %o", candidate, info.Mode().Perm())
 		}
 	}
