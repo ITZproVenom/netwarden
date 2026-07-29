@@ -1,121 +1,97 @@
 # NetWarden
 
-NetWarden is an open-source network visibility and management tool. The active
-implementation is being rebuilt in Go around a testable, platform-independent
-core. The previous C# implementation is preserved in [`old_app`](old_app/).
+NetWarden is an open-source desktop app for seeing and managing the devices on
+your local network. It gives you a live view of what is connected, helps you
+recognize unfamiliar devices, and watches for unexpected changes to your
+network gateway.
 
-## Current status
+## What you can do
 
-The new implementation currently provides:
+- Discover devices connected to your current network.
+- See IP and MAC addresses, names, vendors, and estimated device types.
+- Tell which devices are online now and review previously seen devices.
+- Give devices memorable nicknames.
+- Filter, sort, and select devices from one dashboard.
+- Temporarily disconnect selected eligible devices and restore their access.
+- Monitor your gateway identity for suspicious changes.
+- Review recent activity, errors, and control history in Diagnostics.
+- Adjust scan timing, offline detection, history retention, and automatic
+  startup.
 
-- IPv4 subnet enumeration that respects the configured prefix.
-- Ethernet/ARP packet encoding and decoding.
-- A concurrency-safe registry with MAC/IP identity indexes, conflict events,
-  online/offline transitions, address moves, and stale-record retention.
-- Cancellable foreground and periodic discovery services.
-- Liveness tracking based on elapsed duration.
-- Interfaces that keep privileged packet capture outside the application core.
-- A libpcap/Npcap adapter for interface enumeration, filtered capture, and
-  Ethernet frame transmission.
-- Versioned, atomic JSON configuration with saved interface selection, device
-  nicknames, and an optional pinned gateway MAC baseline.
-- Embedded OUI vendor resolution for observed MAC addresses.
-- Non-blocking reverse-DNS hostname resolution with deduplicated lookups,
-  bounded timeouts, caching, and live metadata refresh events.
-- An explicitly enabled, concurrency-safe device-control state machine with
-  strict local-target validation and corrective restoration on explicit
-  restore, send failure, and shutdown.
-- A validated network context built from the selected adapter and operating
-  system default IPv4 route.
-- A one-shot application runtime that owns discovery, capture, device roles,
-  passive integrity monitoring, cancellation, and ordered shutdown.
-- Passive, debounced reporting when an observed gateway identity conflicts
-  with a learned or pinned baseline, including conflict history and restoration
-  events. Passive monitoring never transmits corrections.
-- Cross-process configuration locking on Unix and Windows.
-- Live nickname updates that persist first and then refresh existing device
-  snapshots without restarting capture.
-- A unified typed runtime event stream, lifecycle/scan events, event-drop
-  accounting, and stage-aware native error categories.
-- Version-controlled recorded-packet fixtures for capture-path regression tests.
-- Durable device and gateway-conflict history stored separately from settings;
-  restored peers remain offline until observed on the current run.
-- Runtime APIs for manual scans, periodic-scan pause/resume, status snapshots,
-  and gateway-conflict history used by the desktop GUI.
-- A restart supervisor that rebuilds capture and discovery after interface or
-  default-route changes while keeping one stable event stream for frontends.
-- Queryable and pruneable history in the desktop GUI, with a default 90-day
-  retention window.
-- An optional cross-platform subprocess privilege boundary. The helper only
-  permits filtered capture and strictly validated local ARP discovery requests.
-- Periodic default-route checks that stop the one-shot runtime cleanly when the
-  active network changes, allowing the application layer to rebuild it.
+## Download
 
-The Wails v2 desktop GUI now has an initial network dashboard backed by the Go
-runtime. It supports interface selection, live device updates, manual and
-periodic discovery, nickname editing, history management, and diagnostics.
-Packet capture requires platform-specific permissions. The GUI remains signed
-in as the desktop user and requests elevation only for its restricted capture
-helper: macOS uses `sudo` with a native password dialog, Windows uses a UAC
-prompt and an authenticated local helper connection, and Linux uses PolicyKit's
-`pkexec` prompt.
+Preview builds are available from [GitHub Releases](https://github.com/amdzy/NetWarden/releases):
 
-Configuration is stored beneath the operating system's user configuration
-directory. Set `NETWARDEN_CONFIG` to use an explicit file during development.
+- **Windows:** Download the Windows x64 ZIP, extract it, and run
+  `NetWarden.exe`. [Npcap](https://npcap.com/) must be installed.
+- **macOS:** Download the ZIP for Apple Silicon or Intel, extract it, and open
+  `NetWarden.app`.
+- **Linux:** Download the Linux x64 archive, extract it, and run `NetWarden`.
+  GTK 3, WebKit2GTK 4.1, libpcap, PolicyKit, and `pkexec` are required.
 
-Linux and macOS builds require libpcap development files; Windows builds use
-Npcap. Linux desktop systems must provide `pkexec` and an active PolicyKit
-authentication agent. Windows users must approve the UAC prompt when monitoring
-starts. The complete GUI does not need to run as root or Administrator.
+Current preview builds are not signed or notarized. Windows may display an
+unknown-publisher warning. macOS may initially block the app and require you to
+approve it under **System Settings → Privacy & Security**.
 
-The GUI's elevated capture-helper subprocess cannot send arbitrary frames; it
-validates the interface identity, subnet, Ethernet destination, ARP operation,
-and target before transmission.
+## Getting started
+
+1. Open NetWarden and choose the network interface you are currently using.
+2. Start monitoring and approve the operating system's permission prompt.
+3. Wait for the first scan to populate the Devices table.
+4. Add nicknames to devices you recognize.
+5. Review Gateway Security and Diagnostics if NetWarden reports a warning.
+
+NetWarden asks for administrator permission only when packet access is needed.
+The main desktop interface continues to run as your normal user account.
+
+## Device identification
+
+Names, vendors, and device types are best-effort hints. Many phones, tablets,
+and computers use private or randomized MAC addresses, which can hide their
+manufacturer. These devices may appear as **Private / Randomized** or
+**Unknown** even when NetWarden is working correctly.
+
+## Disconnect and restore
+
+Disconnect controls are available only for eligible devices on your current
+local network. NetWarden validates every control request and attempts to restore
+affected devices when you restore them, stop monitoring, or close the app.
+
+Network behavior differs between routers and devices, so treat this feature as
+a local management tool rather than a permanent access-control system.
+
+## Privacy and responsible use
+
+NetWarden works locally and is designed to inspect your current network. Use it
+only on networks you own or are explicitly authorized to administer.
 
 ## Development
+
+Requirements include Go, Node.js, the Wails v2 CLI, and the packet-capture and
+desktop libraries for your operating system.
 
 ```sh
 go test ./...
 go vet ./...
+
+cd cmd/netwarden-gui/frontend
+npm ci
+npm test -- --run
+npm run build
+npm run lint
 ```
 
-To run the desktop GUI, install the Wails v2 CLI and start its development
-server:
+Run the desktop app during development with:
 
 ```sh
-go install github.com/wailsapp/wails/v2/cmd/wails@latest
+go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 make gui-dev
 ```
 
-Use `make gui-build` to create a packaged desktop build.
-
-CI runs Go tests and vet on Linux, macOS, and Windows, frontend checks on Linux,
-and an additional Linux race-detector and formatting job. Tagged release builds
-compile the desktop application on each target operating system.
-
-## Preview releases
-
-Unsigned preview builds are produced by pushing a semantic-version tag:
-
-```sh
-git tag v2.0.1
-git push origin v2.0.1
-```
-
-The release workflow tests the Go and frontend code, builds on native GitHub
-runners, and creates a draft GitHub Release containing Windows x64, Linux x64,
-macOS Apple Silicon, and macOS Intel archives plus SHA-256 checksums. Review the
-draft and its generated notes before publishing it.
-
-These previews are not signed or notarized. Windows may display an unknown
-publisher warning and requires Npcap to be installed. macOS users must approve
-the app through Privacy & Security if Gatekeeper blocks it. Linux users need
-GTK 3, WebKit2GTK 4.1, libpcap, `pkexec`, and a desktop PolicyKit agent. Release
-builds request elevation only for NetWarden's restricted capture helper.
-
-NetWarden should only be used on networks you own or are explicitly authorized
-to administer.
+Use `make gui-build` to create a local packaged build. Version tags such as
+`v2.0.1` trigger the GitHub Actions workflow, which builds unsigned preview
+archives and prepares a draft GitHub Release.
 
 ## License
 
-NetWarden is licensed under the [MIT License](LICENSE).
+NetWarden is available under the [MIT License](LICENSE).
