@@ -30,9 +30,7 @@ export function AppShell({
     <main className="mx-auto min-h-screen max-w-[1440px] px-3 sm:px-6 lg:px-10">
       <header className="flex min-h-20 flex-wrap items-center justify-between gap-3 border-b border-border/70 py-3 lg:grid lg:grid-cols-[1fr_auto_1fr]">
         <div className="flex items-center gap-3">
-          <span className="grid size-9 place-items-center rounded-xl bg-primary text-sm font-bold text-primary-foreground shadow-[0_0_24px_color-mix(in_oklch,var(--primary),transparent_65%)]">
-            N
-          </span>
+          <BrandIcon />
           <div>
             <h1 className="text-sm font-semibold">NetWarden</h1>
             <p className="text-[10px] text-muted-foreground">Local network visibility</p>
@@ -79,5 +77,38 @@ export function AppShell({
         <span>NetWarden runs locally. Network data stays on this device.</span>
       </footer>
     </main>
+  )
+}
+
+function BrandIcon() {
+  return (
+    <svg
+      viewBox="0 0 36 36"
+      aria-hidden="true"
+      className="size-9 shrink-0 rounded-xl shadow-[0_0_24px_color-mix(in_oklch,var(--primary),transparent_65%)]"
+    >
+      <defs>
+        <linearGradient id="brand-background" x1="4" y1="2" x2="31" y2="34" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#07172f" />
+          <stop offset="1" stopColor="#020817" />
+        </linearGradient>
+        <linearGradient id="brand-mark" x1="8" y1="6" x2="29" y2="31" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#2dd4bf" />
+          <stop offset="1" stopColor="#14b8a6" />
+        </linearGradient>
+      </defs>
+      <rect width="36" height="36" rx="10" fill="url(#brand-background)" />
+      <path
+        d="M18 5.2c3.5 2.7 7 4.3 11 5.1v7.1c0 6-3.7 10.7-11 13.5C10.7 28.1 7 23.4 7 17.4v-7.1c4-.8 7.5-2.4 11-5.1Z"
+        fill="none"
+        stroke="url(#brand-mark)"
+        strokeWidth="2.2"
+        strokeLinejoin="round"
+      />
+      <path d="m13.2 21.8 4.8-8 4.8 8H13.2Z" fill="none" stroke="#5eead4" strokeWidth="1.4" />
+      <circle cx="18" cy="13.8" r="2" fill="#ccfbf1" />
+      <circle cx="13.3" cy="21.8" r="2" fill="#2dd4bf" />
+      <circle cx="22.7" cy="21.8" r="2" fill="#2dd4bf" />
+    </svg>
   )
 }

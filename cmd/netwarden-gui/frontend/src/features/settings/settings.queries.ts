@@ -35,6 +35,21 @@ export function useSetMonitoringSettings() {
   })
 }
 
+export const useNotificationSettings = () =>
+  useQuery({ queryKey: queryKeys.notificationSettings, queryFn: wailsClient.notificationSettings })
+
+export function useSetNotificationSettings() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: wailsClient.setNotificationSettings,
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: queryKeys.notificationSettings })
+      toast.success("Notification settings saved")
+    },
+    onError: (error) => toast.error("Could not save notification settings", { description: errorMessage(error) }),
+  })
+}
+
 export function usePruneHistory() {
   const client = useQueryClient()
   return useMutation({

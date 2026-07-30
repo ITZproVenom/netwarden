@@ -107,6 +107,21 @@ func TestStorePersistsMonitoringSettings(t *testing.T) {
 	}
 }
 
+func TestStorePersistsNotificationSettings(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	want := NotificationSettings{Enabled: true, NewDevices: false, KnownDevices: true, DeviceOffline: true, SuspiciousDevices: false}
+	if _, err := store.SetNotificationSettings(want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NotificationSettings() != want {
+		t.Fatalf("got %#v, want %#v", got.NotificationSettings(), want)
+	}
+}
+
 func TestStoreRejectsInvalidMonitoringSettings(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "config.json"))
 	_, err := store.SetMonitoringSettings(MonitoringSettings{ScanIntervalSeconds: 1, OfflineAfterSeconds: 60, HistoryRetentionDays: 90})

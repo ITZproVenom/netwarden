@@ -13,7 +13,7 @@ import (
 	"sync"
 )
 
-const CurrentVersion = 3
+const CurrentVersion = 4
 
 const (
 	DefaultScanIntervalSeconds  = 10
@@ -38,6 +38,30 @@ type Config struct {
 	HistoryRetentionDays int               `json:"history_retention_days"`
 	AutoStart            bool              `json:"auto_start,omitempty"`
 	PeriodicDiscovery    bool              `json:"periodic_discovery"`
+	NotificationsEnabled bool              `json:"notifications_enabled"`
+	NotifyNewDevices     bool              `json:"notify_new_devices"`
+	NotifyKnownDevices   bool              `json:"notify_known_devices"`
+	NotifyDeviceOffline  bool              `json:"notify_device_offline"`
+	NotifySuspicious     bool              `json:"notify_suspicious"`
+}
+
+type NotificationSettings struct {
+	Enabled           bool `json:"enabled"`
+	NewDevices        bool `json:"newDevices"`
+	KnownDevices      bool `json:"knownDevices"`
+	DeviceOffline     bool `json:"deviceOffline"`
+	SuspiciousDevices bool `json:"suspiciousDevices"`
+}
+
+func (s *Store) SetNotificationSettings(settings NotificationSettings) (Config, error) {
+	return s.update(func(config *Config) error {
+		config.NotificationsEnabled = settings.Enabled
+		config.NotifyNewDevices = settings.NewDevices
+		config.NotifyKnownDevices = settings.KnownDevices
+		config.NotifyDeviceOffline = settings.DeviceOffline
+		config.NotifySuspicious = settings.SuspiciousDevices
+		return nil
+	})
 }
 
 type MonitoringSettings struct {
@@ -221,6 +245,14 @@ func (config Config) MonitoringSettings() MonitoringSettings {
 	}
 }
 
+func (config Config) NotificationSettings() NotificationSettings {
+	return NotificationSettings{
+		Enabled: config.NotificationsEnabled, NewDevices: config.NotifyNewDevices,
+		KnownDevices: config.NotifyKnownDevices, DeviceOffline: config.NotifyDeviceOffline,
+		SuspiciousDevices: config.NotifySuspicious,
+	}
+}
+
 func validateMonitoringSettings(settings MonitoringSettings) error {
 	if settings.ScanIntervalSeconds < 5 || settings.ScanIntervalSeconds > 3600 {
 		return errors.New("scan interval must be between 5 and 3600 seconds")
@@ -247,6 +279,14 @@ func migrate(config *Config) error {
 		config.HistoryRetentionDays = DefaultHistoryRetentionDays
 		config.PeriodicDiscovery = true
 		config.Version = 3
+		return nil
+	case 3:
+		config.NotificationsEnabled = true
+		config.NotifyNewDevices = true
+		config.NotifyKnownDevices = true
+		config.NotifyDeviceOffline = false
+		config.NotifySuspicious = true
+		config.Version = 4
 		return nil
 	default:
 		return fmt.Errorf("%w: no migration from version %d", ErrUnsupportedVersion, config.Version)
@@ -295,6 +335,11 @@ func defaultConfig() Config {
 		OfflineAfterSeconds:  DefaultOfflineAfterSeconds,
 		HistoryRetentionDays: DefaultHistoryRetentionDays,
 		PeriodicDiscovery:    true,
+		NotificationsEnabled: true,
+		NotifyNewDevices:     true,
+		NotifyKnownDevices:   true,
+		NotifyDeviceOffline:  false,
+		NotifySuspicious:     true,
 	}
 }
 

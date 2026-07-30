@@ -383,6 +383,23 @@ func (a *GUIApp) SetMonitoringSettings(settings appconfig.MonitoringSettings) er
 	return err
 }
 
+func (a *GUIApp) NotificationSettings() (appconfig.NotificationSettings, error) {
+	_, config, err := loadSettings()
+	if err != nil {
+		return appconfig.NotificationSettings{}, err
+	}
+	return config.NotificationSettings(), nil
+}
+
+func (a *GUIApp) SetNotificationSettings(settings appconfig.NotificationSettings) error {
+	store, _, err := loadSettings()
+	if err != nil {
+		return err
+	}
+	_, err = store.SetNotificationSettings(settings)
+	return err
+}
+
 func (a *GUIApp) SetNickname(macAddress, nickname string) error {
 	mac, err := net.ParseMAC(macAddress)
 	if err != nil {
@@ -540,30 +557,145 @@ func (a *GUIApp) activeSupervisor() (*coreapp.Supervisor, error) {
 }
 
 func (a *GUIApp) forwardEvents(ctx context.Context, supervisor *coreapp.Supervisor) {
+	baselineComplete := false
+	baselineNew := make(map[string]struct{})
+	baselineKnown := make(map[string]struct{})
+	var baselineTimer *time.Timer
+	var baselineReady <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
+			if baselineTimer != nil {
+				baselineTimer.Stop()
+			}
 			return
+		case <-baselineReady:
+			baselineComplete = true
+			baselineReady = nil
+			if title, body, notify := a.baselineNotification(len(baselineNew), len(baselineKnown)); notify {
+				go a.sendNotification(title, body)
+			}
 		case event := <-supervisor.Events():
 			activity := activityFromEvent(event)
 			a.recordActivity(activity)
 			runtime.EventsEmit(a.ctx, "network:event", activity)
-			if shouldNotify(event) {
-				go func() {
-					if err := sendNativeNotification(activity.Title, activity.Detail); err != nil {
-						a.log(slog.LevelWarn, "native notification failed", "component", "notification", "error", err)
+			if !baselineComplete {
+				switch event.Kind {
+				case coreapp.EventDeviceObserved:
+					if event.Device != nil {
+						baselineNew[event.Device.MAC] = struct{}{}
+						delete(baselineKnown, event.Device.MAC)
 					}
-				}()
+				case coreapp.EventDeviceReturnedOnline:
+					if event.Device != nil {
+						if _, isNew := baselineNew[event.Device.MAC]; !isNew {
+							baselineKnown[event.Device.MAC] = struct{}{}
+						}
+					}
+				case coreapp.EventScanCompleted:
+					// Allow replies to the final probes to reach the event stream before
+					// producing the one startup summary.
+					baselineTimer = time.NewTimer(2 * time.Second)
+					baselineReady = baselineTimer.C
+				case coreapp.EventScanFailed:
+					// A failed initial scan must not suppress alerts for the rest of the session.
+					baselineComplete = true
+				}
+				if !baselineComplete || event.Kind == coreapp.EventScanCompleted || event.Kind == coreapp.EventScanFailed {
+					if isSuspiciousEvent(event) && a.shouldNotify(event) {
+						title, body := notificationContent(event, activity)
+						go a.sendNotification(title, body)
+					}
+					continue
+				}
+			}
+			if a.shouldNotify(event) {
+				title, body := notificationContent(event, activity)
+				go a.sendNotification(title, body)
 			}
 		}
 	}
 }
 
-func shouldNotify(event coreapp.Event) bool {
-	if event.Kind == coreapp.EventIntegrityWarning {
+func (a *GUIApp) sendNotification(title, body string) {
+	if err := sendNativeNotification(title, body); err != nil {
+		a.log(slog.LevelWarn, "native notification failed", "component", "notification", "error", err)
+	}
+}
+
+func (a *GUIApp) baselineNotification(newDevices, knownDevices int) (string, string, bool) {
+	_, config, err := loadSettings()
+	if err != nil {
+		return "", "", false
+	}
+	return baselineNotificationContent(config.NotificationSettings(), newDevices, knownDevices)
+}
+
+func baselineNotificationContent(settings appconfig.NotificationSettings, newDevices, knownDevices int) (string, string, bool) {
+	if !settings.Enabled {
+		return "", "", false
+	}
+	parts := make([]string, 0, 2)
+	if settings.NewDevices && newDevices > 0 {
+		parts = append(parts, fmt.Sprintf("%d new %s", newDevices, pluralize("device", newDevices)))
+	}
+	if settings.KnownDevices && knownDevices > 0 {
+		parts = append(parts, fmt.Sprintf("%d known %s", knownDevices, pluralize("device", knownDevices)))
+	}
+	if len(parts) == 0 {
+		return "", "", false
+	}
+	return "Initial network scan complete", strings.Join(parts, " · "), true
+}
+
+func pluralize(word string, count int) string {
+	if count == 1 {
+		return word
+	}
+	return word + "s"
+}
+
+func isSuspiciousEvent(event coreapp.Event) bool {
+	if event.Kind == coreapp.EventIntegrityWarning || event.Kind == coreapp.EventDeviceIPConflict {
 		return true
 	}
 	return event.Kind == coreapp.EventControlRestorationCompleted && event.Control != nil && event.Control.State == coreapp.ControlStateFailed
+}
+
+func notificationContent(event coreapp.Event, activity ActivityDTO) (string, string) {
+	if event.Device == nil {
+		return activity.Title, activity.Detail
+	}
+	current := event.Device
+	label := strings.TrimSpace(current.Name)
+	if label == "" || label == current.IP.String() {
+		label = strings.TrimSpace(current.Vendor)
+	}
+	if label == "" || strings.EqualFold(label, "unknown") {
+		return activity.Title, fmt.Sprintf("%s · %s", current.IP, current.MAC)
+	}
+	return activity.Title, fmt.Sprintf("%s\n%s · %s", label, current.IP, current.MAC)
+}
+
+func (a *GUIApp) shouldNotify(event coreapp.Event) bool {
+	_, config, err := loadSettings()
+	if err != nil || !config.NotificationsEnabled {
+		return false
+	}
+	switch event.Kind {
+	case coreapp.EventDeviceObserved:
+		return config.NotifyNewDevices
+	case coreapp.EventDeviceReturnedOnline:
+		return config.NotifyKnownDevices
+	case coreapp.EventDeviceOffline:
+		return config.NotifyDeviceOffline
+	case coreapp.EventIntegrityWarning, coreapp.EventDeviceIPConflict:
+		return config.NotifySuspicious
+	case coreapp.EventControlRestorationCompleted:
+		return config.NotifySuspicious && event.Control != nil && event.Control.State == coreapp.ControlStateFailed
+	default:
+		return false
+	}
 }
 
 func (a *GUIApp) recordActivity(event ActivityDTO) {
@@ -617,7 +749,7 @@ func activityFromEvent(event coreapp.Event) ActivityDTO {
 	}
 	switch event.Kind {
 	case coreapp.EventDeviceObserved:
-		activity.Kind, activity.Title = "device", "Device discovered"
+		activity.Kind, activity.Title = "device", "New device joined"
 	case coreapp.EventDeviceReturnedOnline:
 		activity.Kind, activity.Title = "device", "Device returned online"
 	case coreapp.EventDeviceAddressChanged:
@@ -625,7 +757,7 @@ func activityFromEvent(event coreapp.Event) ActivityDTO {
 	case coreapp.EventDeviceIPConflict:
 		activity.Kind, activity.Severity, activity.Title = "device", "warning", "IP address conflict"
 	case coreapp.EventDeviceOffline:
-		activity.Kind, activity.Title = "device", "Device went offline"
+		activity.Kind, activity.Title = "device", "Known device left"
 	case coreapp.EventDeviceRemoved:
 		activity.Kind, activity.Title = "device", "Stale device removed"
 	case coreapp.EventDeviceMetadataChanged:
@@ -671,7 +803,12 @@ func activityFromEvent(event coreapp.Event) ActivityDTO {
 		activity.Kind, activity.Severity, activity.Title = "control", "error", "Control audit failed"
 	}
 	if event.Device != nil {
-		activity.Detail = fmt.Sprintf("%s · %s · %s", event.Device.Name, event.Device.IP, event.Device.MAC)
+		parts := make([]string, 0, 3)
+		if name := strings.TrimSpace(event.Device.Name); name != "" && name != event.Device.IP.String() {
+			parts = append(parts, name)
+		}
+		parts = append(parts, event.Device.IP.String(), event.Device.MAC)
+		activity.Detail = strings.Join(parts, " · ")
 	}
 	if event.Scan != nil {
 		activity.Detail = fmt.Sprintf("%s · %d addresses · %s", event.Scan.Prefix.Masked(), event.Scan.Probed, event.Scan.Duration.Round(time.Millisecond))

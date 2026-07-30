@@ -8,6 +8,7 @@ export const queryKeys = {
   history: ["runtime", "history"] as const,
   activity: ["runtime", "activity"] as const,
   monitoringSettings: ["runtime", "monitoring-settings"] as const,
+  notificationSettings: ["runtime", "notification-settings"] as const,
   controlAudit: ["runtime", "control-audit"] as const,
   bandwidthLimits: ["runtime", "bandwidth-limits"] as const,
 }

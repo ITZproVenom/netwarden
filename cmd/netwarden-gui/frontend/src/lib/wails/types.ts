@@ -53,6 +53,13 @@ export type MonitoringSettings = {
   autoStart: boolean
   periodicDiscovery: boolean
 }
+export type NotificationSettings = {
+  enabled: boolean
+  newDevices: boolean
+  knownDevices: boolean
+  deviceOffline: boolean
+  suspiciousDevices: boolean
+}
 export type ControlAudit = { at: string; operation: string; outcome: string; targets: string[] }
 export type BandwidthLimit = {
   ip: string

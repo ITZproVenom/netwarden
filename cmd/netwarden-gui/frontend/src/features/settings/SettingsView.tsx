@@ -21,6 +21,7 @@ import { useBootstrap, useRuntimeStatus } from "@/features/monitoring/monitoring
 import { formatDate } from "@/lib/format"
 import { MonitoringSettingsCard } from "./MonitoringSettingsCard"
 import { ApplicationPreferencesCard } from "./ApplicationPreferencesCard"
+import { NotificationSettingsCard } from "./NotificationSettingsCard"
 import { useClearHistory, useHistorySummary, usePruneHistory, useSetGatewayMAC } from "./settings.queries"
 import { useOpenApplicationDirectory } from "./settings.queries"
 import { useUnsavedChanges } from "@/app/unsaved-changes"
@@ -48,6 +49,7 @@ export function SettingsView() {
     <div className="settings-view space-y-5">
       <ApplicationPreferencesCard />
       <MonitoringSettingsCard />
+      <NotificationSettingsCard />
       <Card className="bg-card/60">
         <CardHeader className="border-b">
           <CardTitle>Network identity</CardTitle>

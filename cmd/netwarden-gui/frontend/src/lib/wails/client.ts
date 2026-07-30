@@ -8,6 +8,7 @@ import type {
   Device,
   HistorySummary,
   MonitoringSettings,
+  NotificationSettings,
   RuntimeStatus,
 } from "./types"
 
@@ -35,6 +36,9 @@ export const wailsClient = {
   activity: () => backend().Activity() as Promise<Activity[]>,
   monitoringSettings: () => backend().MonitoringSettings() as Promise<MonitoringSettings>,
   setMonitoringSettings: (settings: MonitoringSettings) => backend().SetMonitoringSettings(settings) as Promise<void>,
+  notificationSettings: () => backend().NotificationSettings() as Promise<NotificationSettings>,
+  setNotificationSettings: (settings: NotificationSettings) =>
+    backend().SetNotificationSettings(settings) as Promise<void>,
   controlAudit: (limit = 250) => backend().ControlAudit(limit) as Promise<ControlAudit[]>,
   disconnectDevice: (ip: string, mac: string) => backend().DisconnectDevice(ip, mac) as Promise<void>,
   disconnectAllDevices: () => backend().DisconnectAllDevices() as Promise<void>,
