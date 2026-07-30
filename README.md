@@ -13,6 +13,7 @@ network gateway.
 - Give devices memorable nicknames.
 - Filter, sort, and select devices from one dashboard.
 - Temporarily disconnect selected eligible devices and restore their access.
+- Set temporary download and upload speed limits for eligible devices.
 - Monitor your gateway identity for suspicious changes.
 - Review recent activity, errors, and control history in Diagnostics.
 - Adjust scan timing, offline detection, history retention, and automatic
@@ -39,7 +40,8 @@ approve it under **System Settings → Privacy & Security**.
 2. Start monitoring and approve the operating system's permission prompt.
 3. Wait for the first scan to populate the Devices table.
 4. Add nicknames to devices you recognize.
-5. Review Gateway Security and Diagnostics if NetWarden reports a warning.
+5. Open a device to disconnect it or apply a bandwidth limit when needed.
+6. Review Gateway Security and Diagnostics if NetWarden reports a warning.
 
 NetWarden asks for administrator permission only when packet access is needed.
 The main desktop interface continues to run as your normal user account.
@@ -59,6 +61,16 @@ affected devices when you restore them, stop monitoring, or close the app.
 
 Network behavior differs between routers and devices, so treat this feature as
 a local management tool rather than a permanent access-control system.
+
+## Bandwidth limits
+
+Open an eligible online device to set separate download and upload limits in
+Mbps. Leave either direction at zero to keep it unlimited. Active limits appear
+in the Devices table and remain in effect only while NetWarden is monitoring
+the network; they are not saved or automatically reapplied after a restart.
+
+Removing a limit restores the device's normal direct network path. Support depends on the local IPv4
+network and may vary between routers, switches, and devices.
 
 ## Privacy and responsible use
 
