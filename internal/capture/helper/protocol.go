@@ -102,7 +102,7 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 			if err := sendFrame(ctx, command.Data); err != nil {
 				_ = write(Message{Type: "error", Error: err.Error()})
 			}
-		case "shape_set", "shape_remove":
+		case "shape_set", "shape_remove", "monitor_set", "monitor_remove":
 			err := handleBandwidthCommand(ctx, bandwidth, command)
 			result := Message{Type: "result", RequestID: command.RequestID}
 			if err != nil {
@@ -142,6 +142,12 @@ func handleBandwidthCommand(ctx context.Context, bandwidth *bandwidthSession, co
 	}
 	if command.Type == "shape_remove" {
 		return bandwidth.remove(ctx, ip, mac)
+	}
+	if command.Type == "monitor_set" {
+		return bandwidth.monitor(ctx, ip, mac)
+	}
+	if command.Type == "monitor_remove" {
+		return bandwidth.removeMonitor(ctx, ip, mac)
 	}
 	if command.Policy == nil {
 		return errors.New("bandwidth policy is required")

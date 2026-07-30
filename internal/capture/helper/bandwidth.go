@@ -17,9 +17,10 @@ import (
 const bandwidthRefreshInterval = time.Second
 
 type bandwidthTarget struct {
-	ip     netip.Addr
-	mac    net.HardwareAddr
-	policy shaping.Policy
+	ip      netip.Addr
+	mac     net.HardwareAddr
+	policy  shaping.Policy
+	limited bool
 }
 
 type frameSenderFunc func(context.Context, []byte) error
@@ -113,19 +114,86 @@ func (s *bandwidthSession) set(ctx context.Context, ip netip.Addr, mac net.Hardw
 		_ = s.manager.Remove(mac)
 		return err
 	}
-	target := bandwidthTarget{ip: ip, mac: append(net.HardwareAddr(nil), mac...), policy: policy}
+	target := bandwidthTarget{ip: ip, mac: append(net.HardwareAddr(nil), mac...), policy: policy, limited: true}
 	s.mu.Lock()
 	s.targets[mac.String()] = target
 	s.mu.Unlock()
 	if err := s.redirect(ctx, target); err != nil {
-		s.removeState(target)
-		_ = s.restore(context.Background(), target)
+		if replacing {
+			if previous.limited {
+				_ = s.manager.Set(previous.mac, previous.policy)
+			} else {
+				_ = s.manager.Remove(previous.mac)
+				_ = s.manager.Track(previous.mac)
+			}
+			s.mu.Lock()
+			s.targets[previous.mac.String()] = previous
+			s.mu.Unlock()
+		} else {
+			s.removeState(target)
+			_ = s.restore(context.Background(), target)
+		}
 		return fmt.Errorf("activate bandwidth path: %w", err)
 	}
 	return nil
 }
 
 func (s *bandwidthSession) remove(ctx context.Context, ip netip.Addr, mac net.HardwareAddr) error {
+	return s.removeMode(ctx, ip, mac, true)
+}
+
+func (s *bandwidthSession) monitor(ctx context.Context, ip netip.Addr, mac net.HardwareAddr) error {
+	if err := s.validateTarget(ip, mac); err != nil {
+		return err
+	}
+	s.mu.RLock()
+	gatewayKnown := len(s.gatewayMAC) == 6
+	s.mu.RUnlock()
+	if !gatewayKnown {
+		return errors.New("default gateway MAC has not been verified yet")
+	}
+	s.mu.RLock()
+	existing, found := s.targets[mac.String()]
+	s.mu.RUnlock()
+	if found {
+		if existing.ip != ip {
+			return errors.New("remove the existing forwarding target before changing its IP")
+		}
+		if existing.limited {
+			if err := s.manager.SetUnrestricted(mac); err != nil {
+				return err
+			}
+			existing.limited, existing.policy = false, shaping.Policy{}
+			s.mu.Lock()
+			s.targets[mac.String()] = existing
+			s.mu.Unlock()
+		}
+		return nil
+	}
+	if err := s.manager.Track(mac); err != nil {
+		return err
+	}
+	if err := s.forwarder.SetRoute(ip, mac); err != nil {
+		_ = s.manager.Untrack(mac)
+		return err
+	}
+	target := bandwidthTarget{ip: ip, mac: append(net.HardwareAddr(nil), mac...)}
+	s.mu.Lock()
+	s.targets[mac.String()] = target
+	s.mu.Unlock()
+	if err := s.redirect(ctx, target); err != nil {
+		s.removeState(target)
+		_ = s.restore(context.Background(), target)
+		return fmt.Errorf("activate monitoring path: %w", err)
+	}
+	return nil
+}
+
+func (s *bandwidthSession) removeMonitor(ctx context.Context, ip netip.Addr, mac net.HardwareAddr) error {
+	return s.removeMode(ctx, ip, mac, false)
+}
+
+func (s *bandwidthSession) removeMode(ctx context.Context, ip netip.Addr, mac net.HardwareAddr, limited bool) error {
 	if err := s.validateTarget(ip, mac); err != nil {
 		return err
 	}
@@ -139,13 +207,23 @@ func (s *bandwidthSession) remove(ctx context.Context, ip netip.Addr, mac net.Ha
 	if !found {
 		return nil
 	}
+	if target.limited != limited {
+		if limited {
+			return errors.New("target is monitored without a bandwidth limit")
+		}
+		return errors.New("remove the bandwidth limit before stopping monitoring")
+	}
 	s.mu.Lock()
 	delete(s.targets, mac.String())
 	s.mu.Unlock()
 	s.forwarder.RemoveRoute(target.ip)
 	_ = s.manager.Remove(target.mac)
 	if err := s.restore(ctx, target); err != nil {
-		_ = s.manager.Set(target.mac, target.policy)
+		if target.limited {
+			_ = s.manager.Set(target.mac, target.policy)
+		} else {
+			_ = s.manager.Track(target.mac)
+		}
 		_ = s.forwarder.SetRoute(target.ip, target.mac)
 		s.mu.Lock()
 		s.targets[target.mac.String()] = target

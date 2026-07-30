@@ -20,6 +20,14 @@ type BandwidthLimitDTO struct {
 	BurstBytes            int    `json:"burstBytes"`
 }
 
+type BandwidthTrafficDTO struct {
+	MAC             string `json:"mac"`
+	UploadPackets   uint64 `json:"uploadPackets"`
+	UploadBytes     uint64 `json:"uploadBytes"`
+	DownloadPackets uint64 `json:"downloadPackets"`
+	DownloadBytes   uint64 `json:"downloadBytes"`
+}
+
 func (a *GUIApp) BandwidthLimits() ([]BandwidthLimitDTO, error) {
 	a.mu.RLock()
 	supervisor := a.supervisor
@@ -90,6 +98,61 @@ func (a *GUIApp) ClearBandwidthLimits() error {
 	err = runtime.ClearBandwidthLimits(ctx)
 	a.logBandwidthResult("clear", "", "", err)
 	return err
+}
+
+func (a *GUIApp) StartBandwidthMonitor(ipText, macText string) error {
+	runtime, err := a.activeRuntime()
+	if err != nil {
+		return err
+	}
+	ip, err := netip.ParseAddr(ipText)
+	if err != nil {
+		return fmt.Errorf("parse target IP: %w", err)
+	}
+	mac, err := net.ParseMAC(macText)
+	if err != nil {
+		return fmt.Errorf("parse target MAC: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
+	defer cancel()
+	err = runtime.StartBandwidthMonitor(ctx, coreapp.ControlTarget{IP: ip, MAC: mac})
+	a.logBandwidthResult("monitor_start", ipText, macText, err)
+	return err
+}
+
+func (a *GUIApp) StopBandwidthMonitor(macText string) error {
+	runtime, err := a.activeRuntime()
+	if err != nil {
+		return err
+	}
+	mac, err := net.ParseMAC(macText)
+	if err != nil {
+		return fmt.Errorf("parse target MAC: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
+	defer cancel()
+	err = runtime.StopBandwidthMonitor(ctx, mac)
+	a.logBandwidthResult("monitor_stop", "", macText, err)
+	return err
+}
+
+func (a *GUIApp) BandwidthTraffic() ([]BandwidthTrafficDTO, error) {
+	runtime, err := a.activeRuntime()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 5*time.Second)
+	defer cancel()
+	traffic, err := runtime.BandwidthTraffic(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]BandwidthTrafficDTO, 0, len(traffic))
+	for _, current := range traffic {
+		result = append(result, BandwidthTrafficDTO{MAC: current.MAC, UploadPackets: current.UploadPackets,
+			UploadBytes: current.UploadBytes, DownloadPackets: current.DownloadPackets, DownloadBytes: current.DownloadBytes})
+	}
+	return result, nil
 }
 
 func (a *GUIApp) activeRuntime() (*coreapp.Runtime, error) {

@@ -3,6 +3,7 @@ import type {
   AppInfo,
   Bootstrap,
   BandwidthLimit,
+  BandwidthTraffic,
   Conflict,
   ControlAudit,
   Device,
@@ -55,6 +56,9 @@ export const wailsClient = {
     backend().SetBandwidthLimit(ip, mac, downloadBitsPerSecond, uploadBitsPerSecond, 0) as Promise<void>,
   removeBandwidthLimit: (mac: string) => backend().RemoveBandwidthLimit(mac) as Promise<void>,
   clearBandwidthLimits: () => backend().ClearBandwidthLimits() as Promise<void>,
+  startBandwidthMonitor: (ip: string, mac: string) => backend().StartBandwidthMonitor(ip, mac) as Promise<void>,
+  stopBandwidthMonitor: (mac: string) => backend().StopBandwidthMonitor(mac) as Promise<void>,
+  bandwidthTraffic: () => backend().BandwidthTraffic() as Promise<BandwidthTraffic[]>,
   openConfigurationDirectory: () => backend().OpenConfigurationDirectory() as Promise<void>,
   openLogDirectory: () => backend().OpenLogDirectory() as Promise<void>,
 }

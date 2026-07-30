@@ -64,27 +64,29 @@ type Config struct {
 }
 
 type Status struct {
-	Running                 bool
-	Stopped                 bool
-	Scanning                bool
-	PeriodicScanEnabled     bool
-	DeviceCount             int
-	DroppedEvents           uint64
-	LastPersistenceError    string
-	Generation              uint64
-	RestartCount            uint64
-	Rebuilding              bool
-	LastRestartReason       string
-	SupervisorDroppedEvents uint64
-	ActiveControlTargets    int
-	ContinuousControl       bool
-	BandwidthAvailable      bool
-	ActiveBandwidthLimits   int
-	IPv6Available           bool
-	IPv6RouterIP            string
-	IPv6RouterMAC           string
-	IPv6PrefixCount         int
-	IPv6RouterConflicts     int
+	Running                      bool
+	Stopped                      bool
+	Scanning                     bool
+	PeriodicScanEnabled          bool
+	DeviceCount                  int
+	DroppedEvents                uint64
+	LastPersistenceError         string
+	Generation                   uint64
+	RestartCount                 uint64
+	Rebuilding                   bool
+	LastRestartReason            string
+	SupervisorDroppedEvents      uint64
+	ActiveControlTargets         int
+	ContinuousControl            bool
+	BandwidthAvailable           bool
+	ActiveBandwidthLimits        int
+	BandwidthMonitoringAvailable bool
+	ActiveBandwidthMonitors      int
+	IPv6Available                bool
+	IPv6RouterIP                 string
+	IPv6RouterMAC                string
+	IPv6PrefixCount              int
+	IPv6RouterConflicts          int
 }
 
 type Runtime struct {
@@ -267,6 +269,7 @@ func (r *Runtime) Status() Status {
 		DroppedEvents: r.DroppedEvents(), LastPersistenceError: errorText(persistErr),
 		ActiveControlTargets: len(r.control.Snapshot()), ContinuousControl: r.control.ContinuousRunning(),
 		BandwidthAvailable: r.bandwidth.Available(), ActiveBandwidthLimits: len(r.bandwidth.Snapshot()),
+		BandwidthMonitoringAvailable: r.bandwidth.MonitoringAvailable(), ActiveBandwidthMonitors: len(r.bandwidth.MonitoringSnapshot()),
 		IPv6Available: len(ipv6.LocalAddresses) > 0,
 	}
 	status.IPv6RouterConflicts = ipv6.ConflictCount
@@ -295,7 +298,8 @@ func (r *Runtime) SetPeriodicScanEnabled(enabled bool) { r.scanner.SetPeriodicEn
 func (r *Runtime) ConflictHistory() []defense.Conflict { return r.monitor.History() }
 func (r *Runtime) ControlTargets() []ControlTarget     { return r.control.Snapshot() }
 
-func (r *Runtime) BandwidthLimits() []BandwidthTarget { return r.bandwidth.Snapshot() }
+func (r *Runtime) BandwidthLimits() []BandwidthTarget   { return r.bandwidth.Snapshot() }
+func (r *Runtime) BandwidthMonitors() []BandwidthTarget { return r.bandwidth.MonitoringSnapshot() }
 
 func (r *Runtime) SetBandwidthLimit(ctx context.Context, target ControlTarget, policy shaping.Policy) error {
 	return r.bandwidth.Set(ctx, target, policy)
@@ -306,6 +310,18 @@ func (r *Runtime) RemoveBandwidthLimit(ctx context.Context, mac net.HardwareAddr
 }
 
 func (r *Runtime) ClearBandwidthLimits(ctx context.Context) error { return r.bandwidth.Clear(ctx) }
+
+func (r *Runtime) StartBandwidthMonitor(ctx context.Context, target ControlTarget) error {
+	return r.bandwidth.StartMonitoring(ctx, target)
+}
+
+func (r *Runtime) StopBandwidthMonitor(ctx context.Context, mac net.HardwareAddr) error {
+	return r.bandwidth.StopMonitoring(ctx, mac)
+}
+
+func (r *Runtime) BandwidthTraffic(ctx context.Context) ([]shaping.DeviceTrafficStats, error) {
+	return r.bandwidth.Traffic(ctx)
+}
 
 func (r *Runtime) ControlCommands(auditor ControlAuditor, factory ControlControllerFactory) *ControlCommands {
 	networkContext := r.Network()
@@ -419,6 +435,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	cancelControl()
 	bandwidthCtx, cancelBandwidth := context.WithTimeout(context.Background(), 5*time.Second)
 	bandwidthErr := r.bandwidth.Clear(bandwidthCtx)
+	monitorErr := r.bandwidth.ClearMonitoring(bandwidthCtx)
 	cancelBandwidth()
 	closeErr := r.service.Close()
 	cancel()
@@ -430,7 +447,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	r.stopped = true
 	r.cancel = nil
 	r.mu.Unlock()
-	result := errors.Join(first, stageError(StageShutdown, controlErr), stageError(StageShutdown, bandwidthErr), stageError(StageShutdown, closeErr))
+	result := errors.Join(first, stageError(StageShutdown, controlErr), stageError(StageShutdown, bandwidthErr), stageError(StageShutdown, monitorErr), stageError(StageShutdown, closeErr))
 	r.publish(Event{Kind: EventRuntimeStopped, Err: result})
 	return result
 }
@@ -564,8 +581,9 @@ func (r *Runtime) Close() error {
 	cancelControl()
 	bandwidthCtx, cancelBandwidth := context.WithTimeout(context.Background(), 5*time.Second)
 	bandwidthErr := r.bandwidth.Clear(bandwidthCtx)
+	monitorErr := r.bandwidth.ClearMonitoring(bandwidthCtx)
 	cancelBandwidth()
-	return errors.Join(controlErr, bandwidthErr, r.driver.Close())
+	return errors.Join(controlErr, bandwidthErr, monitorErr, r.driver.Close())
 }
 
 func prefixForRoute(prefixes []netip.Prefix, route networkgateway.Route) (netip.Prefix, error) {

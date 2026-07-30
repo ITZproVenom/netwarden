@@ -91,6 +91,23 @@ func TestManagerSetsUpdatesAndRemovesPolicies(t *testing.T) {
 	}
 }
 
+func TestManagerSeparatesUnrestrictedTrackingFromLimits(t *testing.T) {
+	manager := NewManager()
+	mac, _ := net.ParseMAC("02:00:00:00:00:21")
+	if err := manager.Track(mac); err != nil || !manager.Has(mac) || manager.Limited(mac) || len(manager.Snapshot()) != 0 {
+		t.Fatalf("unexpected tracked state: err=%v snapshot=%#v", err, manager.Snapshot())
+	}
+	if err := manager.Set(mac, Policy{UploadBitsPerSecond: 1_000_000}); err != nil || !manager.Limited(mac) {
+		t.Fatalf("could not upgrade tracked identity: %v", err)
+	}
+	if err := manager.SetUnrestricted(mac); err != nil || manager.Limited(mac) || !manager.Has(mac) {
+		t.Fatalf("could not downgrade limited identity: %v", err)
+	}
+	if err := manager.Untrack(mac); err != nil || manager.Has(mac) {
+		t.Fatalf("could not remove tracked identity: %v", err)
+	}
+}
+
 func TestPolicyValidation(t *testing.T) {
 	for _, policy := range []Policy{
 		{},

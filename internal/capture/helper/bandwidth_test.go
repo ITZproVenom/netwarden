@@ -123,6 +123,45 @@ func TestBandwidthSessionDoesNotConsumeUnmanagedIPv6Discovery(t *testing.T) {
 	}
 }
 
+func TestBandwidthSessionTransitionsMonitorLimitAndBackWithoutRestoringEarly(t *testing.T) {
+	local := mustHelperMAC(t, "02:00:00:00:00:10")
+	gateway := mustHelperMAC(t, "02:00:00:00:00:01")
+	device := mustHelperMAC(t, "02:00:00:00:00:20")
+	deviceIP := netip.MustParseAddr("192.168.1.20")
+	recorder := &bandwidthRecorder{sent: make(chan []byte, 16)}
+	session, err := newBandwidthSession(context.Background(), local, netip.MustParseAddr("192.168.1.10"),
+		netip.MustParseAddr("192.168.1.1"), netip.MustParsePrefix("192.168.1.10/24"), recorder.send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.close() })
+	session.observeGateway(gateway)
+	if err := session.monitor(context.Background(), deviceIP, device); err != nil {
+		t.Fatal(err)
+	}
+	receiveBandwidthFrame(t, recorder.sent)
+	receiveBandwidthFrame(t, recorder.sent)
+	if err := session.set(context.Background(), deviceIP, device, shaping.Policy{UploadBitsPerSecond: 1_000_000}); err != nil {
+		t.Fatal(err)
+	}
+	receiveBandwidthFrame(t, recorder.sent)
+	receiveBandwidthFrame(t, recorder.sent)
+	if err := session.monitor(context.Background(), deviceIP, device); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case unexpected := <-recorder.sent:
+		t.Fatalf("downgrade unexpectedly restored or redirected the path: %x", unexpected)
+	default:
+	}
+	if err := session.removeMonitor(context.Background(), deviceIP, device); err != nil {
+		t.Fatal(err)
+	}
+	for range 4 {
+		receiveBandwidthFrame(t, recorder.sent)
+	}
+}
+
 func assertARPIdentity(t *testing.T, frame []byte, senderIP netip.Addr, senderMAC net.HardwareAddr, targetIP netip.Addr, targetMAC net.HardwareAddr) {
 	t.Helper()
 	message, err := packet.ParseARP(frame)

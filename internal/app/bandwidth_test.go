@@ -14,11 +14,27 @@ import (
 )
 
 type recordingBandwidthController struct {
-	mu      sync.Mutex
-	set     []BandwidthTarget
-	removed []BandwidthTarget
-	setErr  error
-	remErr  error
+	mu        sync.Mutex
+	set       []BandwidthTarget
+	removed   []BandwidthTarget
+	setErr    error
+	remErr    error
+	monitored []BandwidthTarget
+	stopped   []BandwidthTarget
+}
+
+func (c *recordingBandwidthController) StartBandwidthMonitor(_ context.Context, ip netip.Addr, mac net.HardwareAddr) error {
+	c.monitored = append(c.monitored, BandwidthTarget{IP: ip, MAC: append(net.HardwareAddr(nil), mac...)})
+	return nil
+}
+
+func (c *recordingBandwidthController) StopBandwidthMonitor(_ context.Context, ip netip.Addr, mac net.HardwareAddr) error {
+	c.stopped = append(c.stopped, BandwidthTarget{IP: ip, MAC: append(net.HardwareAddr(nil), mac...)})
+	return nil
+}
+
+func (c *recordingBandwidthController) BandwidthTraffic(context.Context) ([]shaping.DeviceTrafficStats, error) {
+	return []shaping.DeviceTrafficStats{{MAC: "02:00:00:00:00:20", UploadBytes: 42}}, nil
 }
 
 func (c *recordingBandwidthController) SetBandwidthLimit(_ context.Context, ip netip.Addr, mac net.HardwareAddr, policy shaping.Policy) error {
@@ -94,6 +110,31 @@ func TestBandwidthServiceKeepsPolicyWhenRemovalFails(t *testing.T) {
 	}
 	if len(service.Snapshot()) != 1 {
 		t.Fatal("failed recovery silently removed the active policy")
+	}
+}
+
+func TestBandwidthServicePreservesMonitoringAcrossLimitLifecycle(t *testing.T) {
+	registry, target := bandwidthRegistry(t)
+	controller := &recordingBandwidthController{}
+	service := NewBandwidthService(controller, registry, nil)
+	if err := service.StartMonitoring(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Set(context.Background(), target, shaping.Policy{UploadBitsPerSecond: 1_000_000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Remove(context.Background(), target.MAC); err != nil {
+		t.Fatal(err)
+	}
+	if len(controller.monitored) != 2 || len(controller.removed) != 0 || len(service.MonitoringSnapshot()) != 1 {
+		t.Fatalf("monitor transitions=%#v removals=%#v", controller.monitored, controller.removed)
+	}
+	traffic, err := service.Traffic(context.Background())
+	if err != nil || len(traffic) != 1 || traffic[0].UploadBytes != 42 {
+		t.Fatalf("traffic=%#v err=%v", traffic, err)
+	}
+	if err := service.StopMonitoring(context.Background(), target.MAC); err != nil || len(controller.stopped) != 1 {
+		t.Fatalf("stop monitor: %v calls=%#v", err, controller.stopped)
 	}
 }
 

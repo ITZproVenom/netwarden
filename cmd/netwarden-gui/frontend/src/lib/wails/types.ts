@@ -38,6 +38,8 @@ export type RuntimeStatus = {
   LastPersistenceError: string
   BandwidthAvailable: boolean
   ActiveBandwidthLimits: number
+  BandwidthMonitoringAvailable: boolean
+  ActiveBandwidthMonitors: number
   IPv6Available: boolean
   IPv6RouterIP: string
   IPv6RouterMAC: string
@@ -98,5 +100,12 @@ export type BandwidthLimit = {
   downloadBitsPerSecond: number
   uploadBitsPerSecond: number
   burstBytes: number
+}
+export type BandwidthTraffic = {
+  mac: string
+  uploadPackets: number
+  uploadBytes: number
+  downloadPackets: number
+  downloadBytes: number
 }
 export type AppInfo = { name: string; version: string; build: string }

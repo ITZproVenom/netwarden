@@ -199,6 +199,16 @@ func (d *Driver) RemoveBandwidthLimit(ctx context.Context, ip netip.Addr, mac ne
 	return err
 }
 
+func (d *Driver) StartBandwidthMonitor(ctx context.Context, ip netip.Addr, mac net.HardwareAddr) error {
+	_, err := d.request(ctx, helper.Message{Type: "monitor_set", TargetIP: ip.String(), TargetMAC: mac.String()})
+	return err
+}
+
+func (d *Driver) StopBandwidthMonitor(ctx context.Context, ip netip.Addr, mac net.HardwareAddr) error {
+	_, err := d.request(ctx, helper.Message{Type: "monitor_remove", TargetIP: ip.String(), TargetMAC: mac.String()})
+	return err
+}
+
 func (d *Driver) BandwidthTraffic(ctx context.Context) ([]shaping.DeviceTrafficStats, error) {
 	response, err := d.request(ctx, helper.Message{Type: "shape_traffic"})
 	return response.Traffic, err
