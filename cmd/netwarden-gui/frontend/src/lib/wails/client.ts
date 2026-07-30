@@ -2,6 +2,7 @@ import type {
   Activity,
   AppInfo,
   Bootstrap,
+  BandwidthLimit,
   Conflict,
   ControlAudit,
   Device,
@@ -43,6 +44,11 @@ export const wailsClient = {
   restoreControl: (ip: string, mac: string) => backend().RestoreControl(ip, mac) as Promise<void>,
   restoreAllControls: () => backend().RestoreAllControls() as Promise<void>,
   stopContinuousControl: (ip: string, mac: string) => backend().StopContinuousControl(ip, mac) as Promise<void>,
+  bandwidthLimits: () => backend().BandwidthLimits() as Promise<BandwidthLimit[]>,
+  setBandwidthLimit: (ip: string, mac: string, downloadBitsPerSecond: number, uploadBitsPerSecond: number) =>
+    backend().SetBandwidthLimit(ip, mac, downloadBitsPerSecond, uploadBitsPerSecond, 0) as Promise<void>,
+  removeBandwidthLimit: (mac: string) => backend().RemoveBandwidthLimit(mac) as Promise<void>,
+  clearBandwidthLimits: () => backend().ClearBandwidthLimits() as Promise<void>,
   openConfigurationDirectory: () => backend().OpenConfigurationDirectory() as Promise<void>,
   openLogDirectory: () => backend().OpenLogDirectory() as Promise<void>,
 }

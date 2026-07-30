@@ -1,4 +1,4 @@
-import { ArrowDownAZ, Search, X } from "lucide-react"
+import { ArrowDownAZ, Gauge, LoaderCircle, Search, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -11,23 +11,29 @@ export function DeviceToolbar({
   totalCount,
   selectedCount,
   controlledCount,
+  limitedCount,
   disconnectPending,
   restorePending,
+  clearLimitsPending,
   preferences,
   onPreferencesChange,
   onDisconnect,
   onRestore,
+  onClearLimits,
 }: {
   visibleCount: number
   totalCount: number
   selectedCount: number
   controlledCount: number
+  limitedCount: number
   disconnectPending: boolean
   restorePending: boolean
+  clearLimitsPending: boolean
   preferences: DevicePreferences
   onPreferencesChange: (preferences: DevicePreferences) => void
   onDisconnect: () => void
   onRestore: () => void
+  onClearLimits: () => void
 }) {
   const update = <K extends keyof DevicePreferences>(key: K, value: DevicePreferences[K]) =>
     onPreferencesChange({ ...preferences, [key]: value })
@@ -51,6 +57,12 @@ export function DeviceToolbar({
             <DisconnectSelected count={selectedCount} pending={disconnectPending} disconnect={onDisconnect} />
           )}
           {controlledCount > 0 && <RestoreAll count={controlledCount} pending={restorePending} restore={onRestore} />}
+          {limitedCount > 0 && (
+            <Button variant="outline" size="sm" disabled={clearLimitsPending} onClick={onClearLimits}>
+              {clearLimitsPending ? <LoaderCircle className="animate-spin" /> : <Gauge />}
+              Clear {limitedCount} limit{limitedCount === 1 ? "" : "s"}
+            </Button>
+          )}
           <div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
             <Search className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input

@@ -54,7 +54,8 @@ func runHelperMode() (bool, error) {
 	if !prefix.IsValid() {
 		return true, errors.New("selected interface does not contain the default IPv4 route")
 	}
-	driver, err := pcapdriver.Open(selected.Name, pcapdriver.Config{Promiscuous: true, Filter: "arp"})
+	filter := fmt.Sprintf("arp or (ip and ether dst %s)", selected.MAC.String())
+	driver, err := pcapdriver.Open(selected.Name, pcapdriver.Config{Promiscuous: true, Filter: filter})
 	if err != nil {
 		return true, err
 	}

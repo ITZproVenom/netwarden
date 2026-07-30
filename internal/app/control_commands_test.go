@@ -126,6 +126,18 @@ func TestControlCommandsFilterIneligibleDevices(t *testing.T) {
 	}
 }
 
+func TestControlCommandsRejectBandwidthLimitedTarget(t *testing.T) {
+	blocked := errors.New("remove bandwidth limit first")
+	deps := testControlDependencies(t, &recordingControlAudit{})
+	deps.DisruptiveGuard = func(ControlTarget) error { return blocked }
+	if err := NewControlCommands(testActiveController(t, deps), deps).Disconnect(context.Background(), testControlTarget(t)); !errors.Is(err, blocked) {
+		t.Fatalf("disconnect error = %v", err)
+	}
+	if err := NewControlCommands(testActiveController(t, deps), deps).Restore(context.Background(), testControlTarget(t)); errors.Is(err, blocked) {
+		t.Fatalf("recovery was incorrectly blocked: %v", err)
+	}
+}
+
 func TestDisconnectSelectedUsesOnlyRequestedCurrentTargets(t *testing.T) {
 	audit := &recordingControlAudit{}
 	deps := testControlDependencies(t, audit)

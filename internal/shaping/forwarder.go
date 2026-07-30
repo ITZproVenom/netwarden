@@ -56,6 +56,7 @@ type Forwarder struct {
 	manager    *Manager
 	sender     FrameSender
 	localMAC   net.HardwareAddr
+	identityMu sync.RWMutex
 	gatewayMAC net.HardwareAddr
 	upload     chan queuedFrame
 	download   chan queuedFrame
@@ -86,9 +87,12 @@ func NewForwarder(manager *Manager, sender FrameSender, config ForwarderConfig) 
 	if err != nil {
 		return nil, err
 	}
-	gatewayMAC, err := copyUnicastMAC(config.GatewayMAC, "gateway")
-	if err != nil {
-		return nil, err
+	var gatewayMAC net.HardwareAddr
+	if len(config.GatewayMAC) != 0 {
+		gatewayMAC, err = copyUnicastMAC(config.GatewayMAC, "gateway")
+		if err != nil {
+			return nil, err
+		}
 	}
 	capacity := config.QueueCapacity
 	if capacity == 0 {
@@ -102,6 +106,19 @@ func NewForwarder(manager *Manager, sender FrameSender, config ForwarderConfig) 
 		upload: make(chan queuedFrame, capacity), download: make(chan queuedFrame, capacity),
 		routes: make(map[netip.Addr]net.HardwareAddr), errors: make(chan error, 32),
 	}, nil
+}
+
+// SetGatewayMAC updates the verified default-gateway identity. Until one is
+// supplied, redirected frames are deliberately rejected rather than guessed.
+func (f *Forwarder) SetGatewayMAC(mac net.HardwareAddr) error {
+	verified, err := copyUnicastMAC(mac, "gateway")
+	if err != nil {
+		return err
+	}
+	f.identityMu.Lock()
+	f.gatewayMAC = verified
+	f.identityMu.Unlock()
+	return nil
 }
 
 func (f *Forwarder) SetRoute(ip netip.Addr, mac net.HardwareAddr) error {
@@ -203,8 +220,14 @@ func (f *Forwarder) classify(frame []byte) (queuedFrame, error) {
 	if !bytes.Equal(destination, f.localMAC) {
 		return queuedFrame{}, ErrFrameNotManaged
 	}
+	f.identityMu.RLock()
+	gatewayMAC := append(net.HardwareAddr(nil), f.gatewayMAC...)
+	f.identityMu.RUnlock()
+	if len(gatewayMAC) != 6 {
+		return queuedFrame{}, ErrFrameNotManaged
+	}
 	result := queuedFrame{data: append([]byte(nil), frame[:ethernetHeaderLength+totalLength]...)}
-	if bytes.Equal(source, f.gatewayMAC) {
+	if bytes.Equal(source, gatewayMAC) {
 		var destinationIPBytes [4]byte
 		copy(destinationIPBytes[:], frame[ethernetHeaderLength+16:ethernetHeaderLength+20])
 		destinationIP := netip.AddrFrom4(destinationIPBytes)
@@ -223,7 +246,7 @@ func (f *Forwarder) classify(frame []byte) (queuedFrame, error) {
 		return queuedFrame{}, ErrFrameNotManaged
 	}
 	result.deviceMAC, result.direction = append(net.HardwareAddr(nil), source...), Upload
-	copy(result.data[:6], f.gatewayMAC)
+	copy(result.data[:6], gatewayMAC)
 	copy(result.data[6:12], f.localMAC)
 	return result, nil
 }
@@ -236,6 +259,10 @@ func (f *Forwarder) runDirection(ctx context.Context, queue <-chan queuedFrame, 
 			return
 		case frame := <-queue:
 			if err := f.manager.Wait(ctx, frame.deviceMAC, frame.direction, len(frame.data)); err != nil {
+				f.canceledDrops.Add(1)
+				continue
+			}
+			if !f.manager.Has(frame.deviceMAC) {
 				f.canceledDrops.Add(1)
 				continue
 			}

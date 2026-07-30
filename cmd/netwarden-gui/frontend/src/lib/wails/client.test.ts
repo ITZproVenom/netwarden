@@ -16,6 +16,10 @@ describe("wailsClient", () => {
     ControlAudit: vi.fn(),
     DisconnectAllDevices: vi.fn(),
     DisconnectSelectedDevices: vi.fn(),
+    BandwidthLimits: vi.fn(),
+    SetBandwidthLimit: vi.fn(),
+    RemoveBandwidthLimit: vi.fn(),
+    ClearBandwidthLimits: vi.fn(),
   }
 
   beforeEach(() => {
@@ -51,5 +55,17 @@ describe("wailsClient", () => {
     backend.ControlAudit.mockResolvedValue([])
     await wailsClient.controlAudit()
     expect(backend.ControlAudit).toHaveBeenCalledWith(250)
+  })
+
+  it("passes bandwidth rates with the default burst setting", async () => {
+    backend.SetBandwidthLimit.mockResolvedValue(undefined)
+    await wailsClient.setBandwidthLimit("192.168.1.20", "00:11:22:33:44:55", 10_000_000, 2_000_000)
+    expect(backend.SetBandwidthLimit).toHaveBeenCalledWith(
+      "192.168.1.20",
+      "00:11:22:33:44:55",
+      10_000_000,
+      2_000_000,
+      0,
+    )
   })
 })

@@ -22,6 +22,7 @@ import (
 	"github.com/amdzy/NetWarden/internal/history"
 	"github.com/amdzy/NetWarden/internal/network"
 	networkgateway "github.com/amdzy/NetWarden/internal/network/gateway"
+	"github.com/amdzy/NetWarden/internal/shaping"
 )
 
 type OpenDriver func(string) (capture.Driver, error)
@@ -76,6 +77,8 @@ type Status struct {
 	SupervisorDroppedEvents uint64
 	ActiveControlTargets    int
 	ContinuousControl       bool
+	BandwidthAvailable      bool
+	ActiveBandwidthLimits   int
 }
 
 type Runtime struct {
@@ -103,6 +106,7 @@ type Runtime struct {
 	done       chan struct{}
 	doneOnce   sync.Once
 	control    *ControlLifecycle
+	bandwidth  *BandwidthService
 }
 
 func DefaultDependencies() Dependencies {
@@ -213,6 +217,15 @@ func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*
 		done: make(chan struct{}),
 	}
 	runtime.control = NewControlLifecycle(runtime.publish)
+	controller, _ := driver.(BandwidthController)
+	runtime.bandwidth = NewBandwidthService(controller, registry, func(mac net.HardwareAddr) bool {
+		for _, target := range runtime.control.Snapshot() {
+			if target.MAC.String() == mac.String() {
+				return true
+			}
+		}
+		return false
+	})
 	scanner.SetObserver(runtime.handleScanEvent)
 	if pinned && gatewayMAC.String() != baselineMAC.String() {
 		monitor.ObserveGatewayClaim(gatewayMAC, now)
@@ -237,6 +250,7 @@ func (r *Runtime) Status() Status {
 		PeriodicScanEnabled: r.scanner.PeriodicEnabled(), DeviceCount: len(r.Devices()),
 		DroppedEvents: r.DroppedEvents(), LastPersistenceError: errorText(persistErr),
 		ActiveControlTargets: len(r.control.Snapshot()), ContinuousControl: r.control.ContinuousRunning(),
+		BandwidthAvailable: r.bandwidth.Available(), ActiveBandwidthLimits: len(r.bandwidth.Snapshot()),
 	}
 }
 
@@ -256,6 +270,18 @@ func (r *Runtime) SetPeriodicScanEnabled(enabled bool) { r.scanner.SetPeriodicEn
 func (r *Runtime) ConflictHistory() []defense.Conflict { return r.monitor.History() }
 func (r *Runtime) ControlTargets() []ControlTarget     { return r.control.Snapshot() }
 
+func (r *Runtime) BandwidthLimits() []BandwidthTarget { return r.bandwidth.Snapshot() }
+
+func (r *Runtime) SetBandwidthLimit(ctx context.Context, target ControlTarget, policy shaping.Policy) error {
+	return r.bandwidth.Set(ctx, target, policy)
+}
+
+func (r *Runtime) RemoveBandwidthLimit(ctx context.Context, mac net.HardwareAddr) error {
+	return r.bandwidth.Remove(ctx, mac)
+}
+
+func (r *Runtime) ClearBandwidthLimits(ctx context.Context) error { return r.bandwidth.Clear(ctx) }
+
 func (r *Runtime) ControlCommands(auditor ControlAuditor, factory ControlControllerFactory) *ControlCommands {
 	networkContext := r.Network()
 	if factory == nil {
@@ -269,6 +295,12 @@ func (r *Runtime) ControlCommands(auditor ControlAuditor, factory ControlControl
 			GatewayIP: networkContext.Gateway.IP, GatewayMAC: networkContext.Gateway.MAC,
 		},
 		Auditor: auditor, ControllerFactory: factory, Lifecycle: r.control, Publish: r.publish,
+		DisruptiveGuard: func(target ControlTarget) error {
+			if r.bandwidth.Contains(target.MAC) {
+				return errors.New("remove the bandwidth limit before disconnecting this device")
+			}
+			return nil
+		},
 	})
 }
 
@@ -357,9 +389,12 @@ func (r *Runtime) Run(ctx context.Context) error {
 	second := <-workerResults
 	third := <-workerResults
 	first = meaningfulError(first, second, third, ctx.Err())
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	controlErr := r.control.RestoreAll(cleanupCtx, "runtime shutdown or network change")
-	cleanupCancel()
+	controlCtx, cancelControl := context.WithTimeout(context.Background(), 5*time.Second)
+	controlErr := r.control.RestoreAll(controlCtx, "runtime shutdown or network change")
+	cancelControl()
+	bandwidthCtx, cancelBandwidth := context.WithTimeout(context.Background(), 5*time.Second)
+	bandwidthErr := r.bandwidth.Clear(bandwidthCtx)
+	cancelBandwidth()
 	closeErr := r.service.Close()
 	cancel()
 	eventWorkers.Wait()
@@ -370,7 +405,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	r.stopped = true
 	r.cancel = nil
 	r.mu.Unlock()
-	result := errors.Join(first, stageError(StageShutdown, controlErr), stageError(StageShutdown, closeErr))
+	result := errors.Join(first, stageError(StageShutdown, controlErr), stageError(StageShutdown, bandwidthErr), stageError(StageShutdown, closeErr))
 	r.publish(Event{Kind: EventRuntimeStopped, Err: result})
 	return result
 }
@@ -488,9 +523,13 @@ func (r *Runtime) Close() error {
 	}
 	r.stopped = true
 	r.doneOnce.Do(func() { close(r.done) })
-	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return errors.Join(r.control.RestoreAll(cleanupCtx, "runtime closed"), r.driver.Close())
+	controlCtx, cancelControl := context.WithTimeout(context.Background(), 5*time.Second)
+	controlErr := r.control.RestoreAll(controlCtx, "runtime closed")
+	cancelControl()
+	bandwidthCtx, cancelBandwidth := context.WithTimeout(context.Background(), 5*time.Second)
+	bandwidthErr := r.bandwidth.Clear(bandwidthCtx)
+	cancelBandwidth()
+	return errors.Join(controlErr, bandwidthErr, r.driver.Close())
 }
 
 func prefixForRoute(prefixes []netip.Prefix, route networkgateway.Route) (netip.Prefix, error) {

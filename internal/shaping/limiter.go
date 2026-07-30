@@ -24,7 +24,7 @@ func NewLimiter(policy Policy) (*Limiter, error) {
 	if err := policy.Validate(); err != nil {
 		return nil, err
 	}
-	policy = policy.normalized()
+	policy = policy.Effective()
 	burstBits := float64(policy.BurstBytes) * 8
 	return &Limiter{
 		download: bucket{rate: float64(policy.DownloadBitsPerSecond), burstBits: burstBits, tokens: burstBits},

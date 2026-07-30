@@ -4,6 +4,8 @@ import { Card, CardContent } from "@/components/ui/card"
 import { QueryError } from "@/components/QueryError"
 import { useDisconnectSelectedDevices, useRestoreAllControls } from "@/features/control/control.queries"
 import { MonitoringOverview } from "@/features/monitoring/MonitoringOverview"
+import { useBandwidthLimits, useClearBandwidthLimits } from "@/features/bandwidth/bandwidth.queries"
+import { useRuntimeStatus } from "@/features/monitoring/monitoring.queries"
 import type { Device } from "@/lib/wails/types"
 import { BulkProgress } from "./DeviceBulkActions"
 import { DeviceDetails } from "./DeviceDetails"
@@ -14,6 +16,9 @@ import { useDevices } from "./devices.queries"
 
 export function DevicesView() {
   const { data: devices = [], isLoading, error, refetch } = useDevices()
+  const { data: bandwidthLimits = [] } = useBandwidthLimits()
+  const { data: runtimeStatus } = useRuntimeStatus()
+  const clearBandwidth = useClearBandwidthLimits()
   const [preferences, setPreferences] = useState<DevicePreferences>(defaultDevicePreferences)
   const [detailsMAC, setDetailsMAC] = useState("")
   const [checkedMACs, setCheckedMACs] = useState<Set<string>>(() => new Set())
@@ -27,18 +32,29 @@ export function DevicesView() {
     preferences.sortBy !== defaultDevicePreferences.sortBy ||
     preferences.descending
   const controlledCount = devices.filter((device) => device.controlState !== "").length
+  const bandwidthByMAC = useMemo(
+    () => new Map(bandwidthLimits.map((limit) => [limit.mac.toLowerCase(), limit])),
+    [bandwidthLimits],
+  )
   const visible = useMemo(() => filterAndSortDevices(devices, preferences), [devices, preferences])
   const selectedTargets = devices
-    .filter((device) => checkedMACs.has(device.mac) && isControlEligible(device))
+    .filter(
+      (device) =>
+        checkedMACs.has(device.mac) && isControlEligible(device) && !bandwidthByMAC.has(device.mac.toLowerCase()),
+    )
     .map(({ ip, mac }) => ({ ip, mac }))
 
   useEffect(() => {
-    const eligibleMACs = new Set(devices.filter(isControlEligible).map((device) => device.mac))
+    const eligibleMACs = new Set(
+      devices
+        .filter((device) => isControlEligible(device) && !bandwidthByMAC.has(device.mac.toLowerCase()))
+        .map((device) => device.mac),
+    )
     setCheckedMACs((current) => {
       const next = new Set([...current].filter((mac) => eligibleMACs.has(mac)))
       return next.size === current.size ? current : next
     })
-  }, [devices])
+  }, [devices, bandwidthByMAC])
 
   const setChecked = (mac: string, checked: boolean) =>
     setCheckedMACs((current) => {
@@ -50,7 +66,9 @@ export function DevicesView() {
   const setVisibleChecked = (checked: boolean) =>
     setCheckedMACs((current) => {
       const next = new Set(current)
-      for (const device of visible.filter(isControlEligible)) {
+      for (const device of visible.filter(
+        (candidate) => isControlEligible(candidate) && !bandwidthByMAC.has(candidate.mac.toLowerCase()),
+      )) {
         if (checked) next.add(device.mac)
         else next.delete(device.mac)
       }
@@ -71,14 +89,17 @@ export function DevicesView() {
           totalCount={devices.length}
           selectedCount={selectedTargets.length}
           controlledCount={controlledCount}
+          limitedCount={bandwidthLimits.length}
           disconnectPending={disconnectSelected.isPending}
           restorePending={restoreAll.isPending}
+          clearLimitsPending={clearBandwidth.isPending}
           preferences={preferences}
           onPreferencesChange={setPreferences}
           onDisconnect={() =>
             disconnectSelected.mutate(selectedTargets, { onSuccess: () => setCheckedMACs(new Set()) })
           }
           onRestore={() => restoreAll.mutate()}
+          onClearLimits={() => clearBandwidth.mutate(undefined)}
         />
         <CardContent className="p-0">
           {(disconnectSelected.isPending || restoreAll.isPending) && (
@@ -96,6 +117,7 @@ export function DevicesView() {
           ) : visible.length ? (
             <DeviceTable
               devices={visible}
+              bandwidthByMAC={bandwidthByMAC}
               checkedMACs={checkedMACs}
               onCheckedChange={setChecked}
               onCheckVisible={setVisibleChecked}
@@ -122,7 +144,12 @@ export function DevicesView() {
           )}
         </CardContent>
       </Card>
-      <DeviceDetails device={selected} onClose={closeDetails} />
+      <DeviceDetails
+        device={selected}
+        bandwidthLimit={selected ? bandwidthByMAC.get(selected.mac.toLowerCase()) : undefined}
+        bandwidthAvailable={Boolean(runtimeStatus?.BandwidthAvailable)}
+        onClose={closeDetails}
+      />
     </>
   )
 }

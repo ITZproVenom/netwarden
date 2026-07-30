@@ -21,6 +21,8 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { formatDate } from "@/lib/format"
 import { copyText } from "@/lib/wails/clipboard"
 import type { Device } from "@/lib/wails/types"
+import type { BandwidthLimit } from "@/lib/wails/types"
+import { BandwidthSection } from "@/features/bandwidth/BandwidthSection"
 import { useSetNickname } from "./devices.queries"
 import {
   useControlAudit,
@@ -60,7 +62,17 @@ function CopyDetail({ label, value }: { label: string; value: string }) {
   )
 }
 
-export function DeviceDetails({ device, onClose }: { device?: Device; onClose: () => void }) {
+export function DeviceDetails({
+  device,
+  bandwidthLimit,
+  bandwidthAvailable,
+  onClose,
+}: {
+  device?: Device
+  bandwidthLimit?: BandwidthLimit
+  bandwidthAvailable: boolean
+  onClose: () => void
+}) {
   const [nickname, setNickname] = useState("")
   const mutation = useSetNickname()
   useEffect(() => setNickname(device && device.name !== device.ip ? device.name : ""), [device])
@@ -103,7 +115,9 @@ export function DeviceDetails({ device, onClose }: { device?: Device; onClose: (
               </dl>
             </section>
             <Separator />
-            <ControlSection device={device} />
+            <ControlSection device={device} bandwidthLimited={Boolean(bandwidthLimit)} />
+            <Separator />
+            <BandwidthSection device={device} limit={bandwidthLimit} available={bandwidthAvailable} />
             <Separator />
             <section className="py-6">
               <h4 className="mb-3 text-xs font-semibold">Observation history</h4>
@@ -140,8 +154,8 @@ export function DeviceDetails({ device, onClose }: { device?: Device; onClose: (
   )
 }
 
-function ControlSection({ device }: { device: Device }) {
-  const eligible = device.online && device.role === "Device"
+function ControlSection({ device, bandwidthLimited }: { device: Device; bandwidthLimited: boolean }) {
+  const eligible = device.online && device.role === "Device" && !bandwidthLimited
   const disconnect = useDisconnectDevice()
   const continuous = useStartContinuousControl()
   const restore = useRestoreControl()
@@ -168,9 +182,11 @@ function ControlSection({ device }: { device: Device }) {
             ? "Disconnected"
             : eligible
               ? "Available"
-              : device.role !== "Device"
-                ? "Protected"
-                : "Offline"
+              : bandwidthLimited
+                ? "Bandwidth limited"
+                : device.role !== "Device"
+                  ? "Protected"
+                  : "Offline"
   return (
     <section className="space-y-3 py-6">
       <div className="flex items-center justify-between">

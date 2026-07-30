@@ -8,14 +8,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/amdzy/NetWarden/internal/capture"
 	"github.com/amdzy/NetWarden/internal/capture/helper"
+	"github.com/amdzy/NetWarden/internal/shaping"
 )
 
 type Driver struct {
@@ -29,6 +33,8 @@ type Driver struct {
 	mu      sync.Mutex
 	closed  bool
 	stop    sync.Once
+	pending map[string]chan error
+	nextID  atomic.Uint64
 }
 
 const (
@@ -102,7 +108,7 @@ func OpenConnection(ctx context.Context, connection io.ReadWriteCloser) (*Driver
 }
 
 func newDriver(input io.WriteCloser, output io.Closer, wait <-chan error) *Driver {
-	return &Driver{input: input, output: output, wait: wait, done: make(chan struct{}), frames: make(chan capture.Frame, 64), errors: make(chan error, 1)}
+	return &Driver{input: input, output: output, wait: wait, done: make(chan struct{}), frames: make(chan capture.Frame, 64), errors: make(chan error, 1), pending: make(map[string]chan error)}
 }
 
 func waitUntilReady(ctx context.Context, decoder *json.Decoder) (helper.Message, error) {
@@ -147,6 +153,7 @@ func (d *Driver) read(decoder *json.Decoder) {
 	for {
 		var message helper.Message
 		if err := decoder.Decode(&message); err != nil {
+			d.stop.Do(func() { close(d.done) })
 			d.report(err)
 			return
 		}
@@ -159,8 +166,66 @@ func (d *Driver) read(decoder *json.Decoder) {
 			}
 		case "error":
 			d.report(errors.New(message.Error))
+		case "result":
+			d.mu.Lock()
+			response := d.pending[message.RequestID]
+			delete(d.pending, message.RequestID)
+			d.mu.Unlock()
+			if response != nil {
+				var err error
+				if message.Error != "" {
+					err = errors.New(message.Error)
+				}
+				response <- err
+			}
 		}
 	}
+}
+
+// SetBandwidthLimit installs a validated policy in the privileged helper.
+// Redirected packet payloads never cross into this client process.
+func (d *Driver) SetBandwidthLimit(ctx context.Context, ip netip.Addr, mac net.HardwareAddr, policy shaping.Policy) error {
+	return d.request(ctx, helper.Message{Type: "shape_set", TargetIP: ip.String(), TargetMAC: mac.String(), Policy: &policy})
+}
+
+func (d *Driver) RemoveBandwidthLimit(ctx context.Context, ip netip.Addr, mac net.HardwareAddr) error {
+	return d.request(ctx, helper.Message{Type: "shape_remove", TargetIP: ip.String(), TargetMAC: mac.String()})
+}
+
+func (d *Driver) request(ctx context.Context, command helper.Message) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	command.RequestID = fmt.Sprintf("%d", d.nextID.Add(1))
+	response := make(chan error, 1)
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return errors.New("capture helper is closed")
+	}
+	d.pending[command.RequestID] = response
+	if err := json.NewEncoder(d.input).Encode(command); err != nil {
+		delete(d.pending, command.RequestID)
+		d.mu.Unlock()
+		return err
+	}
+	d.mu.Unlock()
+	select {
+	case err := <-response:
+		return err
+	case <-ctx.Done():
+		d.removePending(command.RequestID)
+		return ctx.Err()
+	case <-d.done:
+		d.removePending(command.RequestID)
+		return errors.New("capture helper stopped before replying")
+	}
+}
+
+func (d *Driver) removePending(requestID string) {
+	d.mu.Lock()
+	delete(d.pending, requestID)
+	d.mu.Unlock()
 }
 
 func (d *Driver) Run(ctx context.Context, consume func(capture.Frame) error) error {

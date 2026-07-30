@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -15,13 +16,18 @@ import (
 
 	"github.com/amdzy/NetWarden/internal/capture"
 	"github.com/amdzy/NetWarden/internal/packet"
+	"github.com/amdzy/NetWarden/internal/shaping"
 )
 
 type Message struct {
-	Type       string    `json:"type"`
-	Data       []byte    `json:"data,omitempty"`
-	CapturedAt time.Time `json:"captured_at,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	Type       string          `json:"type"`
+	RequestID  string          `json:"request_id,omitempty"`
+	Data       []byte          `json:"data,omitempty"`
+	CapturedAt time.Time       `json:"captured_at,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	TargetIP   string          `json:"target_ip,omitempty"`
+	TargetMAC  string          `json:"target_mac,omitempty"`
+	Policy     *shaping.Policy `json:"policy,omitempty"`
 }
 
 // Serve exposes filtered capture and only tightly scoped discovery, isolation,
@@ -37,6 +43,17 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 		defer outputMu.Unlock()
 		return encoder.Encode(message)
 	}
+	var sendMu sync.Mutex
+	sendFrame := frameSenderFunc(func(sendCtx context.Context, frame []byte) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return driver.Send(sendCtx, frame)
+	})
+	bandwidth, err := newBandwidthSession(ctx, localMAC, localIP, gatewayIP, prefix, sendFrame)
+	if err != nil {
+		return err
+	}
+	defer bandwidth.close()
 	if err := write(Message{Type: "ready"}); err != nil {
 		return err
 	}
@@ -51,6 +68,11 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 					gatewayMAC = append(net.HardwareAddr(nil), message.SenderMAC...)
 				}
 				gatewayMu.Unlock()
+				bandwidth.observeGateway(message.SenderMAC)
+			}
+			if isIPv4Frame(frame.Data) {
+				_ = bandwidth.submit(frame.Data)
+				return nil
 			}
 			if len(frame.Data) >= packet.EthernetHeaderLen && bytes.Equal(frame.Data[6:12], localMAC) {
 				return nil
@@ -77,8 +99,17 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 				_ = write(Message{Type: "error", Error: err.Error()})
 				continue
 			}
-			if err := driver.Send(ctx, command.Data); err != nil {
+			if err := sendFrame(ctx, command.Data); err != nil {
 				_ = write(Message{Type: "error", Error: err.Error()})
+			}
+		case "shape_set", "shape_remove":
+			err := handleBandwidthCommand(ctx, bandwidth, command)
+			result := Message{Type: "result", RequestID: command.RequestID}
+			if err != nil {
+				result.Error = err.Error()
+			}
+			if writeErr := write(result); writeErr != nil {
+				return writeErr
 			}
 		case "close":
 			cancel()
@@ -87,6 +118,31 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 			_ = write(Message{Type: "error", Error: "unsupported helper command"})
 		}
 	}
+}
+
+func handleBandwidthCommand(ctx context.Context, bandwidth *bandwidthSession, command Message) error {
+	if command.RequestID == "" {
+		return errors.New("bandwidth command requires a request ID")
+	}
+	ip, err := netip.ParseAddr(command.TargetIP)
+	if err != nil {
+		return fmt.Errorf("invalid bandwidth target IP: %w", err)
+	}
+	mac, err := net.ParseMAC(command.TargetMAC)
+	if err != nil {
+		return fmt.Errorf("invalid bandwidth target MAC: %w", err)
+	}
+	if command.Type == "shape_remove" {
+		return bandwidth.remove(ctx, ip, mac)
+	}
+	if command.Policy == nil {
+		return errors.New("bandwidth policy is required")
+	}
+	return bandwidth.set(ctx, ip, mac, *command.Policy)
+}
+
+func isIPv4Frame(frame []byte) bool {
+	return len(frame) >= packet.EthernetHeaderLen && binary.BigEndian.Uint16(frame[12:14]) == 0x0800
 }
 
 func ValidateOutboundFrame(frame []byte, localMAC, gatewayMAC net.HardwareAddr, localIP, gatewayIP netip.Addr, prefix netip.Prefix) error {

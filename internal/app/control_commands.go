@@ -82,6 +82,7 @@ type ControlDependencies struct {
 	ControllerFactory ControlControllerFactory
 	Lifecycle         *ControlLifecycle
 	Publish           func(Event)
+	DisruptiveGuard   func(ControlTarget) error
 }
 
 type ControlCommands struct {
@@ -96,6 +97,9 @@ func NewControlCommands(controller ControlController, dependencies ControlDepend
 func (c *ControlCommands) Disconnect(ctx context.Context, target ControlTarget) error {
 	eligible, err := c.resolveTarget(target)
 	if err != nil {
+		return err
+	}
+	if err := c.guardDisruptive(eligible); err != nil {
 		return err
 	}
 	return c.prepare(ctx, ControlRequest{Operation: ControlDisconnect, Targets: []ControlTarget{eligible}})
@@ -124,6 +128,9 @@ func (c *ControlCommands) DisconnectSelected(ctx context.Context, requested []Co
 		if err != nil {
 			return err
 		}
+		if err := c.guardDisruptive(resolved); err != nil {
+			return err
+		}
 		targets = append(targets, resolved)
 	}
 	return c.prepare(ctx, ControlRequest{Operation: ControlDisconnectAll, Targets: targets})
@@ -132,6 +139,9 @@ func (c *ControlCommands) DisconnectSelected(ctx context.Context, requested []Co
 func (c *ControlCommands) StartContinuous(ctx context.Context, target ControlTarget) error {
 	eligible, err := c.resolveTarget(target)
 	if err != nil {
+		return err
+	}
+	if err := c.guardDisruptive(eligible); err != nil {
 		return err
 	}
 	return c.prepare(ctx, ControlRequest{Operation: ControlContinuous, Targets: []ControlTarget{eligible}})
@@ -432,8 +442,18 @@ func (c *ControlCommands) eligiblePeers() ([]ControlTarget, error) {
 			continue
 		}
 		targets = append(targets, ControlTarget{IP: current.IP, MAC: mac})
+		if err := c.guardDisruptive(targets[len(targets)-1]); err != nil {
+			targets = targets[:len(targets)-1]
+		}
 	}
 	return targets, nil
+}
+
+func (c *ControlCommands) guardDisruptive(target ControlTarget) error {
+	if c.deps.DisruptiveGuard == nil {
+		return nil
+	}
+	return c.deps.DisruptiveGuard(cloneTarget(target))
 }
 
 func (c *ControlCommands) recoveryPeers() ([]ControlTarget, error) {

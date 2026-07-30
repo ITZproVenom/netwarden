@@ -40,7 +40,8 @@ func (p Policy) Validate() error {
 	return nil
 }
 
-func (p Policy) normalized() Policy {
+// Effective applies safe defaults used by both the limiter and status APIs.
+func (p Policy) Effective() Policy {
 	if p.BurstBytes == 0 {
 		p.BurstBytes = DefaultBurstBytes
 	}

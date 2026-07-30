@@ -9,4 +9,5 @@ export const queryKeys = {
   activity: ["runtime", "activity"] as const,
   monitoringSettings: ["runtime", "monitoring-settings"] as const,
   controlAudit: ["runtime", "control-audit"] as const,
+  bandwidthLimits: ["runtime", "bandwidth-limits"] as const,
 }

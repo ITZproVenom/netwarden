@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/amdzy/NetWarden/internal/capture/helper"
+	"github.com/amdzy/NetWarden/internal/shaping"
 )
 
 func TestOpenConnectionUsesExistingTransport(t *testing.T) {
@@ -45,6 +47,30 @@ func TestOpenConnectionUsesExistingTransport(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("helper did not receive close message")
 	}
+}
+
+func TestBandwidthRequestWaitsForMatchingHelperResult(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	go func() {
+		encoder := json.NewEncoder(server)
+		decoder := json.NewDecoder(server)
+		_ = encoder.Encode(helper.Message{Type: "ready"})
+		var command helper.Message
+		if decoder.Decode(&command) == nil {
+			_ = encoder.Encode(helper.Message{Type: "result", RequestID: command.RequestID})
+		}
+	}()
+	driver, err := OpenConnection(context.Background(), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mac, _ := net.ParseMAC("02:00:00:00:00:20")
+	if err := driver.SetBandwidthLimit(context.Background(), netip.MustParseAddr("192.168.1.20"), mac, shaping.Policy{UploadBitsPerSecond: 1_000_000}); err != nil {
+		t.Fatal(err)
+	}
+	_ = server.Close()
+	_ = driver.Close()
 }
 
 func TestOpenConnectionStopsWaitingWhenContextIsCanceled(t *testing.T) {

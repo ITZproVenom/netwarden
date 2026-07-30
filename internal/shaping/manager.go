@@ -35,7 +35,7 @@ func (m *Manager) Set(mac net.HardwareAddr, policy Policy) error {
 	if err != nil {
 		return err
 	}
-	policy = policy.normalized()
+	policy = policy.Effective()
 	m.mu.Lock()
 	m.policies[key] = &managedPolicy{policy: policy, limiter: limiter}
 	m.mu.Unlock()

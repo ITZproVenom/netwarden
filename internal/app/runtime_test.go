@@ -17,6 +17,7 @@ import (
 	"github.com/amdzy/NetWarden/internal/history"
 	"github.com/amdzy/NetWarden/internal/metadata"
 	networkgateway "github.com/amdzy/NetWarden/internal/network/gateway"
+	"github.com/amdzy/NetWarden/internal/shaping"
 )
 
 type fixedGateway struct{ route networkgateway.Route }
@@ -44,6 +45,27 @@ type runtimeDriver struct {
 	mu     sync.Mutex
 	sends  int
 	closed bool
+}
+
+type bandwidthRuntimeDriver struct {
+	runtimeDriver
+	muPolicies sync.Mutex
+	set        []BandwidthTarget
+	removed    []BandwidthTarget
+}
+
+func (d *bandwidthRuntimeDriver) SetBandwidthLimit(_ context.Context, ip netip.Addr, mac net.HardwareAddr, policy shaping.Policy) error {
+	d.muPolicies.Lock()
+	d.set = append(d.set, BandwidthTarget{IP: ip, MAC: append(net.HardwareAddr(nil), mac...), Policy: policy})
+	d.muPolicies.Unlock()
+	return nil
+}
+
+func (d *bandwidthRuntimeDriver) RemoveBandwidthLimit(_ context.Context, ip netip.Addr, mac net.HardwareAddr) error {
+	d.muPolicies.Lock()
+	d.removed = append(d.removed, BandwidthTarget{IP: ip, MAC: append(net.HardwareAddr(nil), mac...)})
+	d.muPolicies.Unlock()
+	return nil
 }
 
 func (d *runtimeDriver) Run(ctx context.Context, _ func(capture.Frame) error) error {
@@ -164,6 +186,48 @@ func TestBootstrapAssignsNetworkRolesAndRuntimeStopsCleanly(t *testing.T) {
 	}
 	if !foundPeer {
 		t.Fatalf("peer was not persisted: %#v", persisted.Devices)
+	}
+}
+
+func TestRuntimeExposesAndClearsHelperBandwidthPolicies(t *testing.T) {
+	localMAC, _ := net.ParseMAC("02:00:00:00:00:10")
+	gatewayMAC, _ := net.ParseMAC("02:00:00:00:00:01")
+	peerMAC, _ := net.ParseMAC("02:00:00:00:00:20")
+	driver := &bandwidthRuntimeDriver{}
+	runtime, err := Bootstrap(context.Background(), Dependencies{
+		Gateway: fixedGateway{route: networkgateway.Route{GatewayIP: netip.MustParseAddr("192.168.1.1"), InterfaceIP: netip.MustParseAddr("192.168.1.10")}},
+		Open:    func(string) (capture.Driver, error) { return driver, nil },
+		Resolve: func(context.Context, capture.Driver, net.HardwareAddr, netip.Addr, netip.Addr) (net.HardwareAddr, error) {
+			return gatewayMAC, nil
+		},
+	}, Config{Interface: pcapdriver.Interface{Name: "pcap0", MAC: localMAC, Prefixes: []netip.Prefix{netip.MustParsePrefix("192.168.1.10/24")}}, ScanInterval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerIP := netip.MustParseAddr("192.168.1.20")
+	if _, _, err := runtime.registry.Observe(device.Observation{IP: peerIP, MAC: peerMAC, SeenAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	policy := shaping.Policy{UploadBitsPerSecond: 2_000_000}
+	if err := runtime.SetBandwidthLimit(context.Background(), ControlTarget{IP: peerIP, MAC: peerMAC}, policy); err != nil {
+		t.Fatal(err)
+	}
+	if status := runtime.Status(); !status.BandwidthAvailable || status.ActiveBandwidthLimits != 1 {
+		t.Fatalf("bandwidth status = %#v", status)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("runtime result = %v", err)
+	}
+	driver.muPolicies.Lock()
+	removed := len(driver.removed)
+	driver.muPolicies.Unlock()
+	if removed != 1 {
+		t.Fatalf("shutdown removals = %d", removed)
 	}
 }
 

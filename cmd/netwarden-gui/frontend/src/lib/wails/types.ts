@@ -35,6 +35,8 @@ export type RuntimeStatus = {
   SupervisorDroppedEvents: number
   ConflictCount: number
   LastPersistenceError: string
+  BandwidthAvailable: boolean
+  ActiveBandwidthLimits: number
 }
 export type HistorySummary = { devices: number; conflicts: number; oldest?: string; newest?: string }
 export type Activity = {
@@ -52,4 +54,11 @@ export type MonitoringSettings = {
   periodicDiscovery: boolean
 }
 export type ControlAudit = { at: string; operation: string; outcome: string; targets: string[] }
+export type BandwidthLimit = {
+  ip: string
+  mac: string
+  downloadBitsPerSecond: number
+  uploadBitsPerSecond: number
+  burstBytes: number
+}
 export type AppInfo = { name: string; version: string; build: string }

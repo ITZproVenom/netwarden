@@ -4,27 +4,33 @@ import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { formatDate } from "@/lib/format"
 import type { Device } from "@/lib/wails/types"
+import type { BandwidthLimit } from "@/lib/wails/types"
+import { bandwidthSummary } from "@/features/bandwidth/format"
 import { isControlEligible } from "./device-list"
 
 export function DeviceTable({
   devices,
+  bandwidthByMAC,
   checkedMACs,
   onCheckedChange,
   onCheckVisible,
   onOpen,
 }: {
   devices: Device[]
+  bandwidthByMAC: Map<string, BandwidthLimit>
   checkedMACs: Set<string>
   onCheckedChange: (mac: string, checked: boolean) => void
   onCheckVisible: (checked: boolean) => void
   onOpen: (device: Device, trigger: HTMLElement) => void
 }) {
-  const eligible = devices.filter(isControlEligible)
+  const eligible = devices.filter(
+    (device) => isControlEligible(device) && !bandwidthByMAC.has(device.mac.toLowerCase()),
+  )
   const allChecked = eligible.length > 0 && eligible.every((device) => checkedMACs.has(device.mac))
   const someChecked = eligible.some((device) => checkedMACs.has(device.mac))
   return (
     <div className="overflow-x-auto">
-      <Table className="min-w-[1000px]">
+      <Table className="min-w-[1150px]">
         <TableHeader>
           <TableRow>
             <TableHead className="w-10">
@@ -43,6 +49,7 @@ export function DeviceTable({
             <TableHead>Role</TableHead>
             <TableHead>Status</TableHead>
             <TableHead>Control</TableHead>
+            <TableHead>Bandwidth</TableHead>
             <TableHead>Last seen</TableHead>
             <TableHead />
           </TableRow>
@@ -52,6 +59,7 @@ export function DeviceTable({
             <DeviceRow
               key={device.mac}
               device={device}
+              bandwidthLimit={bandwidthByMAC.get(device.mac.toLowerCase())}
               checked={checkedMACs.has(device.mac)}
               onCheckedChange={(checked) => onCheckedChange(device.mac, checked)}
               onOpen={(trigger) => onOpen(device, trigger)}
@@ -65,11 +73,13 @@ export function DeviceTable({
 
 function DeviceRow({
   device,
+  bandwidthLimit,
   checked,
   onCheckedChange,
   onOpen,
 }: {
   device: Device
+  bandwidthLimit?: BandwidthLimit
   checked: boolean
   onCheckedChange: (checked: boolean) => void
   onOpen: (trigger: HTMLElement) => void
@@ -107,7 +117,7 @@ function DeviceRow({
         <SelectionCheckbox
           label={`Select ${device.name || device.ip}`}
           checked={checked}
-          disabled={!isControlEligible(device)}
+          disabled={!isControlEligible(device) || Boolean(bandwidthLimit)}
           onChange={onCheckedChange}
         />
       </TableCell>
@@ -140,6 +150,9 @@ function DeviceRow({
           {device.controlState === "restoring" && <LoaderCircle className="animate-spin" />}
           {control}
         </Badge>
+      </TableCell>
+      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+        {bandwidthSummary(bandwidthLimit)}
       </TableCell>
       <TableCell className="text-xs text-muted-foreground">{formatDate(device.lastSeen)}</TableCell>
       <TableCell>
