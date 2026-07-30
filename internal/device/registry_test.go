@@ -111,6 +111,25 @@ func TestRegistryReplacesIPv4WithoutDiscardingIPv6(t *testing.T) {
 	}
 }
 
+func TestRegistryExpiresOnlyStaleSecondaryIPv6Addresses(t *testing.T) {
+	registry := NewRegistry()
+	mac, _ := net.ParseMAC("02:00:00:00:00:32")
+	now := time.Now().UTC()
+	for _, observation := range []Observation{
+		{IP: netip.MustParseAddr("192.168.1.32"), MAC: mac, SeenAt: now},
+		{IP: netip.MustParseAddr("fe80::32"), MAC: mac, SeenAt: now},
+		{IP: netip.MustParseAddr("2001:db8::32"), MAC: mac, SeenAt: now.Add(2 * time.Hour)},
+	} {
+		if _, _, err := registry.Observe(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	changed := registry.ExpireIPv6Addresses(now.Add(3*time.Hour), 2*time.Hour)
+	if len(changed) != 1 || len(changed[0].Addresses) != 2 || containsAddress(changed[0].Addresses, netip.MustParseAddr("fe80::32")) {
+		t.Fatalf("unexpected address aging result: %#v", changed)
+	}
+}
+
 func TestRegistryReportsIPReassignmentAndMarksOldDeviceOffline(t *testing.T) {
 	registry := NewRegistry()
 	oldMAC, _ := net.ParseMAC("02:00:00:00:00:20")

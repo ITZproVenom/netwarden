@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"net"
 	"net/netip"
 	"sort"
 	"strings"
@@ -42,6 +43,28 @@ type IPv6Context struct {
 	DefaultRouter  *IPv6Router
 	Routers        []IPv6Router
 	ConflictCount  int
+	Conflicts      []IPv6RouterConflict
+	Baselines      []IPv6RouterIdentity
+}
+
+type IPv6RouterIdentity struct {
+	RouterIP netip.Addr `json:"router_ip"`
+	MAC      string     `json:"mac"`
+}
+
+type IPv6RouterConflict struct {
+	RouterIP    netip.Addr `json:"router_ip"`
+	ExpectedMAC string     `json:"expected_mac"`
+	ClaimedMAC  string     `json:"claimed_mac"`
+	FirstSeen   time.Time  `json:"first_seen"`
+	LastSeen    time.Time  `json:"last_seen"`
+	Count       uint64     `json:"count"`
+	Active      bool       `json:"active"`
+}
+
+type IPv6RouterState struct {
+	Baselines []IPv6RouterIdentity `json:"baselines,omitempty"`
+	Conflicts []IPv6RouterConflict `json:"conflicts,omitempty"`
 }
 
 type IPv6RouterEvent struct {
@@ -62,7 +85,7 @@ type IPv6RouterTracker struct {
 	mu        sync.Mutex
 	routers   map[netip.Addr]IPv6Router
 	baselines map[netip.Addr]string
-	conflicts map[string]time.Time
+	conflicts map[string]IPv6RouterConflict
 	dropped   atomic.Uint64
 }
 
@@ -76,7 +99,7 @@ func NewIPv6RouterTracker(local []netip.Addr) *IPv6RouterTracker {
 	return &IPv6RouterTracker{
 		local: addresses, events: make(chan IPv6RouterEvent, 32),
 		routers: make(map[netip.Addr]IPv6Router), baselines: make(map[netip.Addr]string),
-		conflicts: make(map[string]time.Time),
+		conflicts: make(map[string]IPv6RouterConflict),
 	}
 }
 
@@ -104,19 +127,27 @@ func (t *IPv6RouterTracker) Observe(message packet.NDP, observedAt time.Time) {
 	}
 	conflictKey := message.SourceIP.String() + "|" + claimedMAC
 	if claimedMAC != expectedMAC {
-		previous, existed := t.conflicts[conflictKey]
-		t.conflicts[conflictKey] = observedAt
+		conflict, existed := t.conflicts[conflictKey]
+		emit := !existed || observedAt.Sub(conflict.LastSeen) >= 5*time.Second
+		if !existed {
+			conflict = IPv6RouterConflict{RouterIP: message.SourceIP, ExpectedMAC: expectedMAC,
+				ClaimedMAC: claimedMAC, FirstSeen: observedAt}
+		}
+		conflict.LastSeen, conflict.Active = observedAt, true
+		conflict.Count++
+		t.conflicts[conflictKey] = conflict
 		t.mu.Unlock()
-		if !existed || observedAt.Sub(previous) >= 5*time.Second {
+		if emit {
 			t.emit(IPv6RouterEvent{Kind: IPv6RouterIdentityConflict, ObservedAt: observedAt,
 				RouterIP: message.SourceIP, ExpectedMAC: expectedMAC, ClaimedMAC: claimedMAC})
 		}
 		return
 	}
 	restored := false
-	for key := range t.conflicts {
-		if strings.HasPrefix(key, message.SourceIP.String()+"|") {
-			delete(t.conflicts, key)
+	for key, conflict := range t.conflicts {
+		if strings.HasPrefix(key, message.SourceIP.String()+"|") && conflict.Active {
+			conflict.Active = false
+			t.conflicts[key] = conflict
 			restored = true
 		}
 	}
@@ -158,7 +189,18 @@ func (t *IPv6RouterTracker) Snapshot(now time.Time) IPv6Context {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	context := IPv6Context{LocalAddresses: append([]netip.Addr(nil), t.local...), ConflictCount: len(t.conflicts)}
+	context := IPv6Context{LocalAddresses: append([]netip.Addr(nil), t.local...)}
+	for ip, mac := range t.baselines {
+		context.Baselines = append(context.Baselines, IPv6RouterIdentity{RouterIP: ip, MAC: mac})
+	}
+	sort.Slice(context.Baselines, func(i, j int) bool { return context.Baselines[i].RouterIP.Less(context.Baselines[j].RouterIP) })
+	for _, conflict := range t.conflicts {
+		context.Conflicts = append(context.Conflicts, conflict)
+		if conflict.Active {
+			context.ConflictCount++
+		}
+	}
+	sort.Slice(context.Conflicts, func(i, j int) bool { return context.Conflicts[i].FirstSeen.Before(context.Conflicts[j].FirstSeen) })
 	for ip, router := range t.routers {
 		if !router.ExpiresAt.After(now) {
 			delete(t.routers, ip)
@@ -182,6 +224,43 @@ func (t *IPv6RouterTracker) Snapshot(now time.Time) IPv6Context {
 	return context
 }
 
+func (t *IPv6RouterTracker) State() IPv6RouterState {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	state := IPv6RouterState{}
+	for ip, mac := range t.baselines {
+		state.Baselines = append(state.Baselines, IPv6RouterIdentity{RouterIP: ip, MAC: mac})
+	}
+	for _, conflict := range t.conflicts {
+		state.Conflicts = append(state.Conflicts, conflict)
+	}
+	sort.Slice(state.Baselines, func(i, j int) bool { return state.Baselines[i].RouterIP.Less(state.Baselines[j].RouterIP) })
+	sort.Slice(state.Conflicts, func(i, j int) bool { return state.Conflicts[i].FirstSeen.Before(state.Conflicts[j].FirstSeen) })
+	return state
+}
+
+func (t *IPv6RouterTracker) RestoreState(state IPv6RouterState) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, identity := range state.Baselines {
+		if identity.RouterIP.Is6() && identity.RouterIP.IsLinkLocalUnicast() && validMACText(identity.MAC) {
+			mac, _ := net.ParseMAC(identity.MAC)
+			t.baselines[identity.RouterIP] = strings.ToLower(mac.String())
+		}
+	}
+	for _, conflict := range state.Conflicts {
+		if !conflict.RouterIP.Is6() || !conflict.RouterIP.IsLinkLocalUnicast() ||
+			!validMACText(conflict.ExpectedMAC) || !validMACText(conflict.ClaimedMAC) {
+			continue
+		}
+		expected, _ := net.ParseMAC(conflict.ExpectedMAC)
+		claimed, _ := net.ParseMAC(conflict.ClaimedMAC)
+		conflict.ExpectedMAC, conflict.ClaimedMAC = strings.ToLower(expected.String()), strings.ToLower(claimed.String())
+		key := conflict.RouterIP.String() + "|" + conflict.ClaimedMAC
+		t.conflicts[key] = conflict
+	}
+}
+
 func (t *IPv6RouterTracker) emit(event IPv6RouterEvent) {
 	select {
 	case t.events <- event:
@@ -200,4 +279,9 @@ func addLifetime(at time.Time, lifetime time.Duration) time.Time {
 func cloneIPv6Router(router IPv6Router) IPv6Router {
 	router.Prefixes = append([]IPv6Prefix(nil), router.Prefixes...)
 	return router
+}
+
+func validMACText(value string) bool {
+	mac, err := net.ParseMAC(value)
+	return err == nil && len(mac) == 6 && mac[0]&1 == 0 && value != "00:00:00:00:00:00"
 }

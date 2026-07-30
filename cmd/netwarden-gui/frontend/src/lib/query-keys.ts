@@ -5,6 +5,7 @@ export const queryKeys = {
   status: ["runtime", "status"] as const,
   devices: ["runtime", "devices"] as const,
   conflicts: ["runtime", "conflicts"] as const,
+  ipv6Network: ["runtime", "ipv6-network"] as const,
   history: ["runtime", "history"] as const,
   activity: ["runtime", "activity"] as const,
   monitoringSettings: ["runtime", "monitoring-settings"] as const,

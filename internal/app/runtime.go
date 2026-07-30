@@ -49,17 +49,18 @@ type Dependencies struct {
 }
 
 type Config struct {
-	Interface        pcapdriver.Interface
-	ScanInterval     time.Duration
-	ProbeDelay       time.Duration
-	MaximumHosts     int
-	OfflineAfter     time.Duration
-	LivenessCheck    time.Duration
-	ConflictCooldown time.Duration
-	NetworkCheck     time.Duration
-	DeviceRetention  time.Duration
-	PinnedGatewayMAC net.HardwareAddr
-	HistoryRetention time.Duration
+	Interface            pcapdriver.Interface
+	ScanInterval         time.Duration
+	ProbeDelay           time.Duration
+	MaximumHosts         int
+	OfflineAfter         time.Duration
+	LivenessCheck        time.Duration
+	ConflictCooldown     time.Duration
+	NetworkCheck         time.Duration
+	DeviceRetention      time.Duration
+	PinnedGatewayMAC     net.HardwareAddr
+	HistoryRetention     time.Duration
+	IPv6AddressRetention time.Duration
 }
 
 type Status struct {
@@ -209,7 +210,8 @@ func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*
 		}
 	}
 	ipv6 := discovery.NewIPv6RouterTracker(localIPv6)
-	options := []core.Option{core.WithARPObserver(monitor), core.WithNDPObserver(ipv6), core.WithRemovalAfter(config.DeviceRetention), core.WithIgnoredSenderMAC(config.Interface.MAC)}
+	ipv6.RestoreState(durableHistory.IPv6Routers)
+	options := []core.Option{core.WithARPObserver(monitor), core.WithNDPObserver(ipv6), core.WithRemovalAfter(config.DeviceRetention), core.WithIPv6AddressRetention(config.IPv6AddressRetention), core.WithIgnoredSenderMAC(config.Interface.MAC)}
 	if dependencies.Metadata != nil {
 		options = append(options, core.WithEnricher(dependencies.Metadata))
 	} else if dependencies.Enricher != nil {
@@ -454,6 +456,7 @@ func (r *Runtime) forwardEvents(ctx context.Context) {
 					GatewayIP: event.RouterIP, ExpectedMAC: event.ExpectedMAC, ClaimedMAC: event.ClaimedMAC,
 					Baseline: defense.BaselineLearned}))
 			}
+			r.schedulePersist()
 		}
 	}
 }
@@ -486,7 +489,7 @@ func (r *Runtime) persistHistory(ctx context.Context) {
 	var timer *time.Timer
 	var timerC <-chan time.Time
 	flush := func() {
-		snapshot := history.Snapshot{Devices: r.Devices(), Conflicts: r.ConflictHistory()}
+		snapshot := history.Snapshot{Devices: r.Devices(), Conflicts: r.ConflictHistory(), IPv6Routers: r.ipv6.State()}
 		snapshot = history.Prune(snapshot, time.Now().UTC().Add(-r.config.HistoryRetention))
 		err := r.history.Save(snapshot)
 		r.mu.Lock()
@@ -601,6 +604,9 @@ func applyRuntimeDefaults(config *Config) {
 	}
 	if config.HistoryRetention <= 0 {
 		config.HistoryRetention = 90 * 24 * time.Hour
+	}
+	if config.IPv6AddressRetention <= 0 {
+		config.IPv6AddressRetention = 24 * time.Hour
 	}
 }
 

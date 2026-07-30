@@ -55,6 +55,20 @@ func TestIPv6RouterTrackerPrefersAdvertisedHighPreference(t *testing.T) {
 	}
 }
 
+func TestIPv6RouterTrackerRoundTripsTrustAndConflictState(t *testing.T) {
+	tracker := NewIPv6RouterTracker(nil)
+	now := time.Now().UTC()
+	tracker.Observe(routerAdvertisement("fe80::1", "02:00:00:00:00:01", time.Minute), now)
+	tracker.Observe(routerAdvertisement("fe80::1", "02:00:00:00:00:99", time.Minute), now.Add(time.Second))
+
+	restored := NewIPv6RouterTracker(nil)
+	restored.RestoreState(tracker.State())
+	state := restored.State()
+	if len(state.Baselines) != 1 || len(state.Conflicts) != 1 || !state.Conflicts[0].Active || state.Conflicts[0].Count != 1 {
+		t.Fatalf("unexpected restored state: %#v", state)
+	}
+}
+
 func routerAdvertisement(ip, mac string, lifetime time.Duration) packet.NDP {
 	hardware, _ := net.ParseMAC(mac)
 	return packet.NDP{

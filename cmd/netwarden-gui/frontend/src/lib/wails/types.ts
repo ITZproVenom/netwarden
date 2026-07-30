@@ -52,11 +52,22 @@ export type IPv6Prefix = {
   preferredUntil: string
 }
 export type IPv6Router = { ip: string; mac: string; expiresAt: string; preference: number; prefixes: IPv6Prefix[] }
+export type IPv6RouterConflict = {
+  routerIP: string
+  expectedMAC: string
+  claimedMAC: string
+  firstSeen: string
+  lastSeen: string
+  count: number
+  active: boolean
+}
 export type IPv6Network = {
   localAddresses: string[]
   defaultRouter?: IPv6Router
   routers: IPv6Router[]
   conflictCount: number
+  conflicts: IPv6RouterConflict[]
+  trustedIdentities: Array<{ routerIP: string; mac: string }>
 }
 export type HistorySummary = { devices: number; conflicts: number; oldest?: string; newest?: string }
 export type Activity = {

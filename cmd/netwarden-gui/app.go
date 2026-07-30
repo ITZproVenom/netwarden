@@ -53,10 +53,12 @@ type StatusDTO struct {
 }
 
 type IPv6NetworkDTO struct {
-	LocalAddresses []string        `json:"localAddresses"`
-	DefaultRouter  *IPv6RouterDTO  `json:"defaultRouter,omitempty"`
-	Routers        []IPv6RouterDTO `json:"routers"`
-	ConflictCount  int             `json:"conflictCount"`
+	LocalAddresses    []string                `json:"localAddresses"`
+	DefaultRouter     *IPv6RouterDTO          `json:"defaultRouter,omitempty"`
+	Routers           []IPv6RouterDTO         `json:"routers"`
+	ConflictCount     int                     `json:"conflictCount"`
+	Conflicts         []IPv6RouterConflictDTO `json:"conflicts"`
+	TrustedIdentities []IPv6RouterIdentityDTO `json:"trustedIdentities"`
 }
 
 type IPv6RouterDTO struct {
@@ -73,6 +75,21 @@ type IPv6PrefixDTO struct {
 	Autonomous     bool      `json:"autonomous"`
 	ValidUntil     time.Time `json:"validUntil"`
 	PreferredUntil time.Time `json:"preferredUntil"`
+}
+
+type IPv6RouterConflictDTO struct {
+	RouterIP    string    `json:"routerIP"`
+	ExpectedMAC string    `json:"expectedMAC"`
+	ClaimedMAC  string    `json:"claimedMAC"`
+	FirstSeen   time.Time `json:"firstSeen"`
+	LastSeen    time.Time `json:"lastSeen"`
+	Count       uint64    `json:"count"`
+	Active      bool      `json:"active"`
+}
+
+type IPv6RouterIdentityDTO struct {
+	RouterIP string `json:"routerIP"`
+	MAC      string `json:"mac"`
 }
 
 type DeviceDTO struct {
@@ -284,12 +301,34 @@ func (a *GUIApp) IPv6Network() IPv6NetworkDTO {
 	supervisor := a.supervisor
 	a.mu.RUnlock()
 	if supervisor == nil || supervisor.Current() == nil {
-		return IPv6NetworkDTO{}
+		result := IPv6NetworkDTO{LocalAddresses: []string{}, Routers: []IPv6RouterDTO{}, Conflicts: []IPv6RouterConflictDTO{}, TrustedIdentities: []IPv6RouterIdentityDTO{}}
+		if snapshot, err := loadHistorySnapshot(); err == nil {
+			for _, identity := range snapshot.IPv6Routers.Baselines {
+				result.TrustedIdentities = append(result.TrustedIdentities, IPv6RouterIdentityDTO{RouterIP: identity.RouterIP.String(), MAC: identity.MAC})
+			}
+			for _, conflict := range snapshot.IPv6Routers.Conflicts {
+				result.Conflicts = append(result.Conflicts, IPv6RouterConflictDTO{RouterIP: conflict.RouterIP.String(), ExpectedMAC: conflict.ExpectedMAC,
+					ClaimedMAC: conflict.ClaimedMAC, FirstSeen: conflict.FirstSeen, LastSeen: conflict.LastSeen, Count: conflict.Count, Active: conflict.Active})
+				if conflict.Active {
+					result.ConflictCount++
+				}
+			}
+		}
+		return result
 	}
 	context := supervisor.Current().IPv6Network()
-	result := IPv6NetworkDTO{ConflictCount: context.ConflictCount}
+	result := IPv6NetworkDTO{ConflictCount: context.ConflictCount, LocalAddresses: []string{}, Routers: []IPv6RouterDTO{}, Conflicts: []IPv6RouterConflictDTO{}, TrustedIdentities: []IPv6RouterIdentityDTO{}}
 	for _, address := range context.LocalAddresses {
 		result.LocalAddresses = append(result.LocalAddresses, address.String())
+	}
+	for _, conflict := range context.Conflicts {
+		result.Conflicts = append(result.Conflicts, IPv6RouterConflictDTO{
+			RouterIP: conflict.RouterIP.String(), ExpectedMAC: conflict.ExpectedMAC, ClaimedMAC: conflict.ClaimedMAC,
+			FirstSeen: conflict.FirstSeen, LastSeen: conflict.LastSeen, Count: conflict.Count, Active: conflict.Active,
+		})
+	}
+	for _, identity := range context.Baselines {
+		result.TrustedIdentities = append(result.TrustedIdentities, IPv6RouterIdentityDTO{RouterIP: identity.RouterIP.String(), MAC: identity.MAC})
 	}
 	for _, router := range context.Routers {
 		item := ipv6RouterDTO(router.IP.String(), router.MAC, router.ExpiresAt, router.Preference, router.Prefixes)

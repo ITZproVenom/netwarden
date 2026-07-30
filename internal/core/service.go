@@ -76,6 +76,10 @@ func WithRemovalAfter(retention time.Duration) Option {
 	return func(service *Service) { service.removeAfter = retention }
 }
 
+func WithIPv6AddressRetention(retention time.Duration) Option {
+	return func(service *Service) { service.ipv6AddressRetention = retention }
+}
+
 func WithIgnoredSenderMAC(mac net.HardwareAddr) Option {
 	return func(service *Service) {
 		if len(mac) == 6 {
@@ -85,17 +89,18 @@ func WithIgnoredSenderMAC(mac net.HardwareAddr) Option {
 }
 
 type Service struct {
-	driver           capture.Driver
-	registry         *device.Registry
-	offlineAfter     time.Duration
-	checkInterval    time.Duration
-	removeAfter      time.Duration
-	events           chan Event
-	enricher         Enricher
-	observers        []ARPObserver
-	ndpObservers     []NDPObserver
-	ignoredSenderMAC string
-	dropped          atomic.Uint64
+	driver               capture.Driver
+	registry             *device.Registry
+	offlineAfter         time.Duration
+	checkInterval        time.Duration
+	removeAfter          time.Duration
+	ipv6AddressRetention time.Duration
+	events               chan Event
+	enricher             Enricher
+	observers            []ARPObserver
+	ndpObservers         []NDPObserver
+	ignoredSenderMAC     string
+	dropped              atomic.Uint64
 
 	mu      sync.Mutex
 	running bool
@@ -252,6 +257,9 @@ func (s *Service) runLiveness(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
+			for _, snapshot := range s.registry.ExpireIPv6Addresses(now.UTC(), s.ipv6AddressRetention) {
+				s.publish(Event{Kind: EventAddressChanged, Device: snapshot})
+			}
 			for _, snapshot := range s.registry.MarkOffline(now.UTC(), s.offlineAfter) {
 				s.publish(Event{Kind: EventOffline, Device: snapshot})
 			}

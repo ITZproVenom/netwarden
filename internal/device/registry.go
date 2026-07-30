@@ -92,6 +92,7 @@ type ObservationResult struct {
 
 type record struct {
 	Device
+	addressSeen map[netip.Addr]time.Time
 }
 
 type Registry struct {
@@ -117,10 +118,12 @@ func (r *Registry) Restore(devices []Device) {
 		snapshot.Addresses = normalizeAddresses(snapshot.IP, snapshot.Addresses)
 		snapshot.MAC = canonicalMAC(mac)
 		snapshot.Online = false
-		r.devices[snapshot.MAC] = &record{Device: snapshot}
+		seen := make(map[netip.Addr]time.Time, len(snapshot.Addresses))
 		for _, address := range snapshot.Addresses {
 			r.byIP[address] = snapshot.MAC
+			seen[address] = snapshot.LastSeen
 		}
+		r.devices[snapshot.MAC] = &record{Device: snapshot, addressSeen: seen}
 	}
 }
 
@@ -161,7 +164,7 @@ func (r *Registry) ObserveDetailed(observation Observation) (ObservationResult, 
 				})
 			}
 		}
-		r.devices[mac] = &record{Device: snapshot}
+		r.devices[mac] = &record{Device: snapshot, addressSeen: map[netip.Addr]time.Time{observation.IP: seenAt}}
 		r.byIP[observation.IP] = mac
 		result.Changes = append(result.Changes, Change{Kind: ChangeDiscovered, Device: snapshot})
 		return cloneObservationResult(result), nil
@@ -188,6 +191,9 @@ func (r *Registry) ObserveDetailed(observation Observation) (ObservationResult, 
 				if address.Is4() && r.byIP[address] == mac {
 					delete(r.byIP, address)
 				}
+				if address.Is4() {
+					delete(existing.addressSeen, address)
+				}
 			}
 			existing.Addresses = removeFamily(existing.Addresses, true)
 		}
@@ -198,6 +204,10 @@ func (r *Registry) ObserveDetailed(observation Observation) (ObservationResult, 
 		}
 	}
 	r.byIP[observation.IP] = mac
+	if existing.addressSeen == nil {
+		existing.addressSeen = make(map[netip.Addr]time.Time)
+	}
+	existing.addressSeen[observation.IP] = seenAt
 	if seenAt.After(existing.LastSeen) {
 		existing.LastSeen = seenAt
 	}
@@ -217,6 +227,49 @@ func (r *Registry) ObserveDetailed(observation Observation) (ObservationResult, 
 		result.Changes = append(result.Changes, Change{Kind: ChangeReturnedOnline, Device: existing.Device})
 	}
 	return cloneObservationResult(result), nil
+}
+
+// ExpireIPv6Addresses removes stale secondary IPv6 addresses while retaining
+// at least one usable identity for each device. This bounds privacy-address
+// growth independently from whole-device retention.
+func (r *Registry) ExpireIPv6Addresses(now time.Time, retention time.Duration) []Device {
+	if retention <= 0 {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var changed []Device
+	for mac, current := range r.devices {
+		if len(current.Addresses) <= 1 {
+			continue
+		}
+		previousIP := current.IP
+		kept := make([]netip.Addr, 0, len(current.Addresses))
+		removed := false
+		for _, address := range current.Addresses {
+			seenAt := current.addressSeen[address]
+			stale := address.Is6() && address != current.IP && !seenAt.IsZero() && now.Sub(seenAt) >= retention
+			if stale {
+				delete(current.addressSeen, address)
+				if r.byIP[address] == mac {
+					delete(r.byIP, address)
+				}
+				removed = true
+				continue
+			}
+			kept = append(kept, address)
+		}
+		if !removed || len(kept) == 0 {
+			continue
+		}
+		current.Addresses = kept
+		current.IP = preferredAddress(kept)
+		if current.Name == previousIP.String() && current.IP != previousIP {
+			current.Name = current.IP.String()
+		}
+		changed = append(changed, cloneDevice(current.Device))
+	}
+	return changed
 }
 
 // MarkOffline marks peers not seen for at least timeout as offline. It returns
