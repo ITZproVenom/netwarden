@@ -103,6 +103,26 @@ func TestBandwidthSessionRejectsUnsafeTargets(t *testing.T) {
 	}
 }
 
+func TestBandwidthSessionDoesNotConsumeUnmanagedIPv6Discovery(t *testing.T) {
+	local := mustHelperMAC(t, "02:00:00:00:00:10")
+	device := mustHelperMAC(t, "02:00:00:00:00:20")
+	recorder := &bandwidthRecorder{sent: make(chan []byte, 1)}
+	session, err := newBandwidthSession(context.Background(), local, netip.MustParseAddr("192.168.1.10"),
+		netip.MustParseAddr("192.168.1.1"), netip.MustParsePrefix("192.168.1.10/24"), recorder.send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.close() })
+	frame := make([]byte, packet.EthernetHeaderLen+40)
+	copy(frame[:6], []byte{0x33, 0x33, 0, 0, 0, 1})
+	copy(frame[6:12], device)
+	binary.BigEndian.PutUint16(frame[12:14], packet.EtherTypeIPv6)
+	frame[14] = 0x60
+	if !isIPFrame(frame) || session.submit(frame) {
+		t.Fatal("unmanaged IPv6 frame was not left for discovery")
+	}
+}
+
 func assertARPIdentity(t *testing.T, frame []byte, senderIP netip.Addr, senderMAC net.HardwareAddr, targetIP netip.Addr, targetMAC net.HardwareAddr) {
 	t.Helper()
 	message, err := packet.ParseARP(frame)

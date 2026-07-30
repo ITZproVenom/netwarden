@@ -20,14 +20,15 @@ import (
 )
 
 type Message struct {
-	Type       string          `json:"type"`
-	RequestID  string          `json:"request_id,omitempty"`
-	Data       []byte          `json:"data,omitempty"`
-	CapturedAt time.Time       `json:"captured_at,omitempty"`
-	Error      string          `json:"error,omitempty"`
-	TargetIP   string          `json:"target_ip,omitempty"`
-	TargetMAC  string          `json:"target_mac,omitempty"`
-	Policy     *shaping.Policy `json:"policy,omitempty"`
+	Type       string                       `json:"type"`
+	RequestID  string                       `json:"request_id,omitempty"`
+	Data       []byte                       `json:"data,omitempty"`
+	CapturedAt time.Time                    `json:"captured_at,omitempty"`
+	Error      string                       `json:"error,omitempty"`
+	TargetIP   string                       `json:"target_ip,omitempty"`
+	TargetMAC  string                       `json:"target_mac,omitempty"`
+	Policy     *shaping.Policy              `json:"policy,omitempty"`
+	Traffic    []shaping.DeviceTrafficStats `json:"traffic,omitempty"`
 }
 
 // Serve exposes filtered capture and only tightly scoped discovery, isolation,
@@ -70,8 +71,7 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 				gatewayMu.Unlock()
 				bandwidth.observeGateway(message.SenderMAC)
 			}
-			if isIPv4Frame(frame.Data) {
-				_ = bandwidth.submit(frame.Data)
+			if isIPFrame(frame.Data) && bandwidth.submit(frame.Data) {
 				return nil
 			}
 			if len(frame.Data) >= packet.EthernetHeaderLen && bytes.Equal(frame.Data[6:12], localMAC) {
@@ -111,6 +111,14 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 			if writeErr := write(result); writeErr != nil {
 				return writeErr
 			}
+		case "shape_traffic":
+			if command.RequestID == "" {
+				_ = write(Message{Type: "error", Error: "bandwidth traffic request requires a request ID"})
+				continue
+			}
+			if err := write(Message{Type: "result", RequestID: command.RequestID, Traffic: bandwidth.forwarder.DeviceTraffic()}); err != nil {
+				return err
+			}
 		case "close":
 			cancel()
 			return normalizeRunError(<-runResult)
@@ -141,8 +149,12 @@ func handleBandwidthCommand(ctx context.Context, bandwidth *bandwidthSession, co
 	return bandwidth.set(ctx, ip, mac, *command.Policy)
 }
 
-func isIPv4Frame(frame []byte) bool {
-	return len(frame) >= packet.EthernetHeaderLen && binary.BigEndian.Uint16(frame[12:14]) == 0x0800
+func isIPFrame(frame []byte) bool {
+	if len(frame) < packet.EthernetHeaderLen {
+		return false
+	}
+	etherType := binary.BigEndian.Uint16(frame[12:14])
+	return etherType == 0x0800 || etherType == packet.EtherTypeIPv6
 }
 
 func ValidateOutboundFrame(frame []byte, localMAC, gatewayMAC net.HardwareAddr, localIP, gatewayIP netip.Addr, prefix netip.Prefix) error {

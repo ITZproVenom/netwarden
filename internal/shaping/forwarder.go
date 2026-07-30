@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sort"
 	"sync"
 	"sync/atomic"
 )
@@ -21,6 +22,7 @@ var (
 const (
 	ethernetHeaderLength = 14
 	etherTypeIPv4        = 0x0800
+	etherTypeIPv6        = 0x86dd
 	defaultQueueCapacity = 256
 	maximumQueueCapacity = 8192
 )
@@ -42,6 +44,14 @@ type ForwarderStats struct {
 	CanceledDrops   uint64
 	SendErrors      uint64
 	UnmanagedFrames uint64
+}
+
+type DeviceTrafficStats struct {
+	MAC             string
+	UploadPackets   uint64
+	UploadBytes     uint64
+	DownloadPackets uint64
+	DownloadBytes   uint64
 }
 
 type queuedFrame struct {
@@ -74,6 +84,8 @@ type Forwarder struct {
 	sendErrors      atomic.Uint64
 	unmanagedFrames atomic.Uint64
 	errors          chan error
+	trafficMu       sync.RWMutex
+	traffic         map[string]DeviceTrafficStats
 }
 
 func NewForwarder(manager *Manager, sender FrameSender, config ForwarderConfig) (*Forwarder, error) {
@@ -104,7 +116,7 @@ func NewForwarder(manager *Manager, sender FrameSender, config ForwarderConfig) 
 	return &Forwarder{
 		manager: manager, sender: sender, localMAC: localMAC, gatewayMAC: gatewayMAC,
 		upload: make(chan queuedFrame, capacity), download: make(chan queuedFrame, capacity),
-		routes: make(map[netip.Addr]net.HardwareAddr), errors: make(chan error, 32),
+		routes: make(map[netip.Addr]net.HardwareAddr), errors: make(chan error, 32), traffic: make(map[string]DeviceTrafficStats),
 	}, nil
 }
 
@@ -122,8 +134,8 @@ func (f *Forwarder) SetGatewayMAC(mac net.HardwareAddr) error {
 }
 
 func (f *Forwarder) SetRoute(ip netip.Addr, mac net.HardwareAddr) error {
-	if !ip.Is4() || ip.IsUnspecified() || ip.IsMulticast() {
-		return errors.New("shaping route requires a unicast IPv4 address")
+	if !ip.IsValid() || ip.IsUnspecified() || ip.IsMulticast() {
+		return errors.New("shaping route requires a unicast IP address")
 	}
 	key, err := normalizeDeviceMAC(mac)
 	if err != nil {
@@ -203,17 +215,23 @@ func (f *Forwarder) Stats() ForwarderStats {
 	}
 }
 
+func (f *Forwarder) DeviceTraffic() []DeviceTrafficStats {
+	f.trafficMu.RLock()
+	result := make([]DeviceTrafficStats, 0, len(f.traffic))
+	for _, stats := range f.traffic {
+		result = append(result, stats)
+	}
+	f.trafficMu.RUnlock()
+	sort.Slice(result, func(i, j int) bool { return result[i].MAC < result[j].MAC })
+	return result
+}
+
 func (f *Forwarder) classify(frame []byte) (queuedFrame, error) {
-	if len(frame) < ethernetHeaderLength+20 || binary.BigEndian.Uint16(frame[12:14]) != etherTypeIPv4 {
+	if len(frame) < ethernetHeaderLength {
 		return queuedFrame{}, ErrFrameNotManaged
 	}
-	versionLength := frame[ethernetHeaderLength]
-	headerLength := int(versionLength&0x0f) * 4
-	if versionLength>>4 != 4 || headerLength < 20 || len(frame) < ethernetHeaderLength+headerLength {
-		return queuedFrame{}, ErrFrameNotManaged
-	}
-	totalLength := int(binary.BigEndian.Uint16(frame[ethernetHeaderLength+2 : ethernetHeaderLength+4]))
-	if totalLength < headerLength || ethernetHeaderLength+totalLength > len(frame) {
+	_, destinationIP, networkLength, ok := classifyNetworkPacket(frame)
+	if !ok {
 		return queuedFrame{}, ErrFrameNotManaged
 	}
 	destination, source := net.HardwareAddr(frame[:6]), net.HardwareAddr(frame[6:12])
@@ -226,11 +244,8 @@ func (f *Forwarder) classify(frame []byte) (queuedFrame, error) {
 	if len(gatewayMAC) != 6 {
 		return queuedFrame{}, ErrFrameNotManaged
 	}
-	result := queuedFrame{data: append([]byte(nil), frame[:ethernetHeaderLength+totalLength]...)}
+	result := queuedFrame{data: append([]byte(nil), frame[:ethernetHeaderLength+networkLength]...)}
 	if bytes.Equal(source, gatewayMAC) {
-		var destinationIPBytes [4]byte
-		copy(destinationIPBytes[:], frame[ethernetHeaderLength+16:ethernetHeaderLength+20])
-		destinationIP := netip.AddrFrom4(destinationIPBytes)
 		f.routesMu.RLock()
 		deviceMAC := append(net.HardwareAddr(nil), f.routes[destinationIP]...)
 		f.routesMu.RUnlock()
@@ -249,6 +264,40 @@ func (f *Forwarder) classify(frame []byte) (queuedFrame, error) {
 	copy(result.data[:6], gatewayMAC)
 	copy(result.data[6:12], f.localMAC)
 	return result, nil
+}
+
+func classifyNetworkPacket(frame []byte) (netip.Addr, netip.Addr, int, bool) {
+	if len(frame) < ethernetHeaderLength {
+		return netip.Addr{}, netip.Addr{}, 0, false
+	}
+	network := frame[ethernetHeaderLength:]
+	switch binary.BigEndian.Uint16(frame[12:14]) {
+	case etherTypeIPv4:
+		if len(network) < 20 {
+			return netip.Addr{}, netip.Addr{}, 0, false
+		}
+		headerLength := int(network[0]&0x0f) * 4
+		totalLength := int(binary.BigEndian.Uint16(network[2:4]))
+		if network[0]>>4 != 4 || headerLength < 20 || totalLength < headerLength || totalLength > len(network) {
+			return netip.Addr{}, netip.Addr{}, 0, false
+		}
+		return netip.AddrFrom4([4]byte(network[12:16])), netip.AddrFrom4([4]byte(network[16:20])), totalLength, true
+	case etherTypeIPv6:
+		if len(network) < 40 || network[0]>>4 != 6 {
+			return netip.Addr{}, netip.Addr{}, 0, false
+		}
+		payloadLength := int(binary.BigEndian.Uint16(network[4:6]))
+		totalLength := 40 + payloadLength
+		if payloadLength == 0 {
+			totalLength = len(network)
+		}
+		if totalLength > len(network) {
+			return netip.Addr{}, netip.Addr{}, 0, false
+		}
+		return netip.AddrFrom16([16]byte(network[8:24])), netip.AddrFrom16([16]byte(network[24:40])), totalLength, true
+	default:
+		return netip.Addr{}, netip.Addr{}, 0, false
+	}
 }
 
 func (f *Forwarder) runDirection(ctx context.Context, queue <-chan queuedFrame, workers *sync.WaitGroup) {
@@ -275,8 +324,28 @@ func (f *Forwarder) runDirection(ctx context.Context, queue <-chan queuedFrame, 
 				continue
 			}
 			f.forwarded.Add(1)
+			f.recordTraffic(frame)
 		}
 	}
+}
+
+func (f *Forwarder) recordTraffic(frame queuedFrame) {
+	key, err := normalizeDeviceMAC(frame.deviceMAC)
+	if err != nil {
+		return
+	}
+	f.trafficMu.Lock()
+	stats := f.traffic[key]
+	stats.MAC = key
+	if frame.direction == Upload {
+		stats.UploadPackets++
+		stats.UploadBytes += uint64(len(frame.data))
+	} else {
+		stats.DownloadPackets++
+		stats.DownloadBytes += uint64(len(frame.data))
+	}
+	f.traffic[key] = stats
+	f.trafficMu.Unlock()
 }
 
 func (f *Forwarder) drainCanceled(queue <-chan queuedFrame) {

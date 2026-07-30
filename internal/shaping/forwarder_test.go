@@ -90,6 +90,53 @@ func TestForwarderClassifiesRewritesAndForwardsBothDirections(t *testing.T) {
 	if stats.Accepted != 2 || stats.Forwarded != 2 {
 		t.Fatalf("forwarder stats = %#v", stats)
 	}
+	traffic := forwarder.DeviceTraffic()
+	if len(traffic) != 1 || traffic[0].UploadPackets != 1 || traffic[0].DownloadPackets != 1 ||
+		traffic[0].UploadBytes != uint64(len(upload)) || traffic[0].DownloadBytes != uint64(len(download)) {
+		t.Fatalf("device traffic = %#v", traffic)
+	}
+}
+
+func TestForwarderClassifiesAndForwardsIPv6BothDirections(t *testing.T) {
+	local := mustMAC(t, "02:00:00:00:00:01")
+	gateway := mustMAC(t, "02:00:00:00:00:02")
+	device := mustMAC(t, "02:00:00:00:00:20")
+	deviceIP := netip.MustParseAddr("2001:db8::20")
+	manager := NewManager()
+	if err := manager.Set(device, Policy{DownloadBitsPerSecond: 100_000_000, UploadBitsPerSecond: 100_000_000}); err != nil {
+		t.Fatal(err)
+	}
+	sender := &recordingSender{sent: make(chan []byte, 2)}
+	forwarder, err := NewForwarder(manager, sender, ForwarderConfig{LocalMAC: local, GatewayMAC: gateway, QueueCapacity: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := forwarder.SetRoute(deviceIP, device); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- forwarder.Run(ctx) }()
+
+	upload := ipv6Frame(local, device, deviceIP, netip.MustParseAddr("2001:4860:4860::8888"), 24)
+	download := ipv6Frame(local, gateway, netip.MustParseAddr("2001:4860:4860::8888"), deviceIP, 36)
+	if err := forwarder.Submit(upload); err != nil {
+		t.Fatal(err)
+	}
+	if err := forwarder.Submit(download); err != nil {
+		t.Fatal(err)
+	}
+	first, second := receiveFrame(t, sender.sent), receiveFrame(t, sender.sent)
+	if !(bytes.Equal(first[:6], gateway) || bytes.Equal(second[:6], gateway)) ||
+		!(bytes.Equal(first[:6], device) || bytes.Equal(second[:6], device)) {
+		t.Fatalf("IPv6 Ethernet rewrites = %x / %x", first[:12], second[:12])
+	}
+	cancel()
+	<-done
+	traffic := forwarder.DeviceTraffic()
+	if len(traffic) != 1 || traffic[0].UploadBytes != uint64(len(upload)) || traffic[0].DownloadBytes != uint64(len(download)) {
+		t.Fatalf("IPv6 device traffic = %#v", traffic)
+	}
 }
 
 func TestForwarderDropsWhenDirectionalQueueIsFull(t *testing.T) {
@@ -226,6 +273,19 @@ func ipv4Frame(destinationMAC, sourceMAC net.HardwareAddr, sourceIP, destination
 	destination := destinationIP.As4()
 	copy(frame[26:30], source[:])
 	copy(frame[30:34], destination[:])
+	return frame
+}
+
+func ipv6Frame(destinationMAC, sourceMAC net.HardwareAddr, sourceIP, destinationIP netip.Addr, payloadBytes int) []byte {
+	frame := make([]byte, ethernetHeaderLength+40+payloadBytes)
+	copy(frame[:6], destinationMAC)
+	copy(frame[6:12], sourceMAC)
+	binary.BigEndian.PutUint16(frame[12:14], etherTypeIPv6)
+	frame[14] = 0x60
+	binary.BigEndian.PutUint16(frame[18:20], uint16(payloadBytes))
+	source, destination := sourceIP.As16(), destinationIP.As16()
+	copy(frame[22:38], source[:])
+	copy(frame[38:54], destination[:])
 	return frame
 }
 
