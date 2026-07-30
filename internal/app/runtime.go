@@ -113,7 +113,7 @@ func DefaultDependencies() Dependencies {
 	return Dependencies{
 		Gateway: networkgateway.SystemDiscoverer{},
 		Open: func(name string) (capture.Driver, error) {
-			return pcapdriver.Open(name, pcapdriver.Config{Promiscuous: true, Filter: "arp"})
+			return pcapdriver.Open(name, pcapdriver.Config{Promiscuous: true, Filter: "arp or icmp6"})
 		},
 		Resolve: discovery.ResolveARP,
 	}

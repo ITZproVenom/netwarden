@@ -15,6 +15,7 @@ network gateway.
 - Temporarily disconnect selected eligible devices and restore their access.
 - Set temporary download and upload speed limits for eligible devices.
 - Monitor your gateway identity for suspicious changes.
+- Passively discover IPv6 device addresses from validated Neighbor Discovery traffic.
 - Review recent activity, errors, and control history in Diagnostics.
 - Adjust scan timing, offline detection, history retention, and automatic
   startup.
@@ -71,6 +72,14 @@ the network; they are not saved or automatically reapplied after a restart.
 
 Removing a limit restores the device's normal direct network path. Support depends on the local IPv4
 network and may vary between routers, switches, and devices.
+
+## IPv6 support
+
+NetWarden passively observes validated ICMPv6 Neighbor Discovery messages and
+groups IPv4, link-local IPv6, and global IPv6 addresses under the same device
+identity. Active scanning, gateway-integrity protection, disconnect controls,
+and bandwidth limits remain IPv4-only. The interface labels IPv6-only devices
+accordingly instead of offering controls that cannot affect their traffic.
 
 ## Privacy and responsible use
 

@@ -47,7 +47,11 @@ type Observation struct {
 
 // Device is an immutable snapshot returned to callers.
 type Device struct {
-	IP        netip.Addr
+	IP netip.Addr
+	// Addresses contains every currently known unicast address for the device.
+	// IP remains the preferred address for compatibility with callers that can
+	// operate on only one address; an IPv4 address is preferred when available.
+	Addresses []netip.Addr
 	MAC       string
 	Name      string
 	Vendor    string
@@ -70,6 +74,7 @@ const (
 	ChangeDiscovered ChangeKind = iota + 1
 	ChangeReturnedOnline
 	ChangeAddressChanged
+	ChangeAddressAdded
 	ChangeIPConflict
 )
 
@@ -106,13 +111,16 @@ func (r *Registry) Restore(devices []Device) {
 	defer r.mu.Unlock()
 	for _, snapshot := range devices {
 		mac, err := net.ParseMAC(snapshot.MAC)
-		if err != nil || len(mac) != 6 || !snapshot.IP.Is4() || snapshot.Role != RolePeer {
+		if err != nil || len(mac) != 6 || !validDeviceAddress(snapshot.IP) || snapshot.Role != RolePeer {
 			continue
 		}
+		snapshot.Addresses = normalizeAddresses(snapshot.IP, snapshot.Addresses)
 		snapshot.MAC = canonicalMAC(mac)
 		snapshot.Online = false
 		r.devices[snapshot.MAC] = &record{Device: snapshot}
-		r.byIP[snapshot.IP] = snapshot.MAC
+		for _, address := range snapshot.Addresses {
+			r.byIP[address] = snapshot.MAC
+		}
 	}
 }
 
@@ -126,7 +134,7 @@ func (r *Registry) Observe(observation Observation) (snapshot Device, changed bo
 // ObserveDetailed records an observation and describes every identity or
 // lifecycle transition caused by it.
 func (r *Registry) ObserveDetailed(observation Observation) (ObservationResult, error) {
-	if !observation.IP.IsValid() || !observation.IP.Is4() || len(observation.MAC) != 6 {
+	if !validDeviceAddress(observation.IP) || len(observation.MAC) != 6 {
 		return ObservationResult{}, ErrInvalidObservation
 	}
 	seenAt := observation.SeenAt
@@ -140,7 +148,7 @@ func (r *Registry) ObserveDetailed(observation Observation) (ObservationResult, 
 	existing, ok := r.devices[mac]
 	if !ok {
 		snapshot := Device{
-			IP: observation.IP, MAC: mac, Name: observation.IP.String(),
+			IP: observation.IP, Addresses: []netip.Addr{observation.IP}, MAC: mac, Name: observation.IP.String(),
 			FirstSeen: seenAt, LastSeen: seenAt, Online: true,
 		}
 		result := ObservationResult{Device: snapshot}
@@ -156,7 +164,7 @@ func (r *Registry) ObserveDetailed(observation Observation) (ObservationResult, 
 		r.devices[mac] = &record{Device: snapshot}
 		r.byIP[observation.IP] = mac
 		result.Changes = append(result.Changes, Change{Kind: ChangeDiscovered, Device: snapshot})
-		return result, nil
+		return cloneObservationResult(result), nil
 	}
 
 	result := ObservationResult{}
@@ -171,14 +179,23 @@ func (r *Registry) ObserveDetailed(observation Observation) (ObservationResult, 
 			})
 		}
 	}
-	if previousIP != observation.IP {
-		if indexedMAC := r.byIP[previousIP]; indexedMAC == mac {
-			delete(r.byIP, previousIP)
+	addressAdded := !containsAddress(existing.Addresses, observation.IP)
+	if addressAdded {
+		// IPv4 leases are treated as replacements. IPv6 devices legitimately use
+		// several addresses at once (link-local, stable, and privacy addresses).
+		if observation.IP.Is4() {
+			for _, address := range existing.Addresses {
+				if address.Is4() && r.byIP[address] == mac {
+					delete(r.byIP, address)
+				}
+			}
+			existing.Addresses = removeFamily(existing.Addresses, true)
 		}
-		if existing.Name == previousIP.String() {
-			existing.Name = observation.IP.String()
+		existing.Addresses = append(existing.Addresses, observation.IP)
+		existing.IP = preferredAddress(existing.Addresses)
+		if existing.Name == previousIP.String() && existing.IP != previousIP {
+			existing.Name = existing.IP.String()
 		}
-		existing.IP = observation.IP
 	}
 	r.byIP[observation.IP] = mac
 	if seenAt.After(existing.LastSeen) {
@@ -189,15 +206,17 @@ func (r *Registry) ObserveDetailed(observation Observation) (ObservationResult, 
 	for i := range result.Changes {
 		result.Changes[i].Device = existing.Device
 	}
-	if previousIP != observation.IP {
+	if existing.IP != previousIP {
 		result.Changes = append(result.Changes, Change{
 			Kind: ChangeAddressChanged, Device: existing.Device, PreviousIP: previousIP,
 		})
+	} else if addressAdded {
+		result.Changes = append(result.Changes, Change{Kind: ChangeAddressAdded, Device: existing.Device})
 	}
 	if !wasOnline {
 		result.Changes = append(result.Changes, Change{Kind: ChangeReturnedOnline, Device: existing.Device})
 	}
-	return result, nil
+	return cloneObservationResult(result), nil
 }
 
 // MarkOffline marks peers not seen for at least timeout as offline. It returns
@@ -212,7 +231,7 @@ func (r *Registry) MarkOffline(now time.Time, timeout time.Duration) []Device {
 	for _, current := range r.devices {
 		if current.Role == RolePeer && current.Online && now.Sub(current.LastSeen) >= timeout {
 			current.Online = false
-			changed = append(changed, current.Device)
+			changed = append(changed, cloneDevice(current.Device))
 		}
 	}
 	return changed
@@ -230,10 +249,12 @@ func (r *Registry) RemoveStale(now time.Time, retention time.Duration) []Device 
 		if current.Role != RolePeer || current.Online || now.Sub(current.LastSeen) < retention {
 			continue
 		}
-		removed = append(removed, current.Device)
+		removed = append(removed, cloneDevice(current.Device))
 		delete(r.devices, mac)
-		if r.byIP[current.IP] == mac {
-			delete(r.byIP, current.IP)
+		for _, address := range current.Addresses {
+			if r.byIP[address] == mac {
+				delete(r.byIP, address)
+			}
 		}
 	}
 	return removed
@@ -276,7 +297,7 @@ func (r *Registry) ApplyMetadata(mac string, metadata Metadata) (Device, bool) {
 		current.Type = metadata.Type
 		changed = true
 	}
-	return current.Device, changed
+	return cloneDevice(current.Device), changed
 }
 
 func (r *Registry) Snapshot() []Device {
@@ -284,7 +305,7 @@ func (r *Registry) Snapshot() []Device {
 	defer r.mu.RUnlock()
 	result := make([]Device, 0, len(r.devices))
 	for _, current := range r.devices {
-		result = append(result, current.Device)
+		result = append(result, cloneDevice(current.Device))
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].IP == result[j].IP {
@@ -302,7 +323,72 @@ func (r *Registry) Get(mac string) (Device, bool) {
 	if !ok {
 		return Device{}, false
 	}
-	return current.Device, true
+	return cloneDevice(current.Device), true
+}
+
+func validDeviceAddress(address netip.Addr) bool {
+	return address.IsValid() && !address.IsUnspecified() && !address.IsMulticast()
+}
+
+func normalizeAddresses(primary netip.Addr, addresses []netip.Addr) []netip.Addr {
+	result := make([]netip.Addr, 0, len(addresses)+1)
+	if validDeviceAddress(primary) {
+		result = append(result, primary)
+	}
+	for _, address := range addresses {
+		if validDeviceAddress(address) && !containsAddress(result, address) {
+			result = append(result, address)
+		}
+	}
+	return result
+}
+
+func containsAddress(addresses []netip.Addr, candidate netip.Addr) bool {
+	for _, address := range addresses {
+		if address == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func removeFamily(addresses []netip.Addr, ipv4 bool) []netip.Addr {
+	result := addresses[:0]
+	for _, address := range addresses {
+		if address.Is4() != ipv4 {
+			result = append(result, address)
+		}
+	}
+	return result
+}
+
+func preferredAddress(addresses []netip.Addr) netip.Addr {
+	for _, address := range addresses {
+		if address.Is4() {
+			return address
+		}
+	}
+	if len(addresses) > 0 {
+		return addresses[0]
+	}
+	return netip.Addr{}
+}
+
+func cloneDevice(value Device) Device {
+	value.Addresses = append([]netip.Addr(nil), value.Addresses...)
+	return value
+}
+
+func cloneObservationResult(result ObservationResult) ObservationResult {
+	result.Device = cloneDevice(result.Device)
+	for index := range result.Changes {
+		result.Changes[index].Device = cloneDevice(result.Changes[index].Device)
+		if result.Changes[index].Related != nil {
+			related := cloneDevice(*result.Changes[index].Related)
+			result.Changes[index].Related = &related
+		}
+	}
+	return result
 }
 
 func canonicalMAC(mac net.HardwareAddr) string {

@@ -8,6 +8,7 @@ import type { BandwidthLimit, Device } from "@/lib/wails/types"
 import { useRemoveBandwidthLimit, useSetBandwidthLimit } from "./bandwidth.queries"
 import { displayMbps } from "./format"
 import { bandwidthValidation, parseMbps } from "./validation"
+import { isControlEligible } from "@/features/devices/device-list"
 
 export function BandwidthSection({
   device,
@@ -27,12 +28,14 @@ export function BandwidthSection({
     setUpload(limit?.uploadBitsPerSecond ? displayMbps(limit.uploadBitsPerSecond) : "")
   }, [device.mac, limit?.downloadBitsPerSecond, limit?.uploadBitsPerSecond])
   const validation = bandwidthValidation(download, upload)
-  const eligible = available && device.online && device.role === "Device" && device.controlState === ""
+  const eligible = available && isControlEligible(device)
   const pending = setLimit.isPending || removeLimit.isPending
   const reason = !available
     ? "Bandwidth control is unavailable with the active capture backend."
     : device.role !== "Device"
       ? "This protected network endpoint cannot be limited."
+      : !device.ip.includes(".")
+        ? "IPv6-only devices are visible, but IPv6 bandwidth control is not supported yet."
       : device.controlState !== ""
         ? "Restore normal access before applying a bandwidth limit."
         : !device.online

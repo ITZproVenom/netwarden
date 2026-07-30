@@ -18,4 +18,9 @@ export const defaultDevicePreferences: DevicePreferences = {
 }
 
 export const isControlEligible = (device: Device) =>
-  device.online && device.role === "Device" && device.controlState === ""
+  device.online && device.role === "Device" && device.controlState === "" && isIPv4Address(device.ip)
+
+export const isIPv4Address = (address: string) => {
+  const octets = address.split(".")
+  return octets.length === 4 && octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
+}

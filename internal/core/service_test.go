@@ -109,3 +109,21 @@ func TestServiceIgnoresLocallySourcedFrames(t *testing.T) {
 		t.Fatalf("locally sourced frame created %d devices", len(devices))
 	}
 }
+
+func TestServiceRecordsIPv6AddressWithoutReplacingPreferredIPv4(t *testing.T) {
+	registry := device.NewRegistry()
+	service := NewService(&memoryDriver{}, registry, time.Minute, time.Second)
+	mac, _ := net.ParseMAC("02:00:00:00:00:40")
+	seenAt := time.Now().UTC()
+	if err := service.observeAddress(netip.MustParseAddr("192.168.1.40"), mac, seenAt); err != nil {
+		t.Fatal(err)
+	}
+	<-service.Events()
+	if err := service.observeAddress(netip.MustParseAddr("fe80::40"), mac, seenAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	event := <-service.Events()
+	if event.Kind != EventAddressChanged || event.Device.IP.String() != "192.168.1.40" || len(event.Device.Addresses) != 2 {
+		t.Fatalf("unexpected IPv6 observation event: %#v", event)
+	}
+}

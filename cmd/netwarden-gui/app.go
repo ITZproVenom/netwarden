@@ -53,6 +53,7 @@ type StatusDTO struct {
 
 type DeviceDTO struct {
 	IP           string    `json:"ip"`
+	Addresses    []string  `json:"addresses"`
 	MAC          string    `json:"mac"`
 	Name         string    `json:"name"`
 	Vendor       string    `json:"vendor"`
@@ -865,5 +866,9 @@ func deviceDTO(value device.Device) DeviceDTO {
 	if deviceType == "" {
 		deviceType = device.TypeUnknown
 	}
-	return DeviceDTO{IP: value.IP.String(), MAC: value.MAC, Name: value.Name, Vendor: value.Vendor, Type: string(deviceType), Role: roles[value.Role], FirstSeen: value.FirstSeen, LastSeen: value.LastSeen, Online: value.Online}
+	addresses := make([]string, 0, len(value.Addresses))
+	for _, address := range value.Addresses {
+		addresses = append(addresses, address.String())
+	}
+	return DeviceDTO{IP: value.IP.String(), Addresses: addresses, MAC: value.MAC, Name: value.Name, Vendor: value.Vendor, Type: string(deviceType), Role: roles[value.Role], FirstSeen: value.FirstSeen, LastSeen: value.LastSeen, Online: value.Online}
 }

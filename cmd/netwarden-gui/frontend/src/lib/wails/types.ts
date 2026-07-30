@@ -3,6 +3,7 @@ export type Bootstrap = { interfaces: Adapter[]; selectedInterface: string; gate
 export type DeviceControlState = "" | "active" | "continuous" | "restoring" | "failed"
 export type Device = {
   ip: string
+  addresses: string[]
   mac: string
   name: string
   vendor: string
