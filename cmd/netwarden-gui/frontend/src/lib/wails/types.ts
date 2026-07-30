@@ -38,6 +38,25 @@ export type RuntimeStatus = {
   LastPersistenceError: string
   BandwidthAvailable: boolean
   ActiveBandwidthLimits: number
+  IPv6Available: boolean
+  IPv6RouterIP: string
+  IPv6RouterMAC: string
+  IPv6PrefixCount: number
+  IPv6RouterConflicts: number
+}
+export type IPv6Prefix = {
+  prefix: string
+  onLink: boolean
+  autonomous: boolean
+  validUntil: string
+  preferredUntil: string
+}
+export type IPv6Router = { ip: string; mac: string; expiresAt: string; preference: number; prefixes: IPv6Prefix[] }
+export type IPv6Network = {
+  localAddresses: string[]
+  defaultRouter?: IPv6Router
+  routers: IPv6Router[]
+  conflictCount: number
 }
 export type HistorySummary = { devices: number; conflicts: number; oldest?: string; newest?: string }
 export type Activity = {

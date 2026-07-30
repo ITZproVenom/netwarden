@@ -46,6 +46,10 @@ type ARPObserver interface {
 	Observe(packet.ARP, time.Time)
 }
 
+type NDPObserver interface {
+	Observe(packet.NDP, time.Time)
+}
+
 type Option func(*Service)
 
 func WithEnricher(enricher Enricher) Option {
@@ -56,6 +60,14 @@ func WithARPObserver(observer ARPObserver) Option {
 	return func(service *Service) {
 		if observer != nil {
 			service.observers = append(service.observers, observer)
+		}
+	}
+}
+
+func WithNDPObserver(observer NDPObserver) Option {
+	return func(service *Service) {
+		if observer != nil {
+			service.ndpObservers = append(service.ndpObservers, observer)
 		}
 	}
 }
@@ -81,6 +93,7 @@ type Service struct {
 	events           chan Event
 	enricher         Enricher
 	observers        []ARPObserver
+	ndpObservers     []NDPObserver
 	ignoredSenderMAC string
 	dropped          atomic.Uint64
 
@@ -171,6 +184,9 @@ func (s *Service) handleFrame(frame capture.Frame) error {
 	if err != nil {
 		// Malformed and unrelated frames never terminate capture.
 		return nil
+	}
+	for _, observer := range s.ndpObservers {
+		observer.Observe(ndp, seenAt.UTC())
 	}
 	return s.observeAddress(ndp.SourceIP, ndp.SourceMAC, seenAt.UTC())
 }

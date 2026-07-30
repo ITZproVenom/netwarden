@@ -77,9 +77,11 @@ network and may vary between routers, switches, and devices.
 
 NetWarden passively observes validated ICMPv6 Neighbor Discovery messages and
 groups IPv4, link-local IPv6, and global IPv6 addresses under the same device
-identity. Active scanning, gateway-integrity protection, disconnect controls,
-and bandwidth limits remain IPv4-only. The interface labels IPv6-only devices
-accordingly instead of offering controls that cannot affect their traffic.
+identity. Validated Router Advertisements provide IPv6 default-router and
+prefix discovery, lifetime tracking, and trust-on-first-use router identity
+alerts. Active scanning, disconnect controls, and bandwidth limits remain
+IPv4-only. The interface labels IPv6-only devices accordingly instead of
+offering controls that cannot affect their traffic.
 
 ## Privacy and responsible use
 

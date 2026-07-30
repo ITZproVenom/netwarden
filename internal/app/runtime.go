@@ -79,6 +79,11 @@ type Status struct {
 	ContinuousControl       bool
 	BandwidthAvailable      bool
 	ActiveBandwidthLimits   int
+	IPv6Available           bool
+	IPv6RouterIP            string
+	IPv6RouterMAC           string
+	IPv6PrefixCount         int
+	IPv6RouterConflicts     int
 }
 
 type Runtime struct {
@@ -88,6 +93,7 @@ type Runtime struct {
 	service  *core.Service
 	scanner  *discovery.Scanner
 	monitor  *defense.Monitor
+	ipv6     *discovery.IPv6RouterTracker
 	metadata MetadataEditor
 	settings *appconfig.Store
 	history  *history.Store
@@ -196,7 +202,14 @@ func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*
 		monitor = defense.NewPinnedMonitor(networkContext.Gateway.IP, networkContext.Gateway.MAC, config.ConflictCooldown)
 	}
 	monitor.RestoreHistory(durableHistory.Conflicts)
-	options := []core.Option{core.WithARPObserver(monitor), core.WithRemovalAfter(config.DeviceRetention), core.WithIgnoredSenderMAC(config.Interface.MAC)}
+	localIPv6 := make([]netip.Addr, 0)
+	for _, candidate := range config.Interface.Prefixes {
+		if candidate.Addr().Is6() {
+			localIPv6 = append(localIPv6, candidate.Addr())
+		}
+	}
+	ipv6 := discovery.NewIPv6RouterTracker(localIPv6)
+	options := []core.Option{core.WithARPObserver(monitor), core.WithNDPObserver(ipv6), core.WithRemovalAfter(config.DeviceRetention), core.WithIgnoredSenderMAC(config.Interface.MAC)}
 	if dependencies.Metadata != nil {
 		options = append(options, core.WithEnricher(dependencies.Metadata))
 	} else if dependencies.Enricher != nil {
@@ -210,7 +223,7 @@ func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*
 	scanner := discovery.NewScanner(prober, config.MaximumHosts, config.ProbeDelay)
 	runtime := &Runtime{
 		network: networkContext, driver: driver, registry: registry,
-		service: service, scanner: scanner, monitor: monitor, config: config,
+		service: service, scanner: scanner, monitor: monitor, ipv6: ipv6, config: config,
 		metadata: dependencies.Metadata, settings: dependencies.Settings,
 		events: make(chan Event, 128), gateway: dependencies.Gateway, route: route,
 		history: dependencies.History, persist: make(chan struct{}, 1),
@@ -238,21 +251,31 @@ func (r *Runtime) Devices() []device.Device { return r.registry.Snapshot() }
 func (r *Runtime) Events() <-chan Event     { return r.events }
 func (r *Runtime) Done() <-chan struct{}    { return r.done }
 func (r *Runtime) DroppedEvents() uint64 {
-	return r.dropped.Load() + r.service.DroppedEvents() + r.monitor.DroppedEvents()
+	return r.dropped.Load() + r.service.DroppedEvents() + r.monitor.DroppedEvents() + r.ipv6.DroppedEvents()
 }
 
 func (r *Runtime) Status() Status {
 	r.mu.Lock()
 	running, stopped, persistErr := r.running, r.stopped, r.persistErr
 	r.mu.Unlock()
-	return Status{
+	ipv6 := r.ipv6.Snapshot(time.Now().UTC())
+	status := Status{
 		Running: running, Stopped: stopped, Scanning: r.scanner.Scanning(),
 		PeriodicScanEnabled: r.scanner.PeriodicEnabled(), DeviceCount: len(r.Devices()),
 		DroppedEvents: r.DroppedEvents(), LastPersistenceError: errorText(persistErr),
 		ActiveControlTargets: len(r.control.Snapshot()), ContinuousControl: r.control.ContinuousRunning(),
 		BandwidthAvailable: r.bandwidth.Available(), ActiveBandwidthLimits: len(r.bandwidth.Snapshot()),
+		IPv6Available: len(ipv6.LocalAddresses) > 0,
 	}
+	status.IPv6RouterConflicts = ipv6.ConflictCount
+	if ipv6.DefaultRouter != nil {
+		status.IPv6RouterIP, status.IPv6RouterMAC = ipv6.DefaultRouter.IP.String(), ipv6.DefaultRouter.MAC
+		status.IPv6PrefixCount = len(ipv6.DefaultRouter.Prefixes)
+	}
+	return status
 }
+
+func (r *Runtime) IPv6Network() discovery.IPv6Context { return r.ipv6.Snapshot(time.Now().UTC()) }
 
 func errorText(err error) string {
 	if err == nil {
@@ -421,6 +444,16 @@ func (r *Runtime) forwardEvents(ctx context.Context) {
 		case event := <-r.monitor.Events():
 			r.publish(eventFromDefense(event))
 			r.schedulePersist()
+		case event := <-r.ipv6.Events():
+			if event.Kind == discovery.IPv6RouterIdentityConflict || event.Kind == discovery.IPv6RouterIdentityRestored {
+				kind := defense.GatewayIdentityConflict
+				if event.Kind == discovery.IPv6RouterIdentityRestored {
+					kind = defense.GatewayIdentityRestored
+				}
+				r.publish(eventFromDefense(defense.Event{Kind: kind, ObservedAt: event.ObservedAt,
+					GatewayIP: event.RouterIP, ExpectedMAC: event.ExpectedMAC, ClaimedMAC: event.ClaimedMAC,
+					Baseline: defense.BaselineLearned}))
+			}
 		}
 	}
 }

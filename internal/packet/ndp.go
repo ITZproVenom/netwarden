@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"time"
 )
 
 const (
@@ -23,10 +24,21 @@ var ErrMalformedNDP = errors.New("malformed Ethernet IPv6 neighbor-discovery fra
 // NDP is the validated identity-bearing subset of an ICMPv6 Neighbor
 // Discovery message. Address selection remains a discovery-layer concern.
 type NDP struct {
-	Type      uint8
-	SourceIP  netip.Addr
-	TargetIP  netip.Addr
-	SourceMAC net.HardwareAddr
+	Type             uint8
+	SourceIP         netip.Addr
+	TargetIP         netip.Addr
+	SourceMAC        net.HardwareAddr
+	RouterLifetime   time.Duration
+	RouterPreference int8
+	Prefixes         []PrefixInformation
+}
+
+type PrefixInformation struct {
+	Prefix            netip.Prefix
+	OnLink            bool
+	Autonomous        bool
+	ValidLifetime     time.Duration
+	PreferredLifetime time.Duration
 }
 
 // ParseNDP validates an Ethernet/IPv6 ICMPv6 Neighbor Discovery frame. This
@@ -61,6 +73,13 @@ func ParseNDP(frame []byte) (NDP, error) {
 			return NDP{}, ErrMalformedNDP
 		}
 		optionOffset = 16
+		message.RouterLifetime = time.Duration(binary.BigEndian.Uint16(icmp[6:8])) * time.Second
+		switch (icmp[5] >> 3) & 0x03 {
+		case 1:
+			message.RouterPreference = 1
+		case 3:
+			message.RouterPreference = -1
+		}
 	case ICMPv6NeighborSolicitation, ICMPv6NeighborAdvertisement:
 		if len(icmp) < 24 {
 			return NDP{}, ErrMalformedNDP
@@ -84,12 +103,32 @@ func ParseNDP(frame []byte) (NDP, error) {
 		if (optionType == 1 || optionType == 2) && optionLength >= 8 {
 			message.SourceMAC = append(net.HardwareAddr(nil), icmp[optionOffset+2:optionOffset+8]...)
 		}
+		if optionType == 3 && optionLength == 32 {
+			prefixLength := int(icmp[optionOffset+2])
+			prefixAddress := netip.AddrFrom16([16]byte(icmp[optionOffset+16 : optionOffset+32]))
+			validSeconds := binary.BigEndian.Uint32(icmp[optionOffset+4 : optionOffset+8])
+			preferredSeconds := binary.BigEndian.Uint32(icmp[optionOffset+8 : optionOffset+12])
+			if prefixLength <= 128 && preferredSeconds <= validSeconds {
+				message.Prefixes = append(message.Prefixes, PrefixInformation{
+					Prefix: netip.PrefixFrom(prefixAddress, prefixLength).Masked(),
+					OnLink: icmp[optionOffset+3]&0x80 != 0, Autonomous: icmp[optionOffset+3]&0x40 != 0,
+					ValidLifetime: lifetimeDuration(validSeconds), PreferredLifetime: lifetimeDuration(preferredSeconds),
+				})
+			}
+		}
 		optionOffset += optionLength
 	}
 	if !validNDPUnicastMAC(message.SourceMAC) {
 		return NDP{}, ErrMalformedNDP
 	}
 	return message, nil
+}
+
+func lifetimeDuration(seconds uint32) time.Duration {
+	if seconds == ^uint32(0) {
+		return time.Duration(1<<63 - 1)
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func isNDPType(value uint8) bool {

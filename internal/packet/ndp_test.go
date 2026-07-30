@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"testing"
+	"time"
 )
 
 func TestParseNDPNeighborAdvertisement(t *testing.T) {
@@ -41,6 +42,31 @@ func TestParseNDPRejectsInvalidHopLimitAndChecksum(t *testing.T) {
 	}
 }
 
+func TestParseNDPRouterAdvertisement(t *testing.T) {
+	source := netip.MustParseAddr("fe80::1")
+	destination := netip.MustParseAddr("ff02::1")
+	mac, _ := net.ParseMAC("02:00:00:00:00:01")
+	icmp := make([]byte, 56)
+	icmp[0] = ICMPv6RouterAdvertisement
+	binary.BigEndian.PutUint16(icmp[6:8], 1800)
+	icmp[16], icmp[17] = 1, 1
+	copy(icmp[18:24], mac)
+	icmp[24], icmp[25], icmp[26], icmp[27] = 3, 4, 64, 0xc0
+	binary.BigEndian.PutUint32(icmp[28:32], 3600)
+	binary.BigEndian.PutUint32(icmp[32:36], 1800)
+	copy(icmp[40:56], netip.MustParseAddr("2001:db8:1::").AsSlice())
+	frame := icmpv6TestFrame(source, destination, mac, icmp)
+
+	message, err := ParseNDP(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.RouterLifetime != 30*time.Minute || len(message.Prefixes) != 1 ||
+		message.Prefixes[0].Prefix.String() != "2001:db8:1::/64" || !message.Prefixes[0].OnLink || !message.Prefixes[0].Autonomous {
+		t.Fatalf("unexpected router advertisement: %#v", message)
+	}
+}
+
 func ndpTestFrame(t *testing.T, messageType uint8, source, destination, target netip.Addr, mac net.HardwareAddr) []byte {
 	t.Helper()
 	icmp := make([]byte, 32)
@@ -49,6 +75,10 @@ func ndpTestFrame(t *testing.T, messageType uint8, source, destination, target n
 	icmp[24], icmp[25] = 2, 1
 	copy(icmp[26:32], mac)
 
+	return icmpv6TestFrame(source, destination, mac, icmp)
+}
+
+func icmpv6TestFrame(source, destination netip.Addr, mac net.HardwareAddr, icmp []byte) []byte {
 	frame := make([]byte, EthernetHeaderLen+40+len(icmp))
 	copy(frame[:6], []byte{0x33, 0x33, 0, 0, 0, 1})
 	copy(frame[6:12], mac)

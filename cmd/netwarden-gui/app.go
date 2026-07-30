@@ -18,6 +18,7 @@ import (
 	appconfig "github.com/amdzy/NetWarden/internal/config"
 	"github.com/amdzy/NetWarden/internal/defense"
 	"github.com/amdzy/NetWarden/internal/device"
+	"github.com/amdzy/NetWarden/internal/discovery"
 	"github.com/amdzy/NetWarden/internal/history"
 	"github.com/amdzy/NetWarden/internal/metadata"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -49,6 +50,29 @@ type BootstrapDTO struct {
 type StatusDTO struct {
 	coreapp.Status
 	ConflictCount int `json:"ConflictCount"`
+}
+
+type IPv6NetworkDTO struct {
+	LocalAddresses []string        `json:"localAddresses"`
+	DefaultRouter  *IPv6RouterDTO  `json:"defaultRouter,omitempty"`
+	Routers        []IPv6RouterDTO `json:"routers"`
+	ConflictCount  int             `json:"conflictCount"`
+}
+
+type IPv6RouterDTO struct {
+	IP         string          `json:"ip"`
+	MAC        string          `json:"mac"`
+	ExpiresAt  time.Time       `json:"expiresAt"`
+	Preference int8            `json:"preference"`
+	Prefixes   []IPv6PrefixDTO `json:"prefixes"`
+}
+
+type IPv6PrefixDTO struct {
+	Prefix         string    `json:"prefix"`
+	OnLink         bool      `json:"onLink"`
+	Autonomous     bool      `json:"autonomous"`
+	ValidUntil     time.Time `json:"validUntil"`
+	PreferredUntil time.Time `json:"preferredUntil"`
 }
 
 type DeviceDTO struct {
@@ -253,6 +277,41 @@ func (a *GUIApp) Status() StatusDTO {
 		status.Rebuilding = true
 	}
 	return StatusDTO{Status: status, ConflictCount: len(supervisor.ConflictHistory())}
+}
+
+func (a *GUIApp) IPv6Network() IPv6NetworkDTO {
+	a.mu.RLock()
+	supervisor := a.supervisor
+	a.mu.RUnlock()
+	if supervisor == nil || supervisor.Current() == nil {
+		return IPv6NetworkDTO{}
+	}
+	context := supervisor.Current().IPv6Network()
+	result := IPv6NetworkDTO{ConflictCount: context.ConflictCount}
+	for _, address := range context.LocalAddresses {
+		result.LocalAddresses = append(result.LocalAddresses, address.String())
+	}
+	for _, router := range context.Routers {
+		item := ipv6RouterDTO(router.IP.String(), router.MAC, router.ExpiresAt, router.Preference, router.Prefixes)
+		result.Routers = append(result.Routers, item)
+	}
+	if context.DefaultRouter != nil {
+		item := ipv6RouterDTO(context.DefaultRouter.IP.String(), context.DefaultRouter.MAC,
+			context.DefaultRouter.ExpiresAt, context.DefaultRouter.Preference, context.DefaultRouter.Prefixes)
+		result.DefaultRouter = &item
+	}
+	return result
+}
+
+func ipv6RouterDTO(ip, mac string, expiresAt time.Time, preference int8, prefixes []discovery.IPv6Prefix) IPv6RouterDTO {
+	result := IPv6RouterDTO{IP: ip, MAC: mac, ExpiresAt: expiresAt, Preference: preference}
+	for _, prefix := range prefixes {
+		result.Prefixes = append(result.Prefixes, IPv6PrefixDTO{
+			Prefix: prefix.Prefix.String(), OnLink: prefix.OnLink, Autonomous: prefix.Autonomous,
+			ValidUntil: prefix.ValidUntil, PreferredUntil: prefix.PreferredUntil,
+		})
+	}
+	return result
 }
 
 func (a *GUIApp) Devices() ([]DeviceDTO, error) {
