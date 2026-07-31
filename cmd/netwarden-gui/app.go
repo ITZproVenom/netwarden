@@ -900,6 +900,8 @@ func activityFromEvent(event coreapp.Event) ActivityDTO {
 		activity.Kind, activity.Title = "control", "Continuous control stopped"
 	case coreapp.EventControlAuditFailed:
 		activity.Kind, activity.Severity, activity.Title = "control", "error", "Control audit failed"
+	case coreapp.EventBandwidthMonitoringFailed:
+		activity.Kind, activity.Severity, activity.Title = "bandwidth", "error", "Bandwidth monitor route update failed"
 	}
 	if event.Device != nil {
 		parts := make([]string, 0, 3)

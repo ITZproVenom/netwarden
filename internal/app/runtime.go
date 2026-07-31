@@ -246,6 +246,7 @@ func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*
 		return false
 	})
 	runtime.traffic = trafficmetrics.NewMonitor(runtime.bandwidth, time.Second, time.Hour)
+	runtime.traffic.RestoreState(durableHistory.Traffic, now)
 	scanner.SetObserver(runtime.handleScanEvent)
 	if pinned && gatewayMAC.String() != baselineMAC.String() {
 		monitor.ObserveGatewayClaim(gatewayMAC, now)
@@ -315,11 +316,19 @@ func (r *Runtime) RemoveBandwidthLimit(ctx context.Context, mac net.HardwareAddr
 func (r *Runtime) ClearBandwidthLimits(ctx context.Context) error { return r.bandwidth.Clear(ctx) }
 
 func (r *Runtime) StartBandwidthMonitor(ctx context.Context, target ControlTarget) error {
-	return r.bandwidth.StartMonitoring(ctx, target)
+	if err := r.bandwidth.StartMonitoring(ctx, target); err != nil {
+		return err
+	}
+	r.traffic.StartSession(target.MAC.String(), time.Now().UTC())
+	return nil
 }
 
 func (r *Runtime) StopBandwidthMonitor(ctx context.Context, mac net.HardwareAddr) error {
-	return r.bandwidth.StopMonitoring(ctx, mac)
+	if err := r.bandwidth.StopMonitoring(ctx, mac); err != nil {
+		return err
+	}
+	r.traffic.StopSession(mac.String(), time.Now().UTC())
+	return nil
 }
 
 func (r *Runtime) BandwidthTraffic(ctx context.Context) ([]shaping.DeviceTrafficStats, error) {
@@ -328,6 +337,64 @@ func (r *Runtime) BandwidthTraffic(ctx context.Context) ([]shaping.DeviceTraffic
 
 func (r *Runtime) BandwidthMeasurements() ([]trafficmetrics.DeviceSnapshot, error) {
 	return r.traffic.Snapshot()
+}
+
+type BandwidthHealth struct {
+	Forwarder     shaping.ForwarderStats
+	SamplingError string
+}
+
+func (r *Runtime) BandwidthMonitorHealth(ctx context.Context) BandwidthHealth {
+	stats, err := r.bandwidth.ForwarderStats(ctx)
+	_, sampleErr := r.traffic.Snapshot()
+	if sampleErr != nil {
+		err = sampleErr
+	}
+	return BandwidthHealth{Forwarder: stats, SamplingError: errorText(err)}
+}
+
+func (r *Runtime) BandwidthHistory(mac string, since time.Time, granularity string) []trafficmetrics.Bucket {
+	return r.traffic.History(mac, since, granularity)
+}
+
+func (r *Runtime) StartAllBandwidthMonitors(ctx context.Context) error {
+	original := make(map[string]struct{})
+	for _, target := range r.bandwidth.MonitoringSnapshot() {
+		original[target.MAC.String()] = struct{}{}
+	}
+	var started []net.HardwareAddr
+	for _, current := range r.Devices() {
+		if !current.Online || current.Role != device.RolePeer || !current.IP.Is4() {
+			continue
+		}
+		mac, err := net.ParseMAC(current.MAC)
+		if err != nil {
+			continue
+		}
+		if err := r.StartBandwidthMonitor(ctx, ControlTarget{IP: current.IP, MAC: mac}); err != nil {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			var rollbackErr error
+			for index := len(started) - 1; index >= 0; index-- {
+				rollbackErr = errors.Join(rollbackErr, r.StopBandwidthMonitor(rollbackCtx, started[index]))
+			}
+			cancel()
+			return errors.Join(fmt.Errorf("monitor all rollback after %s: %w", current.MAC, err), rollbackErr)
+		}
+		if _, existed := original[mac.String()]; !existed {
+			started = append(started, mac)
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) StopAllBandwidthMonitors(ctx context.Context) error {
+	var result error
+	for _, target := range r.bandwidth.MonitoringSnapshot() {
+		if err := r.StopBandwidthMonitor(ctx, target.MAC); err != nil {
+			result = errors.Join(result, err)
+		}
+	}
+	return result
 }
 
 func (r *Runtime) ControlCommands(auditor ControlAuditor, factory ControlControllerFactory) *ControlCommands {
@@ -434,6 +501,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 
 	first := <-workerResults
 	r.publish(Event{Kind: EventRuntimeStopping, Err: first})
+	r.traffic.StopAllSessions(time.Now().UTC())
 	cancel()
 	second := <-workerResults
 	third := <-workerResults
@@ -467,6 +535,14 @@ func (r *Runtime) forwardEvents(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case event := <-r.service.Events():
+			if event.Kind == core.EventAddressChanged {
+				reconcileCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				err := r.bandwidth.ReconcileDevice(reconcileCtx, event.Device)
+				cancel()
+				if err != nil {
+					r.publish(Event{Kind: EventBandwidthMonitoringFailed, Device: &event.Device, Err: err})
+				}
+			}
 			r.publish(eventFromCore(event))
 			r.schedulePersist()
 		case event := <-r.monitor.Events():
@@ -482,6 +558,8 @@ func (r *Runtime) forwardEvents(ctx context.Context) {
 					GatewayIP: event.RouterIP, ExpectedMAC: event.ExpectedMAC, ClaimedMAC: event.ClaimedMAC,
 					Baseline: defense.BaselineLearned}))
 			}
+			r.schedulePersist()
+		case <-r.traffic.Changes():
 			r.schedulePersist()
 		}
 	}
@@ -515,7 +593,7 @@ func (r *Runtime) persistHistory(ctx context.Context) {
 	var timer *time.Timer
 	var timerC <-chan time.Time
 	flush := func() {
-		snapshot := history.Snapshot{Devices: r.Devices(), Conflicts: r.ConflictHistory(), IPv6Routers: r.ipv6.State()}
+		snapshot := history.Snapshot{Devices: r.Devices(), Conflicts: r.ConflictHistory(), IPv6Routers: r.ipv6.State(), Traffic: r.traffic.State()}
 		snapshot = history.Prune(snapshot, time.Now().UTC().Add(-r.config.HistoryRetention))
 		err := r.history.Save(snapshot)
 		r.mu.Lock()

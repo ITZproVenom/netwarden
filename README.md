@@ -78,11 +78,14 @@ network and may vary between routers, switches, and devices.
 
 Start monitoring an eligible IPv4 device from the Bandwidth view to route its
 traffic through NetWarden without applying a speed limit. The view derives live
-rates, totals, peaks, and up to one hour of in-memory history from aggregate
-forwarding counters. Monitoring routes are temporary and are restored when
-monitoring stops or NetWarden shuts down. IPv6 traffic classification and
-accounting are implemented, while IPv6 interception remains unavailable until
-the NDP redirection lifecycle is completed.
+rates, session totals, peaks, and recent activity from aggregate forwarding
+counters. Usage is compacted into persistent minute, hour, and day buckets for
+hour/day/week/month views. Monitor-all rolls back newly installed routes if any
+device fails, monitored IPv4 routes follow address changes, and forwarding
+drops or sampling failures appear as health warnings. Monitoring routes remain
+temporary and are restored when monitoring stops or NetWarden shuts down. IPv6
+traffic classification and accounting are implemented, while IPv6 interception
+remains unavailable until the NDP redirection lifecycle is completed.
 
 ## IPv6 support
 

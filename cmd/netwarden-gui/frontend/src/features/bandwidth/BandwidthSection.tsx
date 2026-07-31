@@ -9,20 +9,27 @@ import { useRemoveBandwidthLimit, useSetBandwidthLimit } from "./bandwidth.queri
 import { displayMbps } from "./format"
 import { bandwidthValidation, parseMbps } from "./validation"
 import { isControlEligible } from "@/features/devices/device-list"
+import { useStartBandwidthMonitor, useStopBandwidthMonitor } from "./monitor.queries"
 
 export function BandwidthSection({
   device,
   limit,
   available,
+  monitoringAvailable,
+  monitored,
 }: {
   device: Device
   limit?: BandwidthLimit
   available: boolean
+  monitoringAvailable: boolean
+  monitored: boolean
 }) {
   const [download, setDownload] = useState("")
   const [upload, setUpload] = useState("")
   const setLimit = useSetBandwidthLimit()
   const removeLimit = useRemoveBandwidthLimit()
+  const startMonitor = useStartBandwidthMonitor()
+  const stopMonitor = useStopBandwidthMonitor()
   useEffect(() => {
     setDownload(limit?.downloadBitsPerSecond ? displayMbps(limit.downloadBitsPerSecond) : "")
     setUpload(limit?.uploadBitsPerSecond ? displayMbps(limit.uploadBitsPerSecond) : "")
@@ -43,6 +50,10 @@ export function BandwidthSection({
           : "Set either direction to 0 to leave it unlimited."
   return (
     <section className="space-y-4 py-6">
+      <div className="flex items-center justify-between gap-3 rounded-lg border bg-background/30 p-3">
+        <div><h4 className="text-xs font-semibold">Traffic monitoring</h4><p className="mt-1 text-xs text-muted-foreground">Measure live rates, totals, peaks, and history.</p></div>
+        {monitored ? <Button size="sm" variant="outline" disabled={Boolean(limit) || stopMonitor.isPending} onClick={() => stopMonitor.mutate(device.mac)}><RotateCcw /> Stop</Button> : <Button size="sm" variant="outline" disabled={!monitoringAvailable || !isControlEligible(device) || startMonitor.isPending} onClick={() => startMonitor.mutate({ip: device.ip, mac: device.mac})}><Gauge /> Start</Button>}
+      </div>
       <div className="flex items-center justify-between gap-3">
         <div>
           <h4 className="text-xs font-semibold">Bandwidth limit</h4>

@@ -214,6 +214,14 @@ func (d *Driver) BandwidthTraffic(ctx context.Context) ([]shaping.DeviceTrafficS
 	return response.Traffic, err
 }
 
+func (d *Driver) BandwidthForwarderStats(ctx context.Context) (shaping.ForwarderStats, error) {
+	response, err := d.request(ctx, helper.Message{Type: "shape_traffic"})
+	if err != nil || response.Forwarder == nil {
+		return shaping.ForwarderStats{}, err
+	}
+	return *response.Forwarder, nil
+}
+
 func (d *Driver) request(ctx context.Context, command helper.Message) (helper.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return helper.Message{}, err

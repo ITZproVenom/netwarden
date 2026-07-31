@@ -128,4 +128,6 @@ export type BandwidthMeasurement = {
   peakDownloadAt?: string
   history: BandwidthHistoryPoint[]
 }
+export type BandwidthBucket = { start: string; uploadBytes: number; downloadBytes: number; peakUploadBPS: number; peakDownloadBPS: number }
+export type BandwidthHealth = { queueDrops: number; canceledDrops: number; sendErrors: number; unmanagedFrames: number; samplingError?: string }
 export type AppInfo = { name: string; version: string; build: string }

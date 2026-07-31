@@ -1,9 +1,12 @@
 import { ArrowDown, ArrowUp, Gauge, LoaderCircle, Play, Square } from "lucide-react"
 import type { ReactNode } from "react"
+import { useEffect, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { useDevices } from "@/features/devices/devices.queries"
 import { isControlEligible } from "@/features/devices/device-list"
 import { useRuntimeStatus } from "@/features/monitoring/monitoring.queries"
@@ -13,6 +16,10 @@ import {
   useBandwidthMonitors,
   useStartBandwidthMonitor,
   useStopBandwidthMonitor,
+  useBandwidthHealth,
+  useBandwidthHistory,
+  useStartAllBandwidthMonitors,
+  useStopAllBandwidthMonitors,
 } from "./monitor.queries"
 import { useBandwidthLimits } from "./bandwidth.queries"
 import { formatBytes, formatRate } from "./monitor-format"
@@ -27,6 +34,11 @@ export function BandwidthMonitorView() {
   const { data: limits = [] } = useBandwidthLimits()
   const start = useStartBandwidthMonitor()
   const stop = useStopBandwidthMonitor()
+  const startAll = useStartAllBandwidthMonitors()
+  const stopAll = useStopAllBandwidthMonitors()
+  const { data: health } = useBandwidthHealth(available)
+  const [historyRange, setHistoryRange] = useState("hour")
+  const [historyMAC, setHistoryMAC] = useState("")
   const monitored = new Set(monitors.map((target) => target.mac.toLowerCase()))
   const limited = new Set(limits.map((target) => target.mac.toLowerCase()))
   const measurementByMAC = new Map(measurements.map((item) => [item.mac.toLowerCase(), item]))
@@ -36,6 +48,8 @@ export function BandwidthMonitorView() {
     .sort((left, right) => totalRate(right.measurement) - totalRate(left.measurement))
   const active = rows.filter((row) => monitored.has(row.device.mac.toLowerCase()))
   const busiest = active[0]
+  useEffect(() => { if (!historyMAC && busiest) setHistoryMAC(busiest.device.mac) }, [historyMAC, busiest])
+  const { data: bucketHistory = [] } = useBandwidthHistory(historyMAC, historyRange, available)
   const totals = active.reduce(
     (sum, row) => ({ upload: sum.upload + (row.measurement?.uploadBPS || 0), download: sum.download + (row.measurement?.downloadBPS || 0) }),
     { upload: 0, download: 0 },
@@ -53,13 +67,22 @@ export function BandwidthMonitorView() {
         <MetricCard label="Current upload" value={formatRate(totals.upload)} icon={<ArrowUp />} />
         <MetricCard label="Highest current usage" value={busiest ? busiest.device.name : "None"} icon={<Gauge />} />
       </div>
+      {(health?.samplingError || health?.queueDrops || health?.sendErrors) ? (
+        <Alert variant="destructive"><Gauge /><AlertTitle>Bandwidth monitor health warning</AlertTitle><AlertDescription>
+          {health.samplingError || `${health.queueDrops} queued packets dropped · ${health.sendErrors} forwarding errors`}
+        </AlertDescription></Alert>
+      ) : null}
       <Card className="overflow-hidden bg-card/60">
         <CardHeader className="flex-row items-center justify-between border-b">
           <div>
             <CardTitle>Devices</CardTitle>
             <CardDescription>Monitoring routes remain active only while NetWarden is running.</CardDescription>
           </div>
-          <Badge variant={available ? "outline" : "secondary"}>{available ? `${monitors.length} monitored` : "Unavailable"}</Badge>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" disabled={!available || startAll.isPending} onClick={() => startAll.mutate()}><Play /> Monitor all</Button>
+            <Button size="sm" variant="outline" disabled={!monitors.length || stopAll.isPending || limits.length > 0} onClick={() => stopAll.mutate()}><Square /> Stop all</Button>
+            <Badge variant={available ? "outline" : "secondary"}>{available ? `${monitors.length} monitored` : "Unavailable"}</Badge>
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
@@ -96,8 +119,22 @@ export function BandwidthMonitorView() {
           </div>
         </CardContent>
       </Card>
+      <Card className="bg-card/60">
+        <CardHeader className="flex-row items-center justify-between"><div><CardTitle>Usage history</CardTitle><CardDescription>Persistent compact usage buckets</CardDescription></div>
+          <div className="flex gap-2"><NativeSelect value={historyMAC} onChange={(event) => setHistoryMAC(event.target.value)}>{rows.map(({device}) => <NativeSelectOption key={device.mac} value={device.mac}>{device.name}</NativeSelectOption>)}</NativeSelect>
+          <NativeSelect value={historyRange} onChange={(event) => setHistoryRange(event.target.value)}><NativeSelectOption value="hour">Last hour</NativeSelectOption><NativeSelectOption value="day">Last day</NativeSelectOption><NativeSelectOption value="week">Last week</NativeSelectOption><NativeSelectOption value="month">Last month</NativeSelectOption></NativeSelect></div>
+        </CardHeader>
+        <CardContent><HistoryBars buckets={bucketHistory} /></CardContent>
+      </Card>
     </section>
   )
+}
+
+function HistoryBars({ buckets }: { buckets: Array<{ start: string; uploadBytes: number; downloadBytes: number }> }) {
+  const points = buckets.slice(-96)
+  const maximum = Math.max(1, ...points.map((point) => point.uploadBytes + point.downloadBytes))
+  if (!points.length) return <p className="py-8 text-center text-xs text-muted-foreground">No usage recorded for this range.</p>
+  return <div className="flex h-40 items-end gap-px" aria-label="Historical bandwidth usage">{points.map((point) => <div key={point.start} title={`${new Date(point.start).toLocaleString()} · ${formatBytes(point.uploadBytes + point.downloadBytes)}`} className="min-w-0 flex-1 rounded-t-sm bg-primary/70" style={{height: `${Math.max(2, ((point.uploadBytes + point.downloadBytes) / maximum) * 100)}%`}} />)}</div>
 }
 
 function MetricCard({ label, value, icon }: { label: string; value: string; icon: ReactNode }) {

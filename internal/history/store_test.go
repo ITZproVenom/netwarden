@@ -11,6 +11,7 @@ import (
 	"github.com/amdzy/NetWarden/internal/defense"
 	"github.com/amdzy/NetWarden/internal/device"
 	"github.com/amdzy/NetWarden/internal/discovery"
+	trafficmetrics "github.com/amdzy/NetWarden/internal/traffic"
 )
 
 func TestStoreRoundTripsSnapshot(t *testing.T) {
@@ -23,6 +24,8 @@ func TestStoreRoundTripsSnapshot(t *testing.T) {
 			Baselines: []discovery.IPv6RouterIdentity{{RouterIP: netip.MustParseAddr("fe80::1"), MAC: "02:00:00:00:00:01"}},
 			Conflicts: []discovery.IPv6RouterConflict{{RouterIP: netip.MustParseAddr("fe80::1"), ExpectedMAC: "02:00:00:00:00:01", ClaimedMAC: "02:00:00:00:00:99", FirstSeen: now, LastSeen: now, Count: 2, Active: true}},
 		},
+		Traffic: trafficmetrics.State{Sessions: []trafficmetrics.Session{{ID: "session-1", MAC: "02:00:00:00:00:20", StartedAt: now, EndedAt: now.Add(time.Minute), UploadBytes: 100}},
+			Buckets: []trafficmetrics.Bucket{{MAC: "02:00:00:00:00:20", Granularity: "minute", Start: now, UploadBytes: 100}}},
 	}
 	if err := store.Save(want); err != nil {
 		t.Fatal(err)
@@ -31,7 +34,7 @@ func TestStoreRoundTripsSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Devices) != 1 || got.Devices[0].MAC != want.Devices[0].MAC || len(got.Conflicts) != 1 || got.Conflicts[0].Count != 2 || len(got.IPv6Routers.Baselines) != 1 || len(got.IPv6Routers.Conflicts) != 1 {
+	if len(got.Devices) != 1 || got.Devices[0].MAC != want.Devices[0].MAC || len(got.Conflicts) != 1 || got.Conflicts[0].Count != 2 || len(got.IPv6Routers.Baselines) != 1 || len(got.IPv6Routers.Conflicts) != 1 || len(got.Traffic.Sessions) != 1 || len(got.Traffic.Buckets) != 1 {
 		t.Fatalf("unexpected snapshot: %#v", got)
 	}
 }

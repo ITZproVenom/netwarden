@@ -28,6 +28,7 @@ func TestMonitorDerivesRatesPeaksAndHistory(t *testing.T) {
 	}}
 	monitor := NewMonitor(provider, time.Second, time.Hour)
 	start := time.Now().UTC()
+	monitor.StartSession("02:00:00:00:00:20", start)
 	monitor.sample(context.Background(), start)
 	monitor.sample(context.Background(), start.Add(time.Second))
 	snapshot, err := monitor.Snapshot()
@@ -44,10 +45,33 @@ func TestMonitorHandlesCounterResetWithoutUnderflow(t *testing.T) {
 	}}
 	monitor := NewMonitor(provider, time.Second, time.Hour)
 	start := time.Now().UTC()
+	monitor.StartSession("02:00:00:00:00:20", start)
 	monitor.sample(context.Background(), start)
 	monitor.sample(context.Background(), start.Add(time.Second))
 	snapshot, _ := monitor.Snapshot()
 	if snapshot[0].UploadBPS != 0 || snapshot[0].History[0].UploadBytes != 0 {
 		t.Fatalf("counter reset underflowed: %#v", snapshot[0])
+	}
+}
+
+func TestMonitorPersistsSessionsAndCompactedBuckets(t *testing.T) {
+	provider := &sequenceProvider{values: [][]shaping.DeviceTrafficStats{
+		{{MAC: "02:00:00:00:00:20", UploadBytes: 100}},
+		{{MAC: "02:00:00:00:00:20", UploadBytes: 700, DownloadBytes: 400}},
+	}}
+	monitor := NewMonitor(provider, time.Second, time.Hour)
+	start := time.Date(2026, 7, 31, 10, 0, 0, 0, time.UTC)
+	monitor.StartSession("02:00:00:00:00:20", start)
+	monitor.sample(context.Background(), start)
+	monitor.sample(context.Background(), start.Add(time.Second))
+	monitor.StopSession("02:00:00:00:00:20", start.Add(2*time.Second))
+	state := monitor.State()
+	if len(state.Sessions) != 1 || state.Sessions[0].UploadBytes != 600 || state.Sessions[0].DownloadBytes != 400 || len(state.Buckets) != 3 {
+		t.Fatalf("unexpected persistent state: %#v", state)
+	}
+	restored := NewMonitor(provider, time.Second, time.Hour)
+	restored.RestoreState(state, start.Add(time.Hour))
+	if history := restored.History("02:00:00:00:00:20", start, "minute"); len(history) != 1 || history[0].UploadBytes != 600 {
+		t.Fatalf("unexpected restored history: %#v", history)
 	}
 }

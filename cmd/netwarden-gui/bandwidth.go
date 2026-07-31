@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -10,6 +11,7 @@ import (
 
 	coreapp "github.com/amdzy/NetWarden/internal/app"
 	"github.com/amdzy/NetWarden/internal/shaping"
+	trafficmetrics "github.com/amdzy/NetWarden/internal/traffic"
 )
 
 type BandwidthLimitDTO struct {
@@ -67,6 +69,22 @@ type BandwidthHistoryPointDTO struct {
 	DownloadBytes uint64    `json:"downloadBytes"`
 	UploadBPS     uint64    `json:"uploadBPS"`
 	DownloadBPS   uint64    `json:"downloadBPS"`
+}
+
+type BandwidthBucketDTO struct {
+	Start           time.Time `json:"start"`
+	UploadBytes     uint64    `json:"uploadBytes"`
+	DownloadBytes   uint64    `json:"downloadBytes"`
+	PeakUploadBPS   uint64    `json:"peakUploadBPS"`
+	PeakDownloadBPS uint64    `json:"peakDownloadBPS"`
+}
+
+type BandwidthHealthDTO struct {
+	QueueDrops      uint64 `json:"queueDrops"`
+	CanceledDrops   uint64 `json:"canceledDrops"`
+	SendErrors      uint64 `json:"sendErrors"`
+	UnmanagedFrames uint64 `json:"unmanagedFrames"`
+	SamplingError   string `json:"samplingError,omitempty"`
 }
 
 func (a *GUIApp) BandwidthLimits() ([]BandwidthLimitDTO, error) {
@@ -177,6 +195,30 @@ func (a *GUIApp) StopBandwidthMonitor(macText string) error {
 	return err
 }
 
+func (a *GUIApp) StartAllBandwidthMonitors() error {
+	runtime, err := a.activeRuntime()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
+	defer cancel()
+	err = runtime.StartAllBandwidthMonitors(ctx)
+	a.logBandwidthResult("monitor_start_all", "", "", err)
+	return err
+}
+
+func (a *GUIApp) StopAllBandwidthMonitors() error {
+	runtime, err := a.activeRuntime()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
+	defer cancel()
+	err = runtime.StopAllBandwidthMonitors(ctx)
+	a.logBandwidthResult("monitor_stop_all", "", "", err)
+	return err
+}
+
 func (a *GUIApp) BandwidthTraffic() ([]BandwidthTrafficDTO, error) {
 	runtime, err := a.activeRuntime()
 	if err != nil {
@@ -218,6 +260,61 @@ func (a *GUIApp) BandwidthMeasurements() ([]BandwidthMeasurementDTO, error) {
 		result = append(result, item)
 	}
 	return result, nil
+}
+
+func (a *GUIApp) BandwidthHistory(macText, rangeText string) ([]BandwidthBucketDTO, error) {
+	mac, err := net.ParseMAC(macText)
+	if err != nil {
+		return nil, fmt.Errorf("parse target MAC: %w", err)
+	}
+	now := time.Now().UTC()
+	var since time.Time
+	granularity := "minute"
+	switch rangeText {
+	case "hour":
+		since = now.Add(-time.Hour)
+	case "day":
+		since, granularity = now.Add(-24*time.Hour), "hour"
+	case "week":
+		since, granularity = now.Add(-7*24*time.Hour), "hour"
+	case "month":
+		since, granularity = now.Add(-31*24*time.Hour), "day"
+	default:
+		return nil, errors.New("history range must be hour, day, week, or month")
+	}
+	a.mu.RLock()
+	supervisor := a.supervisor
+	a.mu.RUnlock()
+	var buckets []trafficmetrics.Bucket
+	if supervisor != nil && supervisor.Current() != nil {
+		buckets = supervisor.Current().BandwidthHistory(mac.String(), since, granularity)
+	} else if snapshot, loadErr := loadHistorySnapshot(); loadErr == nil {
+		for _, bucket := range snapshot.Traffic.Buckets {
+			if bucket.MAC == mac.String() && bucket.Granularity == granularity && !bucket.Start.Before(since) {
+				buckets = append(buckets, bucket)
+			}
+		}
+	} else {
+		return nil, loadErr
+	}
+	result := make([]BandwidthBucketDTO, 0, len(buckets))
+	for _, bucket := range buckets {
+		result = append(result, BandwidthBucketDTO{Start: bucket.Start, UploadBytes: bucket.UploadBytes,
+			DownloadBytes: bucket.DownloadBytes, PeakUploadBPS: bucket.PeakUploadBPS, PeakDownloadBPS: bucket.PeakDownloadBPS})
+	}
+	return result, nil
+}
+
+func (a *GUIApp) BandwidthMonitorHealth() (BandwidthHealthDTO, error) {
+	runtime, err := a.activeRuntime()
+	if err != nil {
+		return BandwidthHealthDTO{}, err
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 5*time.Second)
+	defer cancel()
+	health := runtime.BandwidthMonitorHealth(ctx)
+	return BandwidthHealthDTO{QueueDrops: health.Forwarder.QueueDrops, CanceledDrops: health.Forwarder.CanceledDrops,
+		SendErrors: health.Forwarder.SendErrors, UnmanagedFrames: health.Forwarder.UnmanagedFrames, SamplingError: health.SamplingError}, nil
 }
 
 func (a *GUIApp) activeRuntime() (*coreapp.Runtime, error) {

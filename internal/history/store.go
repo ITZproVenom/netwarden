@@ -15,6 +15,7 @@ import (
 	"github.com/amdzy/NetWarden/internal/defense"
 	"github.com/amdzy/NetWarden/internal/device"
 	"github.com/amdzy/NetWarden/internal/discovery"
+	trafficmetrics "github.com/amdzy/NetWarden/internal/traffic"
 )
 
 const CurrentVersion = 1
@@ -26,6 +27,7 @@ type Snapshot struct {
 	Devices     []device.Device           `json:"devices,omitempty"`
 	Conflicts   []defense.Conflict        `json:"gateway_conflicts,omitempty"`
 	IPv6Routers discovery.IPv6RouterState `json:"ipv6_routers,omitempty"`
+	Traffic     trafficmetrics.State      `json:"traffic,omitempty"`
 }
 
 type Store struct {
@@ -171,6 +173,7 @@ func Prune(snapshot Snapshot, before time.Time) Snapshot {
 		}
 	}
 	snapshot.IPv6Routers.Conflicts = ipv6Conflicts
+	snapshot.Traffic = trafficmetrics.PruneState(snapshot.Traffic, before)
 	return snapshot
 }
 

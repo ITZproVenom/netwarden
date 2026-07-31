@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/amdzy/NetWarden/internal/device"
 	"github.com/amdzy/NetWarden/internal/shaping"
@@ -29,6 +30,7 @@ type BandwidthMonitorController interface {
 	StartBandwidthMonitor(context.Context, netip.Addr, net.HardwareAddr) error
 	StopBandwidthMonitor(context.Context, netip.Addr, net.HardwareAddr) error
 	BandwidthTraffic(context.Context) ([]shaping.DeviceTrafficStats, error)
+	BandwidthForwarderStats(context.Context) (shaping.ForwarderStats, error)
 }
 
 type BandwidthTarget struct {
@@ -215,6 +217,53 @@ func (s *BandwidthService) MonitoringSnapshot() []BandwidthTarget {
 	return result
 }
 
+func (s *BandwidthService) ReconcileDevice(ctx context.Context, current device.Device) error {
+	mac, err := net.ParseMAC(current.MAC)
+	if err != nil || !current.Online || current.Role != device.RolePeer || !current.IP.Is4() {
+		return nil
+	}
+	key, _ := bandwidthMACKey(mac)
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	s.mu.RLock()
+	monitored, isMonitored := s.monitored[key]
+	limited, isLimited := s.active[key]
+	s.mu.RUnlock()
+	if !isMonitored || monitored.IP == current.IP {
+		return nil
+	}
+	if isLimited {
+		if err := s.controller.RemoveBandwidthLimit(ctx, limited.IP, limited.MAC); err != nil {
+			return fmt.Errorf("restore old monitored address: %w", err)
+		}
+		if err := s.controller.SetBandwidthLimit(ctx, current.IP, mac, limited.Policy); err != nil {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			rollbackErr := s.controller.SetBandwidthLimit(rollbackCtx, limited.IP, limited.MAC, limited.Policy)
+			cancel()
+			return errors.Join(fmt.Errorf("move bandwidth limit to new address: %w", err), rollbackErr)
+		}
+		limited.IP = current.IP
+		s.mu.Lock()
+		s.active[key] = limited
+		s.mu.Unlock()
+	} else {
+		if err := s.monitor.StopBandwidthMonitor(ctx, monitored.IP, monitored.MAC); err != nil {
+			return fmt.Errorf("restore old monitored address: %w", err)
+		}
+		if err := s.monitor.StartBandwidthMonitor(ctx, current.IP, mac); err != nil {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			rollbackErr := s.monitor.StartBandwidthMonitor(rollbackCtx, monitored.IP, monitored.MAC)
+			cancel()
+			return errors.Join(fmt.Errorf("move bandwidth monitor to new address: %w", err), rollbackErr)
+		}
+	}
+	monitored.IP = current.IP
+	s.mu.Lock()
+	s.monitored[key] = monitored
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *BandwidthService) Traffic(ctx context.Context) ([]shaping.DeviceTrafficStats, error) {
 	if !s.MonitoringAvailable() {
 		return nil, ErrBandwidthMonitoringUnavailable
@@ -224,6 +273,13 @@ func (s *BandwidthService) Traffic(ctx context.Context) ([]shaping.DeviceTraffic
 
 func (s *BandwidthService) BandwidthTraffic(ctx context.Context) ([]shaping.DeviceTrafficStats, error) {
 	return s.Traffic(ctx)
+}
+
+func (s *BandwidthService) ForwarderStats(ctx context.Context) (shaping.ForwarderStats, error) {
+	if !s.MonitoringAvailable() {
+		return shaping.ForwarderStats{}, ErrBandwidthMonitoringUnavailable
+	}
+	return s.monitor.BandwidthForwarderStats(ctx)
 }
 
 func (s *BandwidthService) Clear(ctx context.Context) error {

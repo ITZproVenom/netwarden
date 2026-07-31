@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"sync"
@@ -11,19 +12,28 @@ import (
 
 	"github.com/amdzy/NetWarden/internal/device"
 	"github.com/amdzy/NetWarden/internal/shaping"
+	trafficmetrics "github.com/amdzy/NetWarden/internal/traffic"
 )
 
 type recordingBandwidthController struct {
-	mu        sync.Mutex
-	set       []BandwidthTarget
-	removed   []BandwidthTarget
-	setErr    error
-	remErr    error
-	monitored []BandwidthTarget
-	stopped   []BandwidthTarget
+	mu            sync.Mutex
+	set           []BandwidthTarget
+	removed       []BandwidthTarget
+	setErr        error
+	remErr        error
+	monitored     []BandwidthTarget
+	stopped       []BandwidthTarget
+	monitorErr    error
+	failMonitorIP netip.Addr
 }
 
 func (c *recordingBandwidthController) StartBandwidthMonitor(_ context.Context, ip netip.Addr, mac net.HardwareAddr) error {
+	if c.monitorErr != nil {
+		return c.monitorErr
+	}
+	if c.failMonitorIP.IsValid() && ip == c.failMonitorIP {
+		return errors.New("monitor failed")
+	}
 	c.monitored = append(c.monitored, BandwidthTarget{IP: ip, MAC: append(net.HardwareAddr(nil), mac...)})
 	return nil
 }
@@ -35,6 +45,10 @@ func (c *recordingBandwidthController) StopBandwidthMonitor(_ context.Context, i
 
 func (c *recordingBandwidthController) BandwidthTraffic(context.Context) ([]shaping.DeviceTrafficStats, error) {
 	return []shaping.DeviceTrafficStats{{MAC: "02:00:00:00:00:20", UploadBytes: 42}}, nil
+}
+
+func (c *recordingBandwidthController) BandwidthForwarderStats(context.Context) (shaping.ForwarderStats, error) {
+	return shaping.ForwarderStats{}, nil
 }
 
 func (c *recordingBandwidthController) SetBandwidthLimit(_ context.Context, ip netip.Addr, mac net.HardwareAddr, policy shaping.Policy) error {
@@ -135,6 +149,46 @@ func TestBandwidthServicePreservesMonitoringAcrossLimitLifecycle(t *testing.T) {
 	}
 	if err := service.StopMonitoring(context.Background(), target.MAC); err != nil || len(controller.stopped) != 1 {
 		t.Fatalf("stop monitor: %v calls=%#v", err, controller.stopped)
+	}
+}
+
+func TestBandwidthServiceReconcilesMonitoredIPv4Address(t *testing.T) {
+	registry, target := bandwidthRegistry(t)
+	controller := &recordingBandwidthController{}
+	service := NewBandwidthService(controller, registry, nil)
+	if err := service.StartMonitoring(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	newIP := netip.MustParseAddr("192.168.1.21")
+	updated, _, err := registry.Observe(device.Observation{IP: newIP, MAC: target.MAC, SeenAt: time.Now().Add(time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ReconcileDevice(context.Background(), updated); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := service.MonitoringSnapshot()
+	if len(snapshot) != 1 || snapshot[0].IP != newIP || len(controller.stopped) != 1 || len(controller.monitored) != 2 {
+		t.Fatalf("snapshot=%#v stopped=%#v monitored=%#v", snapshot, controller.stopped, controller.monitored)
+	}
+}
+
+func TestRuntimeMonitorAllRollsBackNewRoutesOnFailure(t *testing.T) {
+	registry := device.NewRegistry()
+	for index, ipText := range []string{"192.168.1.20", "192.168.1.21"} {
+		mac, _ := net.ParseMAC(fmt.Sprintf("02:00:00:00:00:%02x", index+20))
+		if _, _, err := registry.Observe(device.Observation{IP: netip.MustParseAddr(ipText), MAC: mac, SeenAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	controller := &recordingBandwidthController{failMonitorIP: netip.MustParseAddr("192.168.1.21")}
+	service := NewBandwidthService(controller, registry, nil)
+	runtime := &Runtime{registry: registry, bandwidth: service, traffic: trafficmetrics.NewMonitor(service, time.Second, time.Hour)}
+	if err := runtime.StartAllBandwidthMonitors(context.Background()); err == nil {
+		t.Fatal("expected batch failure")
+	}
+	if len(service.MonitoringSnapshot()) != 0 || len(controller.stopped) != 1 {
+		t.Fatalf("batch rollback failed: active=%#v stopped=%#v", service.MonitoringSnapshot(), controller.stopped)
 	}
 }
 

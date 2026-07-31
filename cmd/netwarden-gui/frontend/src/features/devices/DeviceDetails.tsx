@@ -67,11 +67,15 @@ export function DeviceDetails({
   device,
   bandwidthLimit,
   bandwidthAvailable,
+  bandwidthMonitoringAvailable,
+  bandwidthMonitored,
   onClose,
 }: {
   device?: Device
   bandwidthLimit?: BandwidthLimit
   bandwidthAvailable: boolean
+  bandwidthMonitoringAvailable: boolean
+  bandwidthMonitored: boolean
   onClose: () => void
 }) {
   const [nickname, setNickname] = useState("")
@@ -124,7 +128,7 @@ export function DeviceDetails({
             <Separator />
             <ControlSection device={device} bandwidthLimited={Boolean(bandwidthLimit)} />
             <Separator />
-            <BandwidthSection device={device} limit={bandwidthLimit} available={bandwidthAvailable} />
+            <BandwidthSection device={device} limit={bandwidthLimit} available={bandwidthAvailable} monitoringAvailable={bandwidthMonitoringAvailable} monitored={bandwidthMonitored} />
             <Separator />
             <section className="py-6">
               <h4 className="mb-3 text-xs font-semibold">Observation history</h4>

@@ -17,6 +17,12 @@ export const useBandwidthMeasurements = (enabled: boolean) =>
     refetchInterval: enabled ? 1000 : false,
   })
 
+export const useBandwidthHealth = (enabled: boolean) => useQuery({ queryKey: queryKeys.bandwidthHealth, queryFn: wailsClient.bandwidthMonitorHealth, enabled, retry: false, refetchInterval: enabled ? 5000 : false })
+
+export const useBandwidthHistory = (mac: string, range: string, enabled: boolean) => useQuery({
+  queryKey: queryKeys.bandwidthHistory(mac, range), queryFn: () => wailsClient.bandwidthHistory(mac, range), enabled: enabled && Boolean(mac), retry: false,
+})
+
 export function useStartBandwidthMonitor() {
   const client = useQueryClient()
   return useMutation({
@@ -55,4 +61,18 @@ export function useStopBandwidthMonitor() {
       announce(`Could not stop bandwidth monitoring. ${message}`, "assertive")
     },
   })
+}
+
+export function useStartAllBandwidthMonitors() {
+  const client = useQueryClient()
+  return useMutation({ mutationFn: wailsClient.startAllBandwidthMonitors, onSuccess: async () => {
+    await client.invalidateQueries({ queryKey: queryKeys.runtime }); toast.success("Monitoring started for all eligible devices")
+  }, onError: (error) => toast.error("Could not monitor all devices", { description: errorMessage(error) }) })
+}
+
+export function useStopAllBandwidthMonitors() {
+  const client = useQueryClient()
+  return useMutation({ mutationFn: wailsClient.stopAllBandwidthMonitors, onSuccess: async () => {
+    await client.invalidateQueries({ queryKey: queryKeys.runtime }); toast.success("All available monitoring routes stopped")
+  }, onError: (error) => toast.error("Could not stop all monitors", { description: errorMessage(error) }) })
 }

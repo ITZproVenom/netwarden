@@ -5,6 +5,7 @@ import { QueryError } from "@/components/QueryError"
 import { useDisconnectSelectedDevices, useRestoreAllControls } from "@/features/control/control.queries"
 import { MonitoringOverview } from "@/features/monitoring/MonitoringOverview"
 import { useBandwidthLimits, useClearBandwidthLimits } from "@/features/bandwidth/bandwidth.queries"
+import { useBandwidthMonitors } from "@/features/bandwidth/monitor.queries"
 import { useRuntimeStatus } from "@/features/monitoring/monitoring.queries"
 import type { Device } from "@/lib/wails/types"
 import { BulkProgress } from "./DeviceBulkActions"
@@ -18,6 +19,7 @@ export function DevicesView() {
   const { data: devices = [], isLoading, error, refetch } = useDevices()
   const { data: bandwidthLimits = [] } = useBandwidthLimits()
   const { data: runtimeStatus } = useRuntimeStatus()
+  const { data: bandwidthMonitors = [] } = useBandwidthMonitors(Boolean(runtimeStatus?.BandwidthMonitoringAvailable && runtimeStatus?.Running))
   const clearBandwidth = useClearBandwidthLimits()
   const [preferences, setPreferences] = useState<DevicePreferences>(defaultDevicePreferences)
   const [detailsMAC, setDetailsMAC] = useState("")
@@ -148,6 +150,8 @@ export function DevicesView() {
         device={selected}
         bandwidthLimit={selected ? bandwidthByMAC.get(selected.mac.toLowerCase()) : undefined}
         bandwidthAvailable={Boolean(runtimeStatus?.BandwidthAvailable)}
+        bandwidthMonitoringAvailable={Boolean(runtimeStatus?.BandwidthMonitoringAvailable)}
+        bandwidthMonitored={Boolean(selected && bandwidthMonitors.some((target) => target.mac.toLowerCase() === selected.mac.toLowerCase()))}
         onClose={closeDetails}
       />
     </>

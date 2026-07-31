@@ -29,6 +29,7 @@ type Message struct {
 	TargetMAC  string                       `json:"target_mac,omitempty"`
 	Policy     *shaping.Policy              `json:"policy,omitempty"`
 	Traffic    []shaping.DeviceTrafficStats `json:"traffic,omitempty"`
+	Forwarder  *shaping.ForwarderStats      `json:"forwarder,omitempty"`
 }
 
 // Serve exposes filtered capture and only tightly scoped discovery, isolation,
@@ -116,7 +117,8 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 				_ = write(Message{Type: "error", Error: "bandwidth traffic request requires a request ID"})
 				continue
 			}
-			if err := write(Message{Type: "result", RequestID: command.RequestID, Traffic: bandwidth.forwarder.DeviceTraffic()}); err != nil {
+			stats := bandwidth.forwarder.Stats()
+			if err := write(Message{Type: "result", RequestID: command.RequestID, Traffic: bandwidth.forwarder.DeviceTraffic(), Forwarder: &stats}); err != nil {
 				return err
 			}
 		case "close":
