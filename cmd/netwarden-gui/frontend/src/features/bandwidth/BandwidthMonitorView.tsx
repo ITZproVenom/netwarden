@@ -1,6 +1,6 @@
 import { ArrowDown, ArrowUp, Gauge, LoaderCircle, Play, Square } from "lucide-react"
 import type { ReactNode } from "react"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -37,22 +37,11 @@ export function BandwidthMonitorView() {
   const startAll = useStartAllBandwidthMonitors()
   const stopAll = useStopAllBandwidthMonitors()
   const { data: health } = useBandwidthHealth(available)
-	const previousHealth = useRef<typeof health>(undefined)
-	const [recentDrops, setRecentDrops] = useState<{ count: number; seconds: number }>()
   const [historyRange, setHistoryRange] = useState("hour")
   const [historyMAC, setHistoryMAC] = useState("")
   const monitored = new Set(monitors.map((target) => target.mac.toLowerCase()))
   const limited = new Set(limits.map((target) => target.mac.toLowerCase()))
   const measurementByMAC = new Map(measurements.map((item) => [item.mac.toLowerCase(), item]))
-	useEffect(() => {
-		if (!health) return
-		const previous = previousHealth.current
-		if (previous) {
-			const seconds = Math.max(1, Math.round((Date.parse(health.sampledAt) - Date.parse(previous.sampledAt)) / 1000))
-			setRecentDrops({ count: Math.max(0, health.queueDrops - previous.queueDrops), seconds })
-		}
-		previousHealth.current = health
-	}, [health])
   const rows = devices
     .filter((device) => device.role === "Device")
     .map((device) => ({ device, measurement: measurementByMAC.get(device.mac.toLowerCase()) }))
@@ -79,8 +68,10 @@ export function BandwidthMonitorView() {
         <MetricCard label="Highest current usage" value={busiest ? busiest.device.name : "None"} icon={<Gauge />} />
       </div>
       {(health?.samplingError || health?.queueDrops || health?.sendErrors) ? (
-        <Alert variant="destructive"><Gauge /><AlertTitle>Bandwidth monitor health warning</AlertTitle><AlertDescription>
-		  {health.samplingError || <BandwidthHealthDetails health={health} recentDrops={recentDrops} devices={devices} />}
+		<Alert variant={health.activeWarning ? "destructive" : "default"}><Gauge /><AlertTitle>
+		  {health.activeWarning ? "Bandwidth monitor health warning" : "Bandwidth monitor recovered"}
+		</AlertTitle><AlertDescription>
+		  {health.samplingError || <BandwidthHealthDetails health={health} devices={devices} />}
         </AlertDescription></Alert>
       ) : null}
       <Card className="overflow-hidden bg-card/60">
@@ -141,9 +132,8 @@ export function BandwidthMonitorView() {
   )
 }
 
-function BandwidthHealthDetails({ health, recentDrops, devices }: {
+function BandwidthHealthDetails({ health, devices }: {
 	health: BandwidthHealth
-	recentDrops?: { count: number; seconds: number }
 	devices: { mac: string; name: string }[]
 }) {
 	const top = [...health.deviceQueueDrops].sort((left, right) =>
@@ -152,14 +142,20 @@ function BandwidthHealthDetails({ health, recentDrops, devices }: {
 	return <span className="space-y-1">
 		<span className="block">
 			{health.queueDrops} queued packets dropped since monitoring started
-			{recentDrops ? ` · ${recentDrops.count} in the last ${recentDrops.seconds}s` : ""}
+			{health.sampleSeconds ? ` · ${health.recentQueueDrops} in the last ${health.sampleSeconds}s` : ""}
 			{` · ${health.sendErrors} forwarding errors`}
 		</span>
+		{health.sampleSeconds ? <span className="block text-xs">
+			{`Latest sample: ${health.recentQueueDrops} queue drops · ${health.recentSendErrors} forwarding errors`}
+		</span> : null}
 		<span className="block text-xs">
 			{`Upload ${health.uploadQueueDrops} · download ${health.downloadQueueDrops} · monitoring-only ${health.monitorQueueDrops} · limited ${health.limitedQueueDrops}`}
 		</span>
 		<span className="block text-xs">
 			{`Queue now: upload ${health.uploadQueueDepth}/${health.queueCapacity}, download ${health.downloadQueueDepth}/${health.queueCapacity} · peak: ${health.peakUploadDepth}/${health.peakDownloadDepth}`}
+		</span>
+		<span className="block text-xs">
+			{`Buffered now: upload ${formatBytes(health.uploadQueueBytes)}, download ${formatBytes(health.downloadQueueBytes)} of ${formatBytes(health.queueByteCapacity)} · peak: ${formatBytes(health.peakUploadBytes)}/${formatBytes(health.peakDownloadBytes)}`}
 		</span>
 		{top ? <span className="block text-xs">
 			{`Most affected: ${deviceName || top.mac} · upload ${top.uploadDrops}, download ${top.downloadDrops}`}

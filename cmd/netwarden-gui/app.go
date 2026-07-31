@@ -31,6 +31,9 @@ type GUIApp struct {
 	cancel     context.CancelFunc
 	activity   []ActivityDTO
 	logger     *slog.Logger
+
+	bandwidthHealthMu sync.Mutex
+	bandwidthHealth   bandwidthHealthState
 }
 
 type InterfaceDTO struct {

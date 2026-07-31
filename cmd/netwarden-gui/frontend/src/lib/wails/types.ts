@@ -144,7 +144,16 @@ export type BandwidthHealth = {
   downloadQueueDepth: number
   peakUploadDepth: number
   peakDownloadDepth: number
+  queueByteCapacity: number
+  uploadQueueBytes: number
+  downloadQueueBytes: number
+  peakUploadBytes: number
+  peakDownloadBytes: number
   deviceQueueDrops: BandwidthDeviceQueueDrops[]
+  recentQueueDrops: number
+  recentSendErrors: number
+  sampleSeconds: number
+  activeWarning: boolean
   sampledAt: string
   samplingError?: string
 }

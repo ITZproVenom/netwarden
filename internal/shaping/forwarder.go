@@ -23,8 +23,10 @@ const (
 	ethernetHeaderLength = 14
 	etherTypeIPv4        = 0x0800
 	etherTypeIPv6        = 0x86dd
-	defaultQueueCapacity = 256
+	defaultQueueCapacity = 4096
 	maximumQueueCapacity = 8192
+	defaultQueueBytes    = 6 * 1024 * 1024
+	maximumQueueBytes    = 64 * 1024 * 1024
 )
 
 type FrameSender interface {
@@ -35,6 +37,7 @@ type ForwarderConfig struct {
 	LocalMAC      net.HardwareAddr
 	GatewayMAC    net.HardwareAddr
 	QueueCapacity int
+	QueueBytes    int
 }
 
 type ForwarderStats struct {
@@ -53,6 +56,11 @@ type ForwarderStats struct {
 	DownloadQueueDepth int
 	PeakUploadDepth    uint64
 	PeakDownloadDepth  uint64
+	QueueByteCapacity  int64
+	UploadQueueBytes   int64
+	DownloadQueueBytes int64
+	PeakUploadBytes    uint64
+	PeakDownloadBytes  uint64
 	DeviceQueueDrops   []DeviceQueueDropStats
 }
 
@@ -77,6 +85,43 @@ type queuedFrame struct {
 	limited   bool
 }
 
+// directionalQueue bounds bursts by both frame count and memory. Packet
+// capture never waits for space, avoiding a libpcap stall that would merely
+// move packet loss into an opaque kernel buffer.
+type directionalQueue struct {
+	frames    chan queuedFrame
+	maxBytes  int64
+	bytes     atomic.Int64
+	peakBytes atomic.Uint64
+}
+
+func newDirectionalQueue(frameCapacity, byteCapacity int) directionalQueue {
+	return directionalQueue{frames: make(chan queuedFrame, frameCapacity), maxBytes: int64(byteCapacity)}
+}
+
+func (q *directionalQueue) enqueue(frame queuedFrame) bool {
+	size := int64(len(frame.data))
+	for current := q.bytes.Load(); ; current = q.bytes.Load() {
+		if current+size > q.maxBytes || !q.bytes.CompareAndSwap(current, current+size) {
+			if current+size > q.maxBytes {
+				return false
+			}
+			continue
+		}
+		break
+	}
+	select {
+	case q.frames <- frame:
+		updatePeak(&q.peakBytes, int(q.bytes.Load()))
+		return true
+	default:
+		q.bytes.Add(-size)
+		return false
+	}
+}
+
+func (q *directionalQueue) release(frame queuedFrame) { q.bytes.Add(-int64(len(frame.data))) }
+
 // Forwarder handles only IPv4 frames that have already been redirected to the
 // local host. ARP redirection and packet capture remain platform concerns.
 type Forwarder struct {
@@ -85,8 +130,8 @@ type Forwarder struct {
 	localMAC   net.HardwareAddr
 	identityMu sync.RWMutex
 	gatewayMAC net.HardwareAddr
-	upload     chan queuedFrame
-	download   chan queuedFrame
+	upload     directionalQueue
+	download   directionalQueue
 
 	routesMu sync.RWMutex
 	routes   map[netip.Addr]net.HardwareAddr
@@ -138,9 +183,16 @@ func NewForwarder(manager *Manager, sender FrameSender, config ForwarderConfig) 
 	if capacity < 1 || capacity > maximumQueueCapacity {
 		return nil, fmt.Errorf("queue capacity must be between 1 and %d", maximumQueueCapacity)
 	}
+	byteCapacity := config.QueueBytes
+	if byteCapacity == 0 {
+		byteCapacity = defaultQueueBytes
+	}
+	if byteCapacity < 1 || byteCapacity > maximumQueueBytes {
+		return nil, fmt.Errorf("queue byte capacity must be between 1 and %d", maximumQueueBytes)
+	}
 	return &Forwarder{
 		manager: manager, sender: sender, localMAC: localMAC, gatewayMAC: gatewayMAC,
-		upload: make(chan queuedFrame, capacity), download: make(chan queuedFrame, capacity),
+		upload: newDirectionalQueue(capacity, byteCapacity), download: newDirectionalQueue(capacity, byteCapacity),
 		routes: make(map[netip.Addr]net.HardwareAddr), errors: make(chan error, 32), traffic: make(map[string]DeviceTrafficStats),
 		deviceDrops: make(map[string]DeviceQueueDropStats),
 	}, nil
@@ -188,28 +240,26 @@ func (f *Forwarder) Submit(frame []byte) error {
 		f.unmanagedFrames.Add(1)
 		return err
 	}
-	queue := f.upload
+	queue := &f.upload
 	if queued.direction == Download {
-		queue = f.download
+		queue = &f.download
 	}
 	f.runMu.Lock()
 	defer f.runMu.Unlock()
 	if f.stopped {
 		return ErrForwarderStopped
 	}
-	select {
-	case queue <- queued:
+	if queue.enqueue(queued) {
 		f.accepted.Add(1)
 		if queued.direction == Download {
-			updatePeak(&f.peakDownloadDepth, len(queue))
+			updatePeak(&f.peakDownloadDepth, len(queue.frames))
 		} else {
-			updatePeak(&f.peakUploadDepth, len(queue))
+			updatePeak(&f.peakUploadDepth, len(queue.frames))
 		}
 		return nil
-	default:
-		f.recordQueueDrop(queued)
-		return ErrQueueFull
 	}
+	f.recordQueueDrop(queued)
+	return ErrQueueFull
 }
 
 // Run owns one worker per direction so a slow download cannot block upload
@@ -224,16 +274,16 @@ func (f *Forwarder) Run(ctx context.Context) error {
 	f.runMu.Unlock()
 	var workers sync.WaitGroup
 	workers.Add(2)
-	go f.runDirection(ctx, f.upload, &workers)
-	go f.runDirection(ctx, f.download, &workers)
+	go f.runDirection(ctx, &f.upload, &workers)
+	go f.runDirection(ctx, &f.download, &workers)
 	<-ctx.Done()
 	workers.Wait()
 	f.runMu.Lock()
 	f.running = false
 	f.stopped = true
 	f.runMu.Unlock()
-	f.drainCanceled(f.upload)
-	f.drainCanceled(f.download)
+	f.drainCanceled(&f.upload)
+	f.drainCanceled(&f.download)
 	return ctx.Err()
 }
 
@@ -245,8 +295,10 @@ func (f *Forwarder) Stats() ForwarderStats {
 		UploadQueueDrops: f.uploadQueueDrops.Load(), DownloadQueueDrops: f.downloadQueueDrops.Load(),
 		MonitorQueueDrops: f.monitorQueueDrops.Load(), LimitedQueueDrops: f.limitedQueueDrops.Load(),
 		CanceledDrops: f.canceledDrops.Load(), SendErrors: f.sendErrors.Load(), UnmanagedFrames: f.unmanagedFrames.Load(),
-		QueueCapacity: cap(f.upload), UploadQueueDepth: len(f.upload), DownloadQueueDepth: len(f.download),
+		QueueCapacity: cap(f.upload.frames), UploadQueueDepth: len(f.upload.frames), DownloadQueueDepth: len(f.download.frames),
 		PeakUploadDepth: f.peakUploadDepth.Load(), PeakDownloadDepth: f.peakDownloadDepth.Load(),
+		QueueByteCapacity: f.upload.maxBytes, UploadQueueBytes: f.upload.bytes.Load(), DownloadQueueBytes: f.download.bytes.Load(),
+		PeakUploadBytes: f.upload.peakBytes.Load(), PeakDownloadBytes: f.download.peakBytes.Load(),
 	}
 	f.dropMu.RLock()
 	stats.DeviceQueueDrops = make([]DeviceQueueDropStats, 0, len(f.deviceDrops))
@@ -382,13 +434,14 @@ func classifyNetworkPacket(frame []byte) (netip.Addr, netip.Addr, int, bool) {
 	}
 }
 
-func (f *Forwarder) runDirection(ctx context.Context, queue <-chan queuedFrame, workers *sync.WaitGroup) {
+func (f *Forwarder) runDirection(ctx context.Context, queue *directionalQueue, workers *sync.WaitGroup) {
 	defer workers.Done()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case frame := <-queue:
+		case frame := <-queue.frames:
+			queue.release(frame)
 			if err := f.manager.Wait(ctx, frame.deviceMAC, frame.direction, len(frame.data)); err != nil {
 				f.canceledDrops.Add(1)
 				continue
@@ -430,10 +483,11 @@ func (f *Forwarder) recordTraffic(frame queuedFrame) {
 	f.trafficMu.Unlock()
 }
 
-func (f *Forwarder) drainCanceled(queue <-chan queuedFrame) {
+func (f *Forwarder) drainCanceled(queue *directionalQueue) {
 	for {
 		select {
-		case <-queue:
+		case frame := <-queue.frames:
+			queue.release(frame)
 			f.canceledDrops.Add(1)
 		default:
 			return

@@ -179,6 +179,28 @@ func TestForwarderAttributesMonitoringQueueDrops(t *testing.T) {
 	}
 }
 
+func TestDirectionalQueueEnforcesByteCapacity(t *testing.T) {
+	queue := newDirectionalQueue(2, 10)
+	first := queuedFrame{data: make([]byte, 6)}
+	if !queue.enqueue(first) {
+		t.Fatal("first frame was rejected")
+	}
+	if queue.enqueue(queuedFrame{data: make([]byte, 5)}) {
+		t.Fatal("frame exceeding byte capacity was accepted")
+	}
+	if got := queue.bytes.Load(); got != 6 {
+		t.Fatalf("queued bytes = %d, want 6", got)
+	}
+	queued := <-queue.frames
+	queue.release(queued)
+	if got := queue.bytes.Load(); got != 0 {
+		t.Fatalf("queued bytes after release = %d, want 0", got)
+	}
+	if got := queue.peakBytes.Load(); got != 6 {
+		t.Fatalf("peak queued bytes = %d, want 6", got)
+	}
+}
+
 func TestForwarderUsesIndependentDirectionalQueues(t *testing.T) {
 	forwarder, manager, local, gateway, device, deviceIP := testForwarder(t, 1, &recordingSender{})
 	if err := manager.Set(device, Policy{DownloadBitsPerSecond: 1_000_000, UploadBitsPerSecond: 1_000_000}); err != nil {

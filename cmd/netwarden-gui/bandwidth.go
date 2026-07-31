@@ -93,7 +93,16 @@ type BandwidthHealthDTO struct {
 	DownloadQueueDepth int                            `json:"downloadQueueDepth"`
 	PeakUploadDepth    uint64                         `json:"peakUploadDepth"`
 	PeakDownloadDepth  uint64                         `json:"peakDownloadDepth"`
+	QueueByteCapacity  int64                          `json:"queueByteCapacity"`
+	UploadQueueBytes   int64                          `json:"uploadQueueBytes"`
+	DownloadQueueBytes int64                          `json:"downloadQueueBytes"`
+	PeakUploadBytes    uint64                         `json:"peakUploadBytes"`
+	PeakDownloadBytes  uint64                         `json:"peakDownloadBytes"`
 	DeviceQueueDrops   []BandwidthDeviceQueueDropsDTO `json:"deviceQueueDrops"`
+	RecentQueueDrops   uint64                         `json:"recentQueueDrops"`
+	RecentSendErrors   uint64                         `json:"recentSendErrors"`
+	SampleSeconds      int64                          `json:"sampleSeconds"`
+	ActiveWarning      bool                           `json:"activeWarning"`
 	SampledAt          time.Time                      `json:"sampledAt"`
 	SamplingError      string                         `json:"samplingError,omitempty"`
 }
@@ -102,6 +111,21 @@ type BandwidthDeviceQueueDropsDTO struct {
 	MAC           string `json:"mac"`
 	UploadDrops   uint64 `json:"uploadDrops"`
 	DownloadDrops uint64 `json:"downloadDrops"`
+}
+
+type bandwidthHealthState struct {
+	initialized bool
+	sampledAt   time.Time
+	queueDrops  uint64
+	sendErrors  uint64
+	unhealthy   bool
+}
+
+type bandwidthHealthSample struct {
+	queueDrops uint64
+	sendErrors uint64
+	seconds    int64
+	unhealthy  bool
 }
 
 func (a *GUIApp) BandwidthLimits() ([]BandwidthLimitDTO, error) {
@@ -330,6 +354,8 @@ func (a *GUIApp) BandwidthMonitorHealth() (BandwidthHealthDTO, error) {
 	ctx, cancel := context.WithTimeout(a.ctx, 5*time.Second)
 	defer cancel()
 	health := runtime.BandwidthMonitorHealth(ctx)
+	now := time.Now().UTC()
+	sample := a.recordBandwidthHealth(now, health)
 	drops := make([]BandwidthDeviceQueueDropsDTO, 0, len(health.Forwarder.DeviceQueueDrops))
 	for _, device := range health.Forwarder.DeviceQueueDrops {
 		drops = append(drops, BandwidthDeviceQueueDropsDTO{MAC: device.MAC, UploadDrops: device.UploadDrops, DownloadDrops: device.DownloadDrops})
@@ -342,8 +368,68 @@ func (a *GUIApp) BandwidthMonitorHealth() (BandwidthHealthDTO, error) {
 		QueueCapacity: health.Forwarder.QueueCapacity, UploadQueueDepth: health.Forwarder.UploadQueueDepth,
 		DownloadQueueDepth: health.Forwarder.DownloadQueueDepth, PeakUploadDepth: health.Forwarder.PeakUploadDepth,
 		PeakDownloadDepth: health.Forwarder.PeakDownloadDepth, DeviceQueueDrops: drops,
-		SampledAt: time.Now().UTC(), SamplingError: health.SamplingError,
+		QueueByteCapacity: health.Forwarder.QueueByteCapacity, UploadQueueBytes: health.Forwarder.UploadQueueBytes,
+		DownloadQueueBytes: health.Forwarder.DownloadQueueBytes, PeakUploadBytes: health.Forwarder.PeakUploadBytes,
+		PeakDownloadBytes: health.Forwarder.PeakDownloadBytes,
+		RecentQueueDrops:  sample.queueDrops, RecentSendErrors: sample.sendErrors, SampleSeconds: sample.seconds,
+		ActiveWarning: sample.unhealthy, SampledAt: now, SamplingError: health.SamplingError,
 	}, nil
+}
+
+func (a *GUIApp) recordBandwidthHealth(now time.Time, health coreapp.BandwidthHealth) bandwidthHealthSample {
+	a.bandwidthHealthMu.Lock()
+	previous := a.bandwidthHealth
+	queueDrops := counterDelta(health.Forwarder.QueueDrops, previous.queueDrops)
+	sendErrors := counterDelta(health.Forwarder.SendErrors, previous.sendErrors)
+	seconds := int64(0)
+	if previous.initialized {
+		seconds = max(1, int64(now.Sub(previous.sampledAt).Seconds()+0.5))
+	} else {
+		queueDrops = health.Forwarder.QueueDrops
+		sendErrors = health.Forwarder.SendErrors
+	}
+	unhealthy := health.SamplingError != "" || queueDrops > 0 || sendErrors > 0
+	a.bandwidthHealth = bandwidthHealthState{initialized: true, sampledAt: now, queueDrops: health.Forwarder.QueueDrops,
+		sendErrors: health.Forwarder.SendErrors, unhealthy: unhealthy}
+	a.bandwidthHealthMu.Unlock()
+
+	if unhealthy && !previous.unhealthy {
+		mostAffectedMAC, mostAffectedDrops := mostAffectedQueueDrops(health.Forwarder.DeviceQueueDrops)
+		a.log(slog.LevelWarn, "bandwidth monitor health degraded", "component", "bandwidth_health",
+			"queue_drops", queueDrops, "send_errors", sendErrors, "sample_seconds", seconds,
+			"lifetime_upload_drops", health.Forwarder.UploadQueueDrops, "lifetime_download_drops", health.Forwarder.DownloadQueueDrops,
+			"lifetime_monitor_drops", health.Forwarder.MonitorQueueDrops, "lifetime_limited_drops", health.Forwarder.LimitedQueueDrops,
+			"upload_queue_depth", health.Forwarder.UploadQueueDepth, "download_queue_depth", health.Forwarder.DownloadQueueDepth,
+			"peak_upload_depth", health.Forwarder.PeakUploadDepth, "peak_download_depth", health.Forwarder.PeakDownloadDepth,
+			"peak_upload_bytes", health.Forwarder.PeakUploadBytes, "peak_download_bytes", health.Forwarder.PeakDownloadBytes,
+			"most_affected_mac", mostAffectedMAC, "most_affected_drops", mostAffectedDrops,
+			"sampling_error", health.SamplingError)
+	}
+	if !unhealthy && previous.unhealthy {
+		a.log(slog.LevelInfo, "bandwidth monitor health recovered", "component", "bandwidth_health",
+			"lifetime_queue_drops", health.Forwarder.QueueDrops, "lifetime_send_errors", health.Forwarder.SendErrors,
+			"peak_upload_depth", health.Forwarder.PeakUploadDepth, "peak_download_depth", health.Forwarder.PeakDownloadDepth)
+	}
+	return bandwidthHealthSample{queueDrops: queueDrops, sendErrors: sendErrors, seconds: seconds, unhealthy: unhealthy}
+}
+
+func counterDelta(current, previous uint64) uint64 {
+	if current < previous {
+		return current
+	}
+	return current - previous
+}
+
+func mostAffectedQueueDrops(devices []shaping.DeviceQueueDropStats) (string, uint64) {
+	var mac string
+	var maximum uint64
+	for _, device := range devices {
+		total := device.UploadDrops + device.DownloadDrops
+		if total > maximum {
+			mac, maximum = device.MAC, total
+		}
+	}
+	return mac, maximum
 }
 
 func (a *GUIApp) activeRuntime() (*coreapp.Runtime, error) {
