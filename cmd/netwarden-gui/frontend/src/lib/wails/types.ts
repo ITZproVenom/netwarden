@@ -129,5 +129,23 @@ export type BandwidthMeasurement = {
   history: BandwidthHistoryPoint[]
 }
 export type BandwidthBucket = { start: string; uploadBytes: number; downloadBytes: number; peakUploadBPS: number; peakDownloadBPS: number }
-export type BandwidthHealth = { queueDrops: number; canceledDrops: number; sendErrors: number; unmanagedFrames: number; samplingError?: string }
+export type BandwidthDeviceQueueDrops = { mac: string; uploadDrops: number; downloadDrops: number }
+export type BandwidthHealth = {
+  queueDrops: number
+  uploadQueueDrops: number
+  downloadQueueDrops: number
+  monitorQueueDrops: number
+  limitedQueueDrops: number
+  canceledDrops: number
+  sendErrors: number
+  unmanagedFrames: number
+  queueCapacity: number
+  uploadQueueDepth: number
+  downloadQueueDepth: number
+  peakUploadDepth: number
+  peakDownloadDepth: number
+  deviceQueueDrops: BandwidthDeviceQueueDrops[]
+  sampledAt: string
+  samplingError?: string
+}
 export type AppInfo = { name: string; version: string; build: string }

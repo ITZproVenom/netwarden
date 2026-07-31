@@ -80,11 +80,28 @@ type BandwidthBucketDTO struct {
 }
 
 type BandwidthHealthDTO struct {
-	QueueDrops      uint64 `json:"queueDrops"`
-	CanceledDrops   uint64 `json:"canceledDrops"`
-	SendErrors      uint64 `json:"sendErrors"`
-	UnmanagedFrames uint64 `json:"unmanagedFrames"`
-	SamplingError   string `json:"samplingError,omitempty"`
+	QueueDrops         uint64                         `json:"queueDrops"`
+	UploadQueueDrops   uint64                         `json:"uploadQueueDrops"`
+	DownloadQueueDrops uint64                         `json:"downloadQueueDrops"`
+	MonitorQueueDrops  uint64                         `json:"monitorQueueDrops"`
+	LimitedQueueDrops  uint64                         `json:"limitedQueueDrops"`
+	CanceledDrops      uint64                         `json:"canceledDrops"`
+	SendErrors         uint64                         `json:"sendErrors"`
+	UnmanagedFrames    uint64                         `json:"unmanagedFrames"`
+	QueueCapacity      int                            `json:"queueCapacity"`
+	UploadQueueDepth   int                            `json:"uploadQueueDepth"`
+	DownloadQueueDepth int                            `json:"downloadQueueDepth"`
+	PeakUploadDepth    uint64                         `json:"peakUploadDepth"`
+	PeakDownloadDepth  uint64                         `json:"peakDownloadDepth"`
+	DeviceQueueDrops   []BandwidthDeviceQueueDropsDTO `json:"deviceQueueDrops"`
+	SampledAt          time.Time                      `json:"sampledAt"`
+	SamplingError      string                         `json:"samplingError,omitempty"`
+}
+
+type BandwidthDeviceQueueDropsDTO struct {
+	MAC           string `json:"mac"`
+	UploadDrops   uint64 `json:"uploadDrops"`
+	DownloadDrops uint64 `json:"downloadDrops"`
 }
 
 func (a *GUIApp) BandwidthLimits() ([]BandwidthLimitDTO, error) {
@@ -313,8 +330,20 @@ func (a *GUIApp) BandwidthMonitorHealth() (BandwidthHealthDTO, error) {
 	ctx, cancel := context.WithTimeout(a.ctx, 5*time.Second)
 	defer cancel()
 	health := runtime.BandwidthMonitorHealth(ctx)
-	return BandwidthHealthDTO{QueueDrops: health.Forwarder.QueueDrops, CanceledDrops: health.Forwarder.CanceledDrops,
-		SendErrors: health.Forwarder.SendErrors, UnmanagedFrames: health.Forwarder.UnmanagedFrames, SamplingError: health.SamplingError}, nil
+	drops := make([]BandwidthDeviceQueueDropsDTO, 0, len(health.Forwarder.DeviceQueueDrops))
+	for _, device := range health.Forwarder.DeviceQueueDrops {
+		drops = append(drops, BandwidthDeviceQueueDropsDTO{MAC: device.MAC, UploadDrops: device.UploadDrops, DownloadDrops: device.DownloadDrops})
+	}
+	return BandwidthHealthDTO{
+		QueueDrops: health.Forwarder.QueueDrops, UploadQueueDrops: health.Forwarder.UploadQueueDrops,
+		DownloadQueueDrops: health.Forwarder.DownloadQueueDrops, MonitorQueueDrops: health.Forwarder.MonitorQueueDrops,
+		LimitedQueueDrops: health.Forwarder.LimitedQueueDrops, CanceledDrops: health.Forwarder.CanceledDrops,
+		SendErrors: health.Forwarder.SendErrors, UnmanagedFrames: health.Forwarder.UnmanagedFrames,
+		QueueCapacity: health.Forwarder.QueueCapacity, UploadQueueDepth: health.Forwarder.UploadQueueDepth,
+		DownloadQueueDepth: health.Forwarder.DownloadQueueDepth, PeakUploadDepth: health.Forwarder.PeakUploadDepth,
+		PeakDownloadDepth: health.Forwarder.PeakDownloadDepth, DeviceQueueDrops: drops,
+		SampledAt: time.Now().UTC(), SamplingError: health.SamplingError,
+	}, nil
 }
 
 func (a *GUIApp) activeRuntime() (*coreapp.Runtime, error) {

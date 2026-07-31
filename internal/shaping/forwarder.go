@@ -38,12 +38,28 @@ type ForwarderConfig struct {
 }
 
 type ForwarderStats struct {
-	Accepted        uint64
-	Forwarded       uint64
-	QueueDrops      uint64
-	CanceledDrops   uint64
-	SendErrors      uint64
-	UnmanagedFrames uint64
+	Accepted           uint64
+	Forwarded          uint64
+	QueueDrops         uint64
+	UploadQueueDrops   uint64
+	DownloadQueueDrops uint64
+	MonitorQueueDrops  uint64
+	LimitedQueueDrops  uint64
+	CanceledDrops      uint64
+	SendErrors         uint64
+	UnmanagedFrames    uint64
+	QueueCapacity      int
+	UploadQueueDepth   int
+	DownloadQueueDepth int
+	PeakUploadDepth    uint64
+	PeakDownloadDepth  uint64
+	DeviceQueueDrops   []DeviceQueueDropStats
+}
+
+type DeviceQueueDropStats struct {
+	MAC           string
+	UploadDrops   uint64
+	DownloadDrops uint64
 }
 
 type DeviceTrafficStats struct {
@@ -58,6 +74,7 @@ type queuedFrame struct {
 	data      []byte
 	deviceMAC net.HardwareAddr
 	direction Direction
+	limited   bool
 }
 
 // Forwarder handles only IPv4 frames that have already been redirected to the
@@ -77,15 +94,23 @@ type Forwarder struct {
 	running  bool
 	stopped  bool
 
-	accepted        atomic.Uint64
-	forwarded       atomic.Uint64
-	queueDrops      atomic.Uint64
-	canceledDrops   atomic.Uint64
-	sendErrors      atomic.Uint64
-	unmanagedFrames atomic.Uint64
-	errors          chan error
-	trafficMu       sync.RWMutex
-	traffic         map[string]DeviceTrafficStats
+	accepted           atomic.Uint64
+	forwarded          atomic.Uint64
+	queueDrops         atomic.Uint64
+	uploadQueueDrops   atomic.Uint64
+	downloadQueueDrops atomic.Uint64
+	monitorQueueDrops  atomic.Uint64
+	limitedQueueDrops  atomic.Uint64
+	peakUploadDepth    atomic.Uint64
+	peakDownloadDepth  atomic.Uint64
+	canceledDrops      atomic.Uint64
+	sendErrors         atomic.Uint64
+	unmanagedFrames    atomic.Uint64
+	errors             chan error
+	trafficMu          sync.RWMutex
+	traffic            map[string]DeviceTrafficStats
+	dropMu             sync.RWMutex
+	deviceDrops        map[string]DeviceQueueDropStats
 }
 
 func NewForwarder(manager *Manager, sender FrameSender, config ForwarderConfig) (*Forwarder, error) {
@@ -117,6 +142,7 @@ func NewForwarder(manager *Manager, sender FrameSender, config ForwarderConfig) 
 		manager: manager, sender: sender, localMAC: localMAC, gatewayMAC: gatewayMAC,
 		upload: make(chan queuedFrame, capacity), download: make(chan queuedFrame, capacity),
 		routes: make(map[netip.Addr]net.HardwareAddr), errors: make(chan error, 32), traffic: make(map[string]DeviceTrafficStats),
+		deviceDrops: make(map[string]DeviceQueueDropStats),
 	}, nil
 }
 
@@ -174,9 +200,14 @@ func (f *Forwarder) Submit(frame []byte) error {
 	select {
 	case queue <- queued:
 		f.accepted.Add(1)
+		if queued.direction == Download {
+			updatePeak(&f.peakDownloadDepth, len(queue))
+		} else {
+			updatePeak(&f.peakUploadDepth, len(queue))
+		}
 		return nil
 	default:
-		f.queueDrops.Add(1)
+		f.recordQueueDrop(queued)
 		return ErrQueueFull
 	}
 }
@@ -209,10 +240,22 @@ func (f *Forwarder) Run(ctx context.Context) error {
 func (f *Forwarder) Errors() <-chan error { return f.errors }
 
 func (f *Forwarder) Stats() ForwarderStats {
-	return ForwarderStats{
+	stats := ForwarderStats{
 		Accepted: f.accepted.Load(), Forwarded: f.forwarded.Load(), QueueDrops: f.queueDrops.Load(),
+		UploadQueueDrops: f.uploadQueueDrops.Load(), DownloadQueueDrops: f.downloadQueueDrops.Load(),
+		MonitorQueueDrops: f.monitorQueueDrops.Load(), LimitedQueueDrops: f.limitedQueueDrops.Load(),
 		CanceledDrops: f.canceledDrops.Load(), SendErrors: f.sendErrors.Load(), UnmanagedFrames: f.unmanagedFrames.Load(),
+		QueueCapacity: cap(f.upload), UploadQueueDepth: len(f.upload), DownloadQueueDepth: len(f.download),
+		PeakUploadDepth: f.peakUploadDepth.Load(), PeakDownloadDepth: f.peakDownloadDepth.Load(),
 	}
+	f.dropMu.RLock()
+	stats.DeviceQueueDrops = make([]DeviceQueueDropStats, 0, len(f.deviceDrops))
+	for _, drops := range f.deviceDrops {
+		stats.DeviceQueueDrops = append(stats.DeviceQueueDrops, drops)
+	}
+	f.dropMu.RUnlock()
+	sort.Slice(stats.DeviceQueueDrops, func(i, j int) bool { return stats.DeviceQueueDrops[i].MAC < stats.DeviceQueueDrops[j].MAC })
+	return stats
 }
 
 func (f *Forwarder) DeviceTraffic() []DeviceTrafficStats {
@@ -253,6 +296,7 @@ func (f *Forwarder) classify(frame []byte) (queuedFrame, error) {
 			return queuedFrame{}, ErrFrameNotManaged
 		}
 		result.deviceMAC, result.direction = deviceMAC, Download
+		result.limited = f.manager.Limited(deviceMAC)
 		copy(result.data[:6], deviceMAC)
 		copy(result.data[6:12], f.localMAC)
 		return result, nil
@@ -261,9 +305,47 @@ func (f *Forwarder) classify(frame []byte) (queuedFrame, error) {
 		return queuedFrame{}, ErrFrameNotManaged
 	}
 	result.deviceMAC, result.direction = append(net.HardwareAddr(nil), source...), Upload
+	result.limited = f.manager.Limited(source)
 	copy(result.data[:6], gatewayMAC)
 	copy(result.data[6:12], f.localMAC)
 	return result, nil
+}
+
+func (f *Forwarder) recordQueueDrop(frame queuedFrame) {
+	f.queueDrops.Add(1)
+	if frame.direction == Download {
+		f.downloadQueueDrops.Add(1)
+	} else {
+		f.uploadQueueDrops.Add(1)
+	}
+	if frame.limited {
+		f.limitedQueueDrops.Add(1)
+	} else {
+		f.monitorQueueDrops.Add(1)
+	}
+	key, err := normalizeDeviceMAC(frame.deviceMAC)
+	if err != nil {
+		return
+	}
+	f.dropMu.Lock()
+	drops := f.deviceDrops[key]
+	drops.MAC = key
+	if frame.direction == Download {
+		drops.DownloadDrops++
+	} else {
+		drops.UploadDrops++
+	}
+	f.deviceDrops[key] = drops
+	f.dropMu.Unlock()
+}
+
+func updatePeak(peak *atomic.Uint64, depth int) {
+	candidate := uint64(depth)
+	for current := peak.Load(); candidate > current; current = peak.Load() {
+		if peak.CompareAndSwap(current, candidate) {
+			return
+		}
+	}
 }
 
 func classifyNetworkPacket(frame []byte) (netip.Addr, netip.Addr, int, bool) {

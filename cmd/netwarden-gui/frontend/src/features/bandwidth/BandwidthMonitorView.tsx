@@ -1,6 +1,6 @@
 import { ArrowDown, ArrowUp, Gauge, LoaderCircle, Play, Square } from "lucide-react"
 import type { ReactNode } from "react"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -10,7 +10,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { useDevices } from "@/features/devices/devices.queries"
 import { isControlEligible } from "@/features/devices/device-list"
 import { useRuntimeStatus } from "@/features/monitoring/monitoring.queries"
-import type { BandwidthMeasurement } from "@/lib/wails/types"
+import type { BandwidthHealth, BandwidthMeasurement } from "@/lib/wails/types"
 import {
   useBandwidthMeasurements,
   useBandwidthMonitors,
@@ -37,11 +37,22 @@ export function BandwidthMonitorView() {
   const startAll = useStartAllBandwidthMonitors()
   const stopAll = useStopAllBandwidthMonitors()
   const { data: health } = useBandwidthHealth(available)
+	const previousHealth = useRef<typeof health>(undefined)
+	const [recentDrops, setRecentDrops] = useState<{ count: number; seconds: number }>()
   const [historyRange, setHistoryRange] = useState("hour")
   const [historyMAC, setHistoryMAC] = useState("")
   const monitored = new Set(monitors.map((target) => target.mac.toLowerCase()))
   const limited = new Set(limits.map((target) => target.mac.toLowerCase()))
   const measurementByMAC = new Map(measurements.map((item) => [item.mac.toLowerCase(), item]))
+	useEffect(() => {
+		if (!health) return
+		const previous = previousHealth.current
+		if (previous) {
+			const seconds = Math.max(1, Math.round((Date.parse(health.sampledAt) - Date.parse(previous.sampledAt)) / 1000))
+			setRecentDrops({ count: Math.max(0, health.queueDrops - previous.queueDrops), seconds })
+		}
+		previousHealth.current = health
+	}, [health])
   const rows = devices
     .filter((device) => device.role === "Device")
     .map((device) => ({ device, measurement: measurementByMAC.get(device.mac.toLowerCase()) }))
@@ -69,7 +80,7 @@ export function BandwidthMonitorView() {
       </div>
       {(health?.samplingError || health?.queueDrops || health?.sendErrors) ? (
         <Alert variant="destructive"><Gauge /><AlertTitle>Bandwidth monitor health warning</AlertTitle><AlertDescription>
-          {health.samplingError || `${health.queueDrops} queued packets dropped · ${health.sendErrors} forwarding errors`}
+		  {health.samplingError || <BandwidthHealthDetails health={health} recentDrops={recentDrops} devices={devices} />}
         </AlertDescription></Alert>
       ) : null}
       <Card className="overflow-hidden bg-card/60">
@@ -128,6 +139,32 @@ export function BandwidthMonitorView() {
       </Card>
     </section>
   )
+}
+
+function BandwidthHealthDetails({ health, recentDrops, devices }: {
+	health: BandwidthHealth
+	recentDrops?: { count: number; seconds: number }
+	devices: { mac: string; name: string }[]
+}) {
+	const top = [...health.deviceQueueDrops].sort((left, right) =>
+		(right.uploadDrops + right.downloadDrops) - (left.uploadDrops + left.downloadDrops))[0]
+	const deviceName = top && devices.find((device) => device.mac.toLowerCase() === top.mac.toLowerCase())?.name
+	return <span className="space-y-1">
+		<span className="block">
+			{health.queueDrops} queued packets dropped since monitoring started
+			{recentDrops ? ` · ${recentDrops.count} in the last ${recentDrops.seconds}s` : ""}
+			{` · ${health.sendErrors} forwarding errors`}
+		</span>
+		<span className="block text-xs">
+			{`Upload ${health.uploadQueueDrops} · download ${health.downloadQueueDrops} · monitoring-only ${health.monitorQueueDrops} · limited ${health.limitedQueueDrops}`}
+		</span>
+		<span className="block text-xs">
+			{`Queue now: upload ${health.uploadQueueDepth}/${health.queueCapacity}, download ${health.downloadQueueDepth}/${health.queueCapacity} · peak: ${health.peakUploadDepth}/${health.peakDownloadDepth}`}
+		</span>
+		{top ? <span className="block text-xs">
+			{`Most affected: ${deviceName || top.mac} · upload ${top.uploadDrops}, download ${top.downloadDrops}`}
+		</span> : null}
+	</span>
 }
 
 function HistoryBars({ buckets }: { buckets: Array<{ start: string; uploadBytes: number; downloadBytes: number }> }) {

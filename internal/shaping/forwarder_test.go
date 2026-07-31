@@ -151,8 +151,31 @@ func TestForwarderDropsWhenDirectionalQueueIsFull(t *testing.T) {
 	if err := forwarder.Submit(frame); !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("got %v, want full queue", err)
 	}
-	if forwarder.Stats().QueueDrops != 1 {
-		t.Fatalf("stats = %#v", forwarder.Stats())
+	stats := forwarder.Stats()
+	if stats.QueueDrops != 1 || stats.UploadQueueDrops != 1 || stats.DownloadQueueDrops != 0 ||
+		stats.LimitedQueueDrops != 1 || stats.MonitorQueueDrops != 0 || stats.UploadQueueDepth != 1 ||
+		stats.PeakUploadDepth != 1 || stats.QueueCapacity != 1 || len(stats.DeviceQueueDrops) != 1 ||
+		stats.DeviceQueueDrops[0].MAC != device.String() || stats.DeviceQueueDrops[0].UploadDrops != 1 {
+		t.Fatalf("stats = %#v", stats)
+	}
+}
+
+func TestForwarderAttributesMonitoringQueueDrops(t *testing.T) {
+	forwarder, manager, local, gateway, device, deviceIP := testForwarder(t, 1, &recordingSender{})
+	if err := manager.Track(device); err != nil {
+		t.Fatal(err)
+	}
+	frame := ipv4Frame(local, gateway, netip.MustParseAddr("1.1.1.1"), deviceIP, 32)
+	if err := forwarder.Submit(frame); err != nil {
+		t.Fatal(err)
+	}
+	if err := forwarder.Submit(frame); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("got %v, want full queue", err)
+	}
+	stats := forwarder.Stats()
+	if stats.MonitorQueueDrops != 1 || stats.LimitedQueueDrops != 0 || stats.DownloadQueueDrops != 1 ||
+		len(stats.DeviceQueueDrops) != 1 || stats.DeviceQueueDrops[0].DownloadDrops != 1 {
+		t.Fatalf("stats = %#v", stats)
 	}
 }
 
