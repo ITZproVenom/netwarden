@@ -28,6 +28,47 @@ type BandwidthTrafficDTO struct {
 	DownloadBytes   uint64 `json:"downloadBytes"`
 }
 
+type BandwidthMonitorDTO struct {
+	IP  string `json:"ip"`
+	MAC string `json:"mac"`
+}
+
+func (a *GUIApp) BandwidthMonitors() ([]BandwidthMonitorDTO, error) {
+	a.mu.RLock()
+	supervisor := a.supervisor
+	a.mu.RUnlock()
+	if supervisor == nil || supervisor.Current() == nil {
+		return []BandwidthMonitorDTO{}, nil
+	}
+	targets := supervisor.Current().BandwidthMonitors()
+	result := make([]BandwidthMonitorDTO, 0, len(targets))
+	for _, target := range targets {
+		result = append(result, BandwidthMonitorDTO{IP: target.IP.String(), MAC: target.MAC.String()})
+	}
+	return result, nil
+}
+
+type BandwidthMeasurementDTO struct {
+	MAC             string                     `json:"mac"`
+	UploadBytes     uint64                     `json:"uploadBytes"`
+	DownloadBytes   uint64                     `json:"downloadBytes"`
+	UploadBPS       uint64                     `json:"uploadBPS"`
+	DownloadBPS     uint64                     `json:"downloadBPS"`
+	PeakUploadBPS   uint64                     `json:"peakUploadBPS"`
+	PeakUploadAt    time.Time                  `json:"peakUploadAt,omitempty"`
+	PeakDownloadBPS uint64                     `json:"peakDownloadBPS"`
+	PeakDownloadAt  time.Time                  `json:"peakDownloadAt,omitempty"`
+	History         []BandwidthHistoryPointDTO `json:"history"`
+}
+
+type BandwidthHistoryPointDTO struct {
+	At            time.Time `json:"at"`
+	UploadBytes   uint64    `json:"uploadBytes"`
+	DownloadBytes uint64    `json:"downloadBytes"`
+	UploadBPS     uint64    `json:"uploadBPS"`
+	DownloadBPS   uint64    `json:"downloadBPS"`
+}
+
 func (a *GUIApp) BandwidthLimits() ([]BandwidthLimitDTO, error) {
 	a.mu.RLock()
 	supervisor := a.supervisor
@@ -151,6 +192,30 @@ func (a *GUIApp) BandwidthTraffic() ([]BandwidthTrafficDTO, error) {
 	for _, current := range traffic {
 		result = append(result, BandwidthTrafficDTO{MAC: current.MAC, UploadPackets: current.UploadPackets,
 			UploadBytes: current.UploadBytes, DownloadPackets: current.DownloadPackets, DownloadBytes: current.DownloadBytes})
+	}
+	return result, nil
+}
+
+func (a *GUIApp) BandwidthMeasurements() ([]BandwidthMeasurementDTO, error) {
+	runtime, err := a.activeRuntime()
+	if err != nil {
+		return nil, err
+	}
+	measurements, err := runtime.BandwidthMeasurements()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]BandwidthMeasurementDTO, 0, len(measurements))
+	for _, current := range measurements {
+		item := BandwidthMeasurementDTO{MAC: current.MAC, UploadBytes: current.UploadBytes, DownloadBytes: current.DownloadBytes,
+			UploadBPS: current.UploadBPS, DownloadBPS: current.DownloadBPS, PeakUploadBPS: current.PeakUploadBPS,
+			PeakUploadAt: current.PeakUploadAt, PeakDownloadBPS: current.PeakDownloadBPS, PeakDownloadAt: current.PeakDownloadAt,
+			History: make([]BandwidthHistoryPointDTO, 0, len(current.History))}
+		for _, point := range current.History {
+			item.History = append(item.History, BandwidthHistoryPointDTO{At: point.At, UploadBytes: point.UploadBytes,
+				DownloadBytes: point.DownloadBytes, UploadBPS: point.UploadBPS, DownloadBPS: point.DownloadBPS})
+		}
+		result = append(result, item)
 	}
 	return result, nil
 }

@@ -4,6 +4,8 @@ import type {
   Bootstrap,
   BandwidthLimit,
   BandwidthTraffic,
+  BandwidthMonitor,
+  BandwidthMeasurement,
   Conflict,
   ControlAudit,
   Device,
@@ -59,6 +61,8 @@ export const wailsClient = {
   startBandwidthMonitor: (ip: string, mac: string) => backend().StartBandwidthMonitor(ip, mac) as Promise<void>,
   stopBandwidthMonitor: (mac: string) => backend().StopBandwidthMonitor(mac) as Promise<void>,
   bandwidthTraffic: () => backend().BandwidthTraffic() as Promise<BandwidthTraffic[]>,
+  bandwidthMonitors: () => backend().BandwidthMonitors() as Promise<BandwidthMonitor[]>,
+  bandwidthMeasurements: () => backend().BandwidthMeasurements() as Promise<BandwidthMeasurement[]>,
   openConfigurationDirectory: () => backend().OpenConfigurationDirectory() as Promise<void>,
   openLogDirectory: () => backend().OpenLogDirectory() as Promise<void>,
 }

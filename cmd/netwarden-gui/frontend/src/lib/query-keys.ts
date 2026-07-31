@@ -12,4 +12,6 @@ export const queryKeys = {
   notificationSettings: ["runtime", "notification-settings"] as const,
   controlAudit: ["runtime", "control-audit"] as const,
   bandwidthLimits: ["runtime", "bandwidth-limits"] as const,
+  bandwidthMonitors: ["runtime", "bandwidth-monitors"] as const,
+  bandwidthMeasurements: ["runtime", "bandwidth-measurements"] as const,
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/amdzy/NetWarden/internal/network"
 	networkgateway "github.com/amdzy/NetWarden/internal/network/gateway"
 	"github.com/amdzy/NetWarden/internal/shaping"
+	trafficmetrics "github.com/amdzy/NetWarden/internal/traffic"
 )
 
 type OpenDriver func(string) (capture.Driver, error)
@@ -116,6 +117,7 @@ type Runtime struct {
 	doneOnce   sync.Once
 	control    *ControlLifecycle
 	bandwidth  *BandwidthService
+	traffic    *trafficmetrics.Monitor
 }
 
 func DefaultDependencies() Dependencies {
@@ -243,6 +245,7 @@ func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*
 		}
 		return false
 	})
+	runtime.traffic = trafficmetrics.NewMonitor(runtime.bandwidth, time.Second, time.Hour)
 	scanner.SetObserver(runtime.handleScanEvent)
 	if pinned && gatewayMAC.String() != baselineMAC.String() {
 		monitor.ObserveGatewayClaim(gatewayMAC, now)
@@ -321,6 +324,10 @@ func (r *Runtime) StopBandwidthMonitor(ctx context.Context, mac net.HardwareAddr
 
 func (r *Runtime) BandwidthTraffic(ctx context.Context) ([]shaping.DeviceTrafficStats, error) {
 	return r.bandwidth.Traffic(ctx)
+}
+
+func (r *Runtime) BandwidthMeasurements() ([]trafficmetrics.DeviceSnapshot, error) {
+	return r.traffic.Snapshot()
 }
 
 func (r *Runtime) ControlCommands(auditor ControlAuditor, factory ControlControllerFactory) *ControlCommands {
@@ -402,7 +409,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	defer r.doneOnce.Do(func() { close(r.done) })
 	r.publish(Event{Kind: EventRuntimeStarting})
 
-	workerResults := make(chan error, 3)
+	workerResults := make(chan error, 4)
 	var eventWorkers sync.WaitGroup
 	eventWorkers.Add(1)
 	go func() {
@@ -422,6 +429,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 		workerResults <- workerError(StageDiscovery, r.scanner.Run(workerCtx, r.network.Prefix, r.config.ScanInterval))
 	}()
 	go func() { workerResults <- r.watchNetwork(workerCtx) }()
+	go func() { workerResults <- r.traffic.Run(workerCtx) }()
 	r.publish(Event{Kind: EventRuntimeStarted})
 
 	first := <-workerResults
@@ -429,7 +437,8 @@ func (r *Runtime) Run(ctx context.Context) error {
 	cancel()
 	second := <-workerResults
 	third := <-workerResults
-	first = meaningfulError(first, second, third, ctx.Err())
+	fourth := <-workerResults
+	first = meaningfulError(first, second, third, fourth, ctx.Err())
 	controlCtx, cancelControl := context.WithTimeout(context.Background(), 5*time.Second)
 	controlErr := r.control.RestoreAll(controlCtx, "runtime shutdown or network change")
 	cancelControl()

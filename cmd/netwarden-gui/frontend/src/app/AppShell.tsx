@@ -1,14 +1,15 @@
 import type { ReactNode } from "react"
-import { LaptopMinimal, Logs, Radar, Settings, ShieldCheck } from "lucide-react"
+import { Gauge, LaptopMinimal, Logs, Radar, Settings, ShieldCheck } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { useRuntimeStatus } from "@/features/monitoring/monitoring.queries"
 import { cn } from "@/lib/utils"
 
-export type AppView = "devices" | "integrity" | "diagnostics" | "settings"
+export type AppView = "devices" | "bandwidth" | "integrity" | "diagnostics" | "settings"
 
 const navigation: Array<{ value: AppView; label: string; icon: typeof LaptopMinimal }> = [
   { value: "devices", label: "Devices", icon: LaptopMinimal },
+  { value: "bandwidth", label: "Bandwidth", icon: Gauge },
   { value: "integrity", label: "Gateway Security", icon: ShieldCheck },
   { value: "diagnostics", label: "Diagnostics", icon: Logs },
   { value: "settings", label: "Settings", icon: Settings },

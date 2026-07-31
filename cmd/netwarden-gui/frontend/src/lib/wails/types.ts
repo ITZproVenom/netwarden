@@ -108,4 +108,24 @@ export type BandwidthTraffic = {
   downloadPackets: number
   downloadBytes: number
 }
+export type BandwidthMonitor = { ip: string; mac: string }
+export type BandwidthHistoryPoint = {
+  at: string
+  uploadBytes: number
+  downloadBytes: number
+  uploadBPS: number
+  downloadBPS: number
+}
+export type BandwidthMeasurement = {
+  mac: string
+  uploadBytes: number
+  downloadBytes: number
+  uploadBPS: number
+  downloadBPS: number
+  peakUploadBPS: number
+  peakUploadAt?: string
+  peakDownloadBPS: number
+  peakDownloadAt?: string
+  history: BandwidthHistoryPoint[]
+}
 export type AppInfo = { name: string; version: string; build: string }

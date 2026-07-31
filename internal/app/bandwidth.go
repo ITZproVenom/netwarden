@@ -222,6 +222,10 @@ func (s *BandwidthService) Traffic(ctx context.Context) ([]shaping.DeviceTraffic
 	return s.monitor.BandwidthTraffic(ctx)
 }
 
+func (s *BandwidthService) BandwidthTraffic(ctx context.Context) ([]shaping.DeviceTrafficStats, error) {
+	return s.Traffic(ctx)
+}
+
 func (s *BandwidthService) Clear(ctx context.Context) error {
 	if !s.Available() {
 		return nil

@@ -14,6 +14,7 @@ network gateway.
 - Filter, sort, and select devices from one dashboard.
 - Temporarily disconnect selected eligible devices and restore their access.
 - Set temporary download and upload speed limits for eligible devices.
+- Monitor live per-device upload/download rates, totals, peaks, and recent history.
 - Monitor your gateway identity for suspicious changes.
 - Passively discover IPv6 device addresses from validated Neighbor Discovery traffic.
 - Review recent activity, errors, and control history in Diagnostics.
@@ -72,6 +73,16 @@ the network; they are not saved or automatically reapplied after a restart.
 
 Removing a limit restores the device's normal direct network path. Support depends on the local IPv4
 network and may vary between routers, switches, and devices.
+
+## Bandwidth monitor
+
+Start monitoring an eligible IPv4 device from the Bandwidth view to route its
+traffic through NetWarden without applying a speed limit. The view derives live
+rates, totals, peaks, and up to one hour of in-memory history from aggregate
+forwarding counters. Monitoring routes are temporary and are restored when
+monitoring stops or NetWarden shuts down. IPv6 traffic classification and
+accounting are implemented, while IPv6 interception remains unavailable until
+the NDP redirection lifecycle is completed.
 
 ## IPv6 support
 
