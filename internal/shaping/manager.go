@@ -5,6 +5,7 @@ import (
 	"net"
 	"sort"
 	"sync"
+	"time"
 )
 
 type DevicePolicy struct {
@@ -135,6 +136,36 @@ func (m *Manager) Wait(ctx context.Context, mac net.HardwareAddr, direction Dire
 		return nil
 	}
 	return managed.limiter.Wait(ctx, direction, packetBytes)
+}
+
+// EligibleAt reserves limiter capacity for a scheduler without blocking its
+// event loop. The booleans report whether the identity is managed and limited.
+func (m *Manager) EligibleAt(now time.Time, mac net.HardwareAddr, direction Direction, packetBytes int) (time.Time, bool, bool, error) {
+	key, err := normalizeDeviceMAC(mac)
+	if err != nil {
+		return time.Time{}, false, false, err
+	}
+	if err := validateDirection(direction); err != nil {
+		return time.Time{}, false, false, err
+	}
+	m.mu.RLock()
+	managed := m.policies[key]
+	m.mu.RUnlock()
+	if managed == nil {
+		return now, false, false, nil
+	}
+	if managed.limiter == nil {
+		return now, true, false, nil
+	}
+	directionLimited := managed.policy.UploadBitsPerSecond > 0
+	if direction == Download {
+		directionLimited = managed.policy.DownloadBitsPerSecond > 0
+	}
+	if !directionLimited {
+		return now, true, false, nil
+	}
+	eligibleAt, err := managed.limiter.EligibleAt(now, direction, packetBytes)
+	return eligibleAt, true, true, err
 }
 
 func (m *Manager) Snapshot() []DevicePolicy {

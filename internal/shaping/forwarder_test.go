@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -17,6 +18,26 @@ type recordingSender struct {
 	frames [][]byte
 	err    error
 	sent   chan []byte
+}
+
+type concurrencySender struct {
+	active    atomic.Int64
+	maximum   atomic.Int64
+	forwarded atomic.Int64
+}
+
+func (s *concurrencySender) Send(ctx context.Context, _ []byte) error {
+	active := s.active.Add(1)
+	for maximum := s.maximum.Load(); active > maximum && !s.maximum.CompareAndSwap(maximum, active); maximum = s.maximum.Load() {
+	}
+	defer s.active.Add(-1)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(time.Millisecond):
+		s.forwarded.Add(1)
+		return nil
+	}
 }
 
 func (s *recordingSender) Send(_ context.Context, frame []byte) error {
@@ -199,6 +220,187 @@ func TestDirectionalQueueEnforcesByteCapacity(t *testing.T) {
 	if got := queue.peakBytes.Load(); got != 6 {
 		t.Fatalf("peak queued bytes = %d, want 6", got)
 	}
+}
+
+func TestSchedulerFairlyAlternatesDeviceFlows(t *testing.T) {
+	forwarder, manager, local, _, first, firstIP := testForwarder(t, 16, &recordingSender{sent: make(chan []byte, 8)})
+	second := mustMAC(t, "02:00:00:00:00:21")
+	secondIP := netip.MustParseAddr("192.168.1.21")
+	if err := manager.Track(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Track(second); err != nil {
+		t.Fatal(err)
+	}
+	sender := forwarder.sender.(*recordingSender)
+	for _, item := range []struct {
+		mac    net.HardwareAddr
+		ip     netip.Addr
+		marker byte
+	}{{first, firstIP, 1}, {first, firstIP, 1}, {first, firstIP, 1}, {second, secondIP, 2}, {second, secondIP, 2}, {second, secondIP, 2}} {
+		frame := ipv4Frame(local, item.mac, item.ip, netip.MustParseAddr("1.1.1.1"), 1)
+		frame[len(frame)-1] = item.marker
+		if err := forwarder.Submit(frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- forwarder.Run(ctx) }()
+	for index, want := range []byte{1, 2, 1, 2, 1, 2} {
+		if got := receiveFrame(t, sender.sent); got[len(got)-1] != want {
+			t.Fatalf("frame %d marker = %d, want %d", index, got[len(got)-1], want)
+		}
+	}
+	cancel()
+	<-done
+}
+
+func TestSchedulerMonitoringBypassesDelayedLimitedFlow(t *testing.T) {
+	forwarder, manager, local, _, limited, limitedIP := testForwarder(t, 8, &recordingSender{sent: make(chan []byte, 2)})
+	monitored := mustMAC(t, "02:00:00:00:00:21")
+	monitoredIP := netip.MustParseAddr("192.168.1.21")
+	if err := manager.Set(limited, Policy{UploadBitsPerSecond: 8, BurstBytes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Track(monitored); err != nil {
+		t.Fatal(err)
+	}
+	limitedFrame := ipv4Frame(local, limited, limitedIP, netip.MustParseAddr("1.1.1.1"), 1)
+	limitedFrame[len(limitedFrame)-1] = 1
+	monitorFrame := ipv4Frame(local, monitored, monitoredIP, netip.MustParseAddr("1.1.1.1"), 1)
+	monitorFrame[len(monitorFrame)-1] = 2
+	if err := forwarder.Submit(limitedFrame); err != nil {
+		t.Fatal(err)
+	}
+	if err := forwarder.Submit(monitorFrame); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- forwarder.Run(ctx) }()
+	got := receiveFrame(t, forwarder.sender.(*recordingSender).sent)
+	if got[len(got)-1] != 2 {
+		t.Fatalf("first marker = %d, want unrestricted frame", got[len(got)-1])
+	}
+	cancel()
+	<-done
+}
+
+func TestSchedulerPriorityDoesNotStarveEligibleLimitedFlow(t *testing.T) {
+	forwarder, manager, local, _, monitored, monitoredIP := testForwarder(t, 32, &recordingSender{sent: make(chan []byte, 32)})
+	limited := mustMAC(t, "02:00:00:00:00:21")
+	limitedIP := netip.MustParseAddr("192.168.1.21")
+	if err := manager.Track(monitored); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Set(limited, Policy{UploadBitsPerSecond: 1_000_000_000}); err != nil {
+		t.Fatal(err)
+	}
+	for range 20 {
+		frame := ipv4Frame(local, monitored, monitoredIP, netip.MustParseAddr("1.1.1.1"), 1)
+		frame[len(frame)-1] = 1
+		if err := forwarder.Submit(frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		frame := ipv4Frame(local, limited, limitedIP, netip.MustParseAddr("1.1.1.1"), 1)
+		frame[len(frame)-1] = 2
+		if err := forwarder.Submit(frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- forwarder.Run(ctx) }()
+	foundLimited := false
+	for range monitorPriorityBurst + 1 {
+		frame := receiveFrame(t, forwarder.sender.(*recordingSender).sent)
+		foundLimited = foundLimited || frame[len(frame)-1] == 2
+	}
+	if !foundLimited {
+		t.Fatal("eligible limited flow was starved by monitoring traffic")
+	}
+	cancel()
+	<-done
+}
+
+func TestSchedulerUsesSingleTransmitterAcrossDirections(t *testing.T) {
+	sender := &concurrencySender{}
+	forwarder, manager, local, gateway, device, deviceIP := testForwarder(t, 16, sender)
+	if err := manager.Track(device); err != nil {
+		t.Fatal(err)
+	}
+	for range 4 {
+		if err := forwarder.Submit(ipv4Frame(local, device, deviceIP, netip.MustParseAddr("1.1.1.1"), 1)); err != nil {
+			t.Fatal(err)
+		}
+		if err := forwarder.Submit(ipv4Frame(local, gateway, netip.MustParseAddr("1.1.1.1"), deviceIP, 1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- forwarder.Run(ctx) }()
+	deadline := time.Now().Add(time.Second)
+	for sender.forwarded.Load() < 8 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
+	if sender.forwarded.Load() != 8 || sender.maximum.Load() != 1 {
+		t.Fatalf("forwarded=%d maximum concurrency=%d", sender.forwarded.Load(), sender.maximum.Load())
+	}
+}
+
+func TestSchedulerKeepsFlowPacketsWithinAdmissionCapacity(t *testing.T) {
+	forwarder, manager, local, _, device, deviceIP := testForwarder(t, 1, &recordingSender{})
+	if err := manager.Set(device, Policy{UploadBitsPerSecond: 8, BurstBytes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	frame := ipv4Frame(local, device, deviceIP, netip.MustParseAddr("1.1.1.1"), 1)
+	if err := forwarder.Submit(frame); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- forwarder.Run(ctx) }()
+	deadline := time.Now().Add(time.Second)
+	for len(forwarder.upload.frames) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if err := forwarder.Submit(frame); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("flow queue bypassed capacity: %v", err)
+	}
+	cancel()
+	<-done
+}
+
+func TestSchedulerPromptlyReleasesRemovedFlow(t *testing.T) {
+	forwarder, manager, local, _, device, deviceIP := testForwarder(t, 2, &recordingSender{})
+	if err := manager.Set(device, Policy{UploadBitsPerSecond: 8, BurstBytes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := forwarder.Submit(ipv4Frame(local, device, deviceIP, netip.MustParseAddr("1.1.1.1"), 1)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- forwarder.Run(ctx) }()
+	if err := manager.Remove(device); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for forwarder.Stats().CanceledDrops == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	stats := forwarder.Stats()
+	if stats.CanceledDrops != 1 || stats.UploadQueueDepth != 0 || stats.UploadQueueBytes != 0 {
+		t.Fatalf("stats after removing flow = %#v", stats)
+	}
+	cancel()
+	<-done
 }
 
 func TestForwarderUsesIndependentDirectionalQueues(t *testing.T) {

@@ -90,20 +90,31 @@ type queuedFrame struct {
 // move packet loss into an opaque kernel buffer.
 type directionalQueue struct {
 	frames    chan queuedFrame
+	maxFrames int64
 	maxBytes  int64
+	count     atomic.Int64
 	bytes     atomic.Int64
 	peakBytes atomic.Uint64
 }
 
 func newDirectionalQueue(frameCapacity, byteCapacity int) directionalQueue {
-	return directionalQueue{frames: make(chan queuedFrame, frameCapacity), maxBytes: int64(byteCapacity)}
+	return directionalQueue{frames: make(chan queuedFrame, frameCapacity), maxFrames: int64(frameCapacity), maxBytes: int64(byteCapacity)}
 }
 
 func (q *directionalQueue) enqueue(frame queuedFrame) bool {
+	for current := q.count.Load(); ; current = q.count.Load() {
+		if current+1 > q.maxFrames {
+			return false
+		}
+		if q.count.CompareAndSwap(current, current+1) {
+			break
+		}
+	}
 	size := int64(len(frame.data))
 	for current := q.bytes.Load(); ; current = q.bytes.Load() {
 		if current+size > q.maxBytes || !q.bytes.CompareAndSwap(current, current+size) {
 			if current+size > q.maxBytes {
+				q.count.Add(-1)
 				return false
 			}
 			continue
@@ -115,12 +126,16 @@ func (q *directionalQueue) enqueue(frame queuedFrame) bool {
 		updatePeak(&q.peakBytes, int(q.bytes.Load()))
 		return true
 	default:
+		q.count.Add(-1)
 		q.bytes.Add(-size)
 		return false
 	}
 }
 
-func (q *directionalQueue) release(frame queuedFrame) { q.bytes.Add(-int64(len(frame.data))) }
+func (q *directionalQueue) release(frame queuedFrame) {
+	q.count.Add(-1)
+	q.bytes.Add(-int64(len(frame.data)))
+}
 
 // Forwarder handles only IPv4 frames that have already been redirected to the
 // local host. ARP redirection and packet capture remain platform concerns.
@@ -252,9 +267,9 @@ func (f *Forwarder) Submit(frame []byte) error {
 	if queue.enqueue(queued) {
 		f.accepted.Add(1)
 		if queued.direction == Download {
-			updatePeak(&f.peakDownloadDepth, len(queue.frames))
+			updatePeak(&f.peakDownloadDepth, int(queue.count.Load()))
 		} else {
-			updatePeak(&f.peakUploadDepth, len(queue.frames))
+			updatePeak(&f.peakUploadDepth, int(queue.count.Load()))
 		}
 		return nil
 	}
@@ -262,8 +277,8 @@ func (f *Forwarder) Submit(frame []byte) error {
 	return ErrQueueFull
 }
 
-// Run owns one worker per direction so a slow download cannot block upload
-// forwarding. It is intentionally one-shot.
+// Run owns a fair per-device scheduler and a single serialized transmitter. It
+// is intentionally one-shot.
 func (f *Forwarder) Run(ctx context.Context) error {
 	f.runMu.Lock()
 	if f.running || f.stopped {
@@ -272,12 +287,7 @@ func (f *Forwarder) Run(ctx context.Context) error {
 	}
 	f.running = true
 	f.runMu.Unlock()
-	var workers sync.WaitGroup
-	workers.Add(2)
-	go f.runDirection(ctx, &f.upload, &workers)
-	go f.runDirection(ctx, &f.download, &workers)
-	<-ctx.Done()
-	workers.Wait()
+	newPacketScheduler(f).run(ctx)
 	f.runMu.Lock()
 	f.running = false
 	f.stopped = true
@@ -295,7 +305,7 @@ func (f *Forwarder) Stats() ForwarderStats {
 		UploadQueueDrops: f.uploadQueueDrops.Load(), DownloadQueueDrops: f.downloadQueueDrops.Load(),
 		MonitorQueueDrops: f.monitorQueueDrops.Load(), LimitedQueueDrops: f.limitedQueueDrops.Load(),
 		CanceledDrops: f.canceledDrops.Load(), SendErrors: f.sendErrors.Load(), UnmanagedFrames: f.unmanagedFrames.Load(),
-		QueueCapacity: cap(f.upload.frames), UploadQueueDepth: len(f.upload.frames), DownloadQueueDepth: len(f.download.frames),
+		QueueCapacity: cap(f.upload.frames), UploadQueueDepth: int(f.upload.count.Load()), DownloadQueueDepth: int(f.download.count.Load()),
 		PeakUploadDepth: f.peakUploadDepth.Load(), PeakDownloadDepth: f.peakDownloadDepth.Load(),
 		QueueByteCapacity: f.upload.maxBytes, UploadQueueBytes: f.upload.bytes.Load(), DownloadQueueBytes: f.download.bytes.Load(),
 		PeakUploadBytes: f.upload.peakBytes.Load(), PeakDownloadBytes: f.download.peakBytes.Load(),
@@ -431,36 +441,6 @@ func classifyNetworkPacket(frame []byte) (netip.Addr, netip.Addr, int, bool) {
 		return netip.AddrFrom16([16]byte(network[8:24])), netip.AddrFrom16([16]byte(network[24:40])), totalLength, true
 	default:
 		return netip.Addr{}, netip.Addr{}, 0, false
-	}
-}
-
-func (f *Forwarder) runDirection(ctx context.Context, queue *directionalQueue, workers *sync.WaitGroup) {
-	defer workers.Done()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case frame := <-queue.frames:
-			queue.release(frame)
-			if err := f.manager.Wait(ctx, frame.deviceMAC, frame.direction, len(frame.data)); err != nil {
-				f.canceledDrops.Add(1)
-				continue
-			}
-			if !f.manager.Has(frame.deviceMAC) {
-				f.canceledDrops.Add(1)
-				continue
-			}
-			if err := f.sender.Send(ctx, frame.data); err != nil {
-				f.sendErrors.Add(1)
-				select {
-				case f.errors <- err:
-				default:
-				}
-				continue
-			}
-			f.forwarded.Add(1)
-			f.recordTraffic(frame)
-		}
 	}
 }
 

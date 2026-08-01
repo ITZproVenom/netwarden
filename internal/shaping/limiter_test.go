@@ -108,6 +108,23 @@ func TestManagerSeparatesUnrestrictedTrackingFromLimits(t *testing.T) {
 	}
 }
 
+func TestManagerEligibilityTreatsUnlimitedPolicyDirectionAsUnrestricted(t *testing.T) {
+	manager := NewManager()
+	mac, _ := net.ParseMAC("02:00:00:00:00:22")
+	if err := manager.Set(mac, Policy{DownloadBitsPerSecond: 8, BurstBytes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(100, 0)
+	readyAt, managed, limited, err := manager.EligibleAt(now, mac, Upload, 1_500)
+	if err != nil || !managed || limited || readyAt != now {
+		t.Fatalf("upload eligibility = %s managed=%t limited=%t err=%v", readyAt, managed, limited, err)
+	}
+	readyAt, managed, limited, err = manager.EligibleAt(now, mac, Download, 1_500)
+	if err != nil || !managed || !limited || !readyAt.After(now) {
+		t.Fatalf("download eligibility = %s managed=%t limited=%t err=%v", readyAt, managed, limited, err)
+	}
+}
+
 func TestPolicyValidation(t *testing.T) {
 	for _, policy := range []Policy{
 		{},
