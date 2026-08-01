@@ -58,3 +58,31 @@ func TestValidateControlFrameAllowsOnlyScopedIsolationAndVerifiedRestoration(t *
 		t.Fatal("accepted an unverified control sender")
 	}
 }
+
+func TestValidateIPv6DiscoveryFrameAllowsOnlyScopedSolicitations(t *testing.T) {
+	localMAC, _ := net.ParseMAC("02:00:00:00:00:10")
+	localIP := netip.MustParseAddr("fe80::10")
+	prefixes := []netip.Prefix{netip.MustParsePrefix("fe80::10/64"), netip.MustParsePrefix("2001:db8:1::10/64")}
+	makeFrame := func(target netip.Addr) []byte {
+		frame, err := packet.MarshalNeighborSolicitation(packet.NeighborSolicitation{SourceIP: localIP, SourceMAC: localMAC, TargetIP: target})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return frame
+	}
+	valid := makeFrame(netip.MustParseAddr("2001:db8:1::20"))
+	if err := ValidateIPv6DiscoveryFrame(valid, localMAC, prefixes); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateIPv6DiscoveryFrame(makeFrame(netip.MustParseAddr("2001:db8:2::20")), localMAC, prefixes); err == nil {
+		t.Fatal("accepted an off-link target")
+	}
+	valid[0] ^= 1
+	if err := ValidateIPv6DiscoveryFrame(valid, localMAC, prefixes); err == nil {
+		t.Fatal("accepted the wrong multicast MAC")
+	}
+	nonCanonical := append(makeFrame(netip.MustParseAddr("2001:db8:1::20")), 0)
+	if err := ValidateIPv6DiscoveryFrame(nonCanonical, localMAC, prefixes); err == nil {
+		t.Fatal("accepted a non-canonical solicitation")
+	}
+}

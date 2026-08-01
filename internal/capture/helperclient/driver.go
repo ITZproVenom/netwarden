@@ -229,6 +229,16 @@ func (d *Driver) StopDeviceBandwidthMonitor(ctx context.Context, addresses []net
 	return err
 }
 
+func (d *Driver) SetDeviceIsolation(ctx context.Context, addresses []netip.Addr, mac net.HardwareAddr, continuous bool) error {
+	_, err := d.request(ctx, helper.Message{Type: "isolate_set", TargetIPs: addressStrings(addresses), TargetMAC: mac.String(), Continuous: continuous})
+	return err
+}
+
+func (d *Driver) RestoreDevice(ctx context.Context, addresses []netip.Addr, mac net.HardwareAddr) error {
+	_, err := d.request(ctx, helper.Message{Type: "isolate_remove", TargetIPs: addressStrings(addresses), TargetMAC: mac.String()})
+	return err
+}
+
 func addressStrings(addresses []netip.Addr) []string {
 	result := make([]string, 0, len(addresses))
 	for _, address := range addresses {

@@ -53,14 +53,16 @@ type recordingControllerFactory struct {
 type transactionalControlController struct {
 	isolateCalls int
 	failAt       int
+	isolated     []control.Endpoint
 	restored     []control.Endpoint
 }
 
-func (c *transactionalControlController) Isolate(_ context.Context, _ control.Endpoint) error {
+func (c *transactionalControlController) Isolate(_ context.Context, target control.Endpoint) error {
 	c.isolateCalls++
 	if c.isolateCalls == c.failAt {
 		return errors.New("send failed")
 	}
+	c.isolated = append(c.isolated, target)
 	return nil
 }
 
@@ -123,6 +125,22 @@ func TestControlCommandsFilterIneligibleDevices(t *testing.T) {
 	}
 	if len(audit.events) != 2 || len(audit.events[0].Targets) != 1 || len(audit.events[1].Targets) != 1 {
 		t.Fatalf("unexpected targets: %#v", audit.events)
+	}
+}
+
+func TestControlCommandsAllowIPv6OnlyPeerWithDeviceIsolationController(t *testing.T) {
+	mac, _ := net.ParseMAC("02:00:00:00:00:40")
+	address := netip.MustParseAddr("fe80::40")
+	audit := &recordingControlAudit{}
+	deps := testControlDependencies(t, audit)
+	deps.Devices = controlTestDevices{values: []device.Device{{IP: address, Addresses: []netip.Addr{address}, MAC: mac.String(), Role: device.RolePeer, Online: true}}}
+	deps.Lifecycle = NewControlLifecycle(nil)
+	controller := &transactionalControlController{}
+	if err := NewControlCommands(controller, deps).Disconnect(context.Background(), ControlTarget{IP: address, MAC: mac}); err != nil {
+		t.Fatal(err)
+	}
+	if len(controller.isolated) != 1 || controller.isolated[0].IP != address {
+		t.Fatalf("isolated = %#v", controller.isolated)
 	}
 }
 

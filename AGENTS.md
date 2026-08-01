@@ -76,13 +76,12 @@ Implemented:
 - Narrow privileged-helper IPv6 control: the GUI supplies identities and policies, while the helper exclusively marshals validated Neighbor Advertisements.
 - Device-level dual-stack monitoring and limits across IPv4 plus all known IPv6 addresses, with one per-MAC accounting identity.
 - IPv6-only and dual-stack monitoring/limits, including reconciliation when privacy addresses are learned or expire.
+- Bounded active IPv6 discovery using known on-link addresses and EUI-64 candidates derived from learned `/64` prefixes. Probes use solicited-node multicast and never enumerate a `/64`.
+- IPv6-only and dual-stack disconnect/isolation using helper-owned NDP redirection, packet dropping, refresh for continuous controls, privacy-address reconciliation, and corrective restoration.
 
-Active discovery and disconnect controls remain IPv4-only.
-
-Future IPv6 work, in priority order:
-
-1. Add practical active IPv6 discovery using learned prefixes, multicast, and known addresses; never attempt exhaustive `/64` scanning.
-2. Add IPv6 disconnect/isolation controls as a separate optional milestone.
+IPv6 isolation blocks traffic routed through the verified default router. Direct
+peer-to-peer link-local traffic is not intercepted by the current host-routing
+design and is outside the ordinary disconnect control's guarantee.
 
 Lower-priority IPv6 work includes a reusable extension-header parser (the NDP parser intentionally rejects extension headers), multi-router/privacy-address live tests, and SEND-aware behavior. Do not implement automatic overload restoration as part of this roadmap unless newly requested.
 

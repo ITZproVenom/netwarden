@@ -126,7 +126,7 @@ export function DeviceDetails({
               </dl>
             </section>
             <Separator />
-            <ControlSection device={device} bandwidthLimited={Boolean(bandwidthLimit)} />
+            <ControlSection device={device} bandwidthActive={Boolean(bandwidthLimit) || bandwidthMonitored} />
             <Separator />
             <BandwidthSection device={device} limit={bandwidthLimit} available={bandwidthAvailable} monitoringAvailable={bandwidthMonitoringAvailable} monitored={bandwidthMonitored} />
             <Separator />
@@ -165,8 +165,8 @@ export function DeviceDetails({
   )
 }
 
-function ControlSection({ device, bandwidthLimited }: { device: Device; bandwidthLimited: boolean }) {
-  const eligible = isControlEligible(device) && !bandwidthLimited
+function ControlSection({ device, bandwidthActive }: { device: Device; bandwidthActive: boolean }) {
+  const eligible = isControlEligible(device) && !bandwidthActive
   const disconnect = useDisconnectDevice()
   const continuous = useStartContinuousControl()
   const restore = useRestoreControl()
@@ -193,12 +193,10 @@ function ControlSection({ device, bandwidthLimited }: { device: Device; bandwidt
             ? "Disconnected"
             : eligible
               ? "Available"
-              : bandwidthLimited
-                ? "Bandwidth limited"
+              : bandwidthActive
+                ? "Bandwidth active"
                 : device.role !== "Device"
                   ? "Protected"
-                  : !device.ip.includes(".")
-                    ? "IPv6 observation only"
                   : "Offline"
   return (
     <section className="space-y-3 py-6">

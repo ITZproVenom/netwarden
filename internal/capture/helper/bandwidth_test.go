@@ -3,6 +3,7 @@ package helper
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"net"
 	"net/netip"
 	"sync"
@@ -17,11 +18,18 @@ type bandwidthRecorder struct {
 	mu     sync.Mutex
 	frames [][]byte
 	sent   chan []byte
+	calls  int
+	failAt int
 }
 
 func (r *bandwidthRecorder) send(_ context.Context, frame []byte) error {
 	copyOfFrame := append([]byte(nil), frame...)
 	r.mu.Lock()
+	r.calls++
+	if r.calls == r.failAt {
+		r.mu.Unlock()
+		return errors.New("send failed")
+	}
 	r.frames = append(r.frames, copyOfFrame)
 	r.mu.Unlock()
 	select {
@@ -29,6 +37,32 @@ func (r *bandwidthRecorder) send(_ context.Context, frame []byte) error {
 	default:
 	}
 	return nil
+}
+
+func TestBandwidthSessionRollsBackFailedIsolation(t *testing.T) {
+	local := mustHelperMAC(t, "02:00:00:00:00:10")
+	gateway := mustHelperMAC(t, "02:00:00:00:00:01")
+	device := mustHelperMAC(t, "02:00:00:00:00:20")
+	deviceIP := netip.MustParseAddr("192.168.1.20")
+	recorder := &bandwidthRecorder{sent: make(chan []byte, 8), failAt: 2}
+	session, err := newBandwidthSession(context.Background(), local, netip.MustParseAddr("192.168.1.10"), netip.MustParseAddr("192.168.1.1"), netip.MustParsePrefix("192.168.1.10/24"), recorder.send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.close() })
+	session.observeGateway(gateway)
+	if err := session.isolateRoutes(context.Background(), []netip.Addr{deviceIP}, device, false); err == nil {
+		t.Fatal("expected isolation failure")
+	}
+	session.mu.RLock()
+	_, active := session.isolated[device.String()]
+	session.mu.RUnlock()
+	if active {
+		t.Fatal("failed isolation remained active")
+	}
+	if session.dropIsolated(helperIPv4Frame(local, device, deviceIP, netip.MustParseAddr("1.1.1.1"))) {
+		t.Fatal("failed isolation continued dropping traffic")
+	}
 }
 
 func TestBandwidthSessionRedirectsForwardsAndRestores(t *testing.T) {
@@ -120,6 +154,67 @@ func TestBandwidthSessionDoesNotConsumeUnmanagedIPv6Discovery(t *testing.T) {
 	frame[14] = 0x60
 	if !isIPFrame(frame) || session.submit(frame) {
 		t.Fatal("unmanaged IPv6 frame was not left for discovery")
+	}
+}
+
+func TestBandwidthSessionIsolatesAndRestoresDualStackDevice(t *testing.T) {
+	local := mustHelperMAC(t, "02:00:00:00:00:10")
+	gateway := mustHelperMAC(t, "02:00:00:00:00:01")
+	device := mustHelperMAC(t, "02:00:00:00:00:20")
+	device4, device6 := netip.MustParseAddr("192.168.1.20"), netip.MustParseAddr("2001:db8:1::20")
+	recorder := &bandwidthRecorder{sent: make(chan []byte, 32)}
+	session, err := newBandwidthSession(context.Background(), local, netip.MustParseAddr("192.168.1.10"), netip.MustParseAddr("192.168.1.1"), netip.MustParsePrefix("192.168.1.10/24"), recorder.send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.close() })
+	session.observeGateway(gateway)
+	session.observeNDP(packet.NDP{Type: packet.ICMPv6NeighborSolicitation, SourceIP: netip.MustParseAddr("fe80::10"), SourceMAC: local})
+	session.observeNDP(packet.NDP{Type: packet.ICMPv6RouterAdvertisement, SourceIP: netip.MustParseAddr("fe80::1"), SourceMAC: gateway})
+	addresses := []netip.Addr{device4, device6}
+	if err := session.isolateRoutes(context.Background(), addresses, device, true); err != nil {
+		t.Fatal(err)
+	}
+	for range 4 {
+		receiveBandwidthFrame(t, recorder.sent)
+	}
+	if !session.dropIsolated(helperIPv4Frame(local, device, device4, netip.MustParseAddr("1.1.1.1"))) {
+		t.Fatal("isolated IPv4 upload was not dropped")
+	}
+	if !session.dropIsolated(helperIPv6Frame(local, device, device6, netip.MustParseAddr("2001:4860:4860::8888"))) {
+		t.Fatal("isolated IPv6 upload was not dropped")
+	}
+	if session.dropIsolated(helperIPv4Frame(local, device, netip.MustParseAddr("192.168.1.30"), netip.MustParseAddr("1.1.1.1"))) {
+		t.Fatal("unrelated traffic was dropped")
+	}
+	if err := session.restoreIsolation(context.Background(), addresses, device); err != nil {
+		t.Fatal(err)
+	}
+	for range 8 {
+		receiveBandwidthFrame(t, recorder.sent)
+	}
+	if session.dropIsolated(helperIPv6Frame(local, device, device6, netip.MustParseAddr("2001:4860:4860::8888"))) {
+		t.Fatal("traffic remained isolated after restoration")
+	}
+}
+
+func TestBandwidthSessionRejectsIsolationWhileForwarding(t *testing.T) {
+	local := mustHelperMAC(t, "02:00:00:00:00:10")
+	gateway := mustHelperMAC(t, "02:00:00:00:00:01")
+	device := mustHelperMAC(t, "02:00:00:00:00:20")
+	deviceIP := netip.MustParseAddr("192.168.1.20")
+	recorder := &bandwidthRecorder{sent: make(chan []byte, 8)}
+	session, err := newBandwidthSession(context.Background(), local, netip.MustParseAddr("192.168.1.10"), netip.MustParseAddr("192.168.1.1"), netip.MustParsePrefix("192.168.1.10/24"), recorder.send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.close() })
+	session.observeGateway(gateway)
+	if err := session.monitor(context.Background(), deviceIP, device); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.isolateRoutes(context.Background(), []netip.Addr{deviceIP}, device, false); err == nil {
+		t.Fatal("isolated a monitored device")
 	}
 }
 
@@ -245,5 +340,18 @@ func helperIPv4Frame(destinationMAC, sourceMAC net.HardwareAddr, sourceIP, desti
 	destination := destinationIP.As4()
 	copy(frame[26:30], source[:])
 	copy(frame[30:34], destination[:])
+	return frame
+}
+
+func helperIPv6Frame(destinationMAC, sourceMAC net.HardwareAddr, sourceIP, destinationIP netip.Addr) []byte {
+	frame := make([]byte, 14+40+16)
+	copy(frame[:6], destinationMAC)
+	copy(frame[6:12], sourceMAC)
+	binary.BigEndian.PutUint16(frame[12:14], packet.EtherTypeIPv6)
+	frame[14] = 0x60
+	binary.BigEndian.PutUint16(frame[18:20], 16)
+	source, destination := sourceIP.As16(), destinationIP.As16()
+	copy(frame[22:38], source[:])
+	copy(frame[38:54], destination[:])
 	return frame
 }

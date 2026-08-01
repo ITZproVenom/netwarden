@@ -82,3 +82,26 @@ func TestScannerPeriodicControl(t *testing.T) {
 		t.Fatal("periodic scans remained enabled")
 	}
 }
+
+func TestScannerProbesBoundedUniqueIPv6Candidates(t *testing.T) {
+	ipv4, ipv6 := &recordingProber{}, &recordingProber{}
+	scanner := NewScanner(ipv4, 2, 0)
+	scanner.ConfigureIPv6(ipv6, func() []netip.Addr {
+		return []netip.Addr{netip.MustParseAddr("fe80::2"), netip.MustParseAddr("fe80::2"), netip.MustParseAddr("ff02::1"), netip.MustParseAddr("2001:db8::3")}
+	})
+	var completed ScanEvent
+	scanner.SetObserver(func(event ScanEvent) {
+		if event.Kind == ScanCompleted {
+			completed = event
+		}
+	})
+	if err := scanner.Scan(context.Background(), netip.MustParsePrefix("192.168.4.0/30")); err != nil {
+		t.Fatal(err)
+	}
+	if len(ipv6.hosts) != 2 || ipv6.hosts[0].String() != "fe80::2" || ipv6.hosts[1].String() != "2001:db8::3" {
+		t.Fatalf("unexpected IPv6 probes: %v", ipv6.hosts)
+	}
+	if completed.Probed != 4 || completed.IPv6Probed != 2 {
+		t.Fatalf("unexpected scan counts: %#v", completed)
+	}
+}

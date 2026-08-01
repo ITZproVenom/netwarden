@@ -24,6 +24,43 @@ func TestParseNDPNeighborAdvertisement(t *testing.T) {
 	}
 }
 
+func TestMarshalNeighborSolicitationUsesSolicitedNodeMulticast(t *testing.T) {
+	mac, _ := net.ParseMAC("02:00:00:00:00:10")
+	source := netip.MustParseAddr("fe80::10")
+	target := netip.MustParseAddr("2001:db8:1::1234:5678")
+	frame, err := MarshalNeighborSolicitation(NeighborSolicitation{SourceIP: source, SourceMAC: mac, TargetIP: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := ParseNDP(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Type != ICMPv6NeighborSolicitation || message.SourceIP != source || message.TargetIP != target {
+		t.Fatalf("unexpected solicitation: %#v", message)
+	}
+	if message.DestinationIP != netip.MustParseAddr("ff02::1:ff34:5678") || message.DestinationMAC.String() != "33:33:ff:34:56:78" {
+		t.Fatalf("unexpected multicast identity: %s / %s", message.DestinationIP, message.DestinationMAC)
+	}
+	frame[len(frame)-1] ^= 1
+	if _, err := ParseNDP(frame); err == nil {
+		t.Fatal("accepted a solicitation with an invalid checksum")
+	}
+}
+
+func TestMarshalNeighborSolicitationRejectsInvalidIdentity(t *testing.T) {
+	mac, _ := net.ParseMAC("02:00:00:00:00:10")
+	for _, test := range []NeighborSolicitation{
+		{SourceIP: netip.IPv6Unspecified(), SourceMAC: mac, TargetIP: netip.MustParseAddr("2001:db8::1")},
+		{SourceIP: netip.MustParseAddr("fe80::1"), SourceMAC: mac, TargetIP: netip.MustParseAddr("ff02::1")},
+		{SourceIP: netip.MustParseAddr("fe80::1"), SourceMAC: net.HardwareAddr{1, 2, 3}, TargetIP: netip.MustParseAddr("2001:db8::1")},
+	} {
+		if _, err := MarshalNeighborSolicitation(test); err == nil {
+			t.Fatalf("accepted invalid solicitation: %#v", test)
+		}
+	}
+}
+
 func TestMarshalNeighborAdvertisementRoundTrip(t *testing.T) {
 	source := netip.MustParseAddr("fe80::1")
 	destination := netip.MustParseAddr("fe80::20")

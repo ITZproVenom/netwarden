@@ -65,7 +65,7 @@ func runHelperMode() (bool, error) {
 		return true, err
 	}
 	defer closeTransport()
-	return true, helper.Serve(context.Background(), driver, selected.MAC, prefix.Addr(), route.GatewayIP, prefix, input, output)
+	return true, helper.Serve(context.Background(), driver, selected.MAC, prefix.Addr(), route.GatewayIP, prefix, selected.Prefixes, input, output)
 }
 
 func helperTransport(address, token string) (io.Reader, io.Writer, func() error, error) {

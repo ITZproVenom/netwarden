@@ -17,11 +17,12 @@ import (
 const bandwidthRefreshInterval = time.Second
 
 type bandwidthTarget struct {
-	ip        netip.Addr
-	addresses []netip.Addr
-	mac       net.HardwareAddr
-	policy    shaping.Policy
-	limited   bool
+	ip         netip.Addr
+	addresses  []netip.Addr
+	mac        net.HardwareAddr
+	policy     shaping.Policy
+	limited    bool
+	continuous bool
 }
 
 type frameSenderFunc func(context.Context, []byte) error
@@ -46,6 +47,7 @@ type bandwidthSession struct {
 	routerIPv6    netip.Addr
 	routerIPv6MAC net.HardwareAddr
 	targets       map[string]bandwidthTarget
+	isolated      map[string]bandwidthTarget
 	cancel        context.CancelFunc
 	done          chan error
 	closeOnce     sync.Once
@@ -196,6 +198,7 @@ func newBandwidthSession(ctx context.Context, localMAC net.HardwareAddr, localIP
 		localMAC: append(net.HardwareAddr(nil), localMAC...), localIP: localIP, gatewayIP: gatewayIP,
 		prefix: prefix, send: send, manager: manager, forwarder: forwarder,
 		targets: make(map[string]bandwidthTarget), cancel: cancel, done: make(chan error, 1),
+		isolated: make(map[string]bandwidthTarget),
 	}
 	go func() { session.done <- forwarder.Run(runCtx) }()
 	go session.refresh(runCtx)
@@ -216,6 +219,132 @@ func (s *bandwidthSession) observeGateway(mac net.HardwareAddr) {
 func (s *bandwidthSession) submit(frame []byte) bool {
 	err := s.forwarder.Submit(frame)
 	return err == nil || errors.Is(err, shaping.ErrQueueFull)
+}
+
+func (s *bandwidthSession) dropIsolated(frame []byte) bool {
+	source, destination, ok := frameAddresses(frame)
+	if !ok {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, target := range s.isolated {
+		for _, address := range target.addresses {
+			if source == address || destination == address {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func frameAddresses(frame []byte) (netip.Addr, netip.Addr, bool) {
+	if len(frame) < packet.EthernetHeaderLen {
+		return netip.Addr{}, netip.Addr{}, false
+	}
+	network := frame[packet.EthernetHeaderLen:]
+	switch uint16(frame[12])<<8 | uint16(frame[13]) {
+	case 0x0800:
+		if len(network) < 20 || network[0]>>4 != 4 {
+			return netip.Addr{}, netip.Addr{}, false
+		}
+		return netip.AddrFrom4([4]byte(network[12:16])), netip.AddrFrom4([4]byte(network[16:20])), true
+	case packet.EtherTypeIPv6:
+		if len(network) < 40 || network[0]>>4 != 6 {
+			return netip.Addr{}, netip.Addr{}, false
+		}
+		return netip.AddrFrom16([16]byte(network[8:24])), netip.AddrFrom16([16]byte(network[24:40])), true
+	default:
+		return netip.Addr{}, netip.Addr{}, false
+	}
+}
+
+func (s *bandwidthSession) isolateRoutes(ctx context.Context, addresses []netip.Addr, mac net.HardwareAddr, continuous bool) error {
+	addresses = normalizeTargetAddresses(addresses)
+	if len(addresses) == 0 {
+		return errors.New("isolation target requires at least one address")
+	}
+	for _, address := range addresses {
+		if err := s.validateTarget(address, mac); err != nil {
+			return err
+		}
+	}
+	key := mac.String()
+	s.mu.RLock()
+	_, forwarding := s.targets[key]
+	previous, replacing := s.isolated[key]
+	for otherKey, other := range s.isolated {
+		if otherKey == key {
+			continue
+		}
+		for _, address := range addresses {
+			for _, occupied := range other.addresses {
+				if address == occupied {
+					s.mu.RUnlock()
+					return errors.New("isolation target address is already assigned to another device")
+				}
+			}
+		}
+	}
+	s.mu.RUnlock()
+	if forwarding {
+		return errors.New("remove bandwidth monitoring or limits before isolating the device")
+	}
+	target := bandwidthTarget{ip: addresses[0], addresses: append([]netip.Addr(nil), addresses...), mac: append(net.HardwareAddr(nil), mac...), continuous: continuous}
+	s.mu.Lock()
+	s.isolated[key] = target
+	s.mu.Unlock()
+	if err := s.redirect(ctx, target); err != nil {
+		s.mu.Lock()
+		if replacing {
+			s.isolated[key] = previous
+		} else {
+			delete(s.isolated, key)
+		}
+		s.mu.Unlock()
+		_ = s.restore(context.Background(), target)
+		if replacing {
+			_ = s.redirect(context.Background(), previous)
+		}
+		return fmt.Errorf("activate device isolation: %w", err)
+	}
+	if replacing {
+		wanted := make(map[netip.Addr]struct{}, len(addresses))
+		for _, address := range addresses {
+			wanted[address] = struct{}{}
+		}
+		for _, address := range previous.addresses {
+			if _, keep := wanted[address]; !keep {
+				_ = s.restoreAddress(ctx, previous, address)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *bandwidthSession) restoreIsolation(ctx context.Context, addresses []netip.Addr, mac net.HardwareAddr) error {
+	key := mac.String()
+	s.mu.Lock()
+	target, found := s.isolated[key]
+	if found {
+		delete(s.isolated, key)
+	}
+	s.mu.Unlock()
+	if !found {
+		target = bandwidthTarget{ip: firstOrRecorded(addresses, bandwidthTarget{}), addresses: normalizeTargetAddresses(addresses), mac: append(net.HardwareAddr(nil), mac...)}
+	}
+	if len(target.addresses) == 0 {
+		return nil
+	}
+	if err := s.restore(ctx, target); err != nil {
+		if found {
+			s.mu.Lock()
+			s.isolated[key] = target
+			s.mu.Unlock()
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *bandwidthSession) set(ctx context.Context, ip netip.Addr, mac net.HardwareAddr, policy shaping.Policy) error {
@@ -392,6 +521,10 @@ func (s *bandwidthSession) closeActive() error {
 		targets = append(targets, target)
 	}
 	s.targets = make(map[string]bandwidthTarget)
+	for _, target := range s.isolated {
+		targets = append(targets, target)
+	}
+	s.isolated = make(map[string]bandwidthTarget)
 	s.mu.Unlock()
 	var result error
 	for _, target := range targets {
@@ -420,6 +553,13 @@ func (s *bandwidthSession) refresh(ctx context.Context) {
 			targets := make([]bandwidthTarget, 0, len(s.targets))
 			for _, target := range s.targets {
 				targets = append(targets, target)
+			}
+			s.mu.RUnlock()
+			s.mu.RLock()
+			for _, target := range s.isolated {
+				if target.continuous {
+					targets = append(targets, target)
+				}
 			}
 			s.mu.RUnlock()
 			for _, target := range targets {

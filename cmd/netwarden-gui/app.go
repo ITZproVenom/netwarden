@@ -915,7 +915,8 @@ func activityFromEvent(event coreapp.Event) ActivityDTO {
 		activity.Detail = strings.Join(parts, " · ")
 	}
 	if event.Scan != nil {
-		activity.Detail = fmt.Sprintf("%s · %d addresses · %s", event.Scan.Prefix.Masked(), event.Scan.Probed, event.Scan.Duration.Round(time.Millisecond))
+		ipv4Probed := event.Scan.Probed - event.Scan.IPv6Probed
+		activity.Detail = fmt.Sprintf("%s · %d IPv4 + %d IPv6 addresses · %s", event.Scan.Prefix.Masked(), ipv4Probed, event.Scan.IPv6Probed, event.Scan.Duration.Round(time.Millisecond))
 		if event.Scan.Err != nil {
 			activity.Detail = event.Scan.Err.Error()
 		}

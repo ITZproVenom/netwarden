@@ -31,11 +31,12 @@ type Message struct {
 	Policy     *shaping.Policy              `json:"policy,omitempty"`
 	Traffic    []shaping.DeviceTrafficStats `json:"traffic,omitempty"`
 	Forwarder  *shaping.ForwarderStats      `json:"forwarder,omitempty"`
+	Continuous bool                         `json:"continuous,omitempty"`
 }
 
 // Serve exposes filtered capture and only tightly scoped discovery, isolation,
-// and restoration ARP transmissions.
-func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr, localIP, gatewayIP netip.Addr, prefix netip.Prefix, input io.Reader, output io.Writer) error {
+// forwarding, and corrective ARP/NDP transmissions.
+func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr, localIP, gatewayIP netip.Addr, prefix netip.Prefix, ipv6Prefixes []netip.Prefix, input io.Reader, output io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer driver.Close()
@@ -77,7 +78,7 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 			if ndpErr == nil {
 				bandwidth.observeNDP(ndpMessage)
 			}
-			if isIPFrame(frame.Data) && ndpErr != nil && bandwidth.submit(frame.Data) {
+			if isIPFrame(frame.Data) && ndpErr != nil && (bandwidth.dropIsolated(frame.Data) || bandwidth.submit(frame.Data)) {
 				return nil
 			}
 			if len(frame.Data) >= packet.EthernetHeaderLen && bytes.Equal(frame.Data[6:12], localMAC) {
@@ -101,14 +102,14 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 			gatewayMu.RLock()
 			verifiedGatewayMAC := append(net.HardwareAddr(nil), gatewayMAC...)
 			gatewayMu.RUnlock()
-			if err := ValidateOutboundFrame(command.Data, localMAC, verifiedGatewayMAC, localIP, gatewayIP, prefix); err != nil {
+			if err := ValidateOutboundFrame(command.Data, localMAC, verifiedGatewayMAC, localIP, gatewayIP, prefix, ipv6Prefixes); err != nil {
 				_ = write(Message{Type: "error", Error: err.Error()})
 				continue
 			}
 			if err := sendFrame(ctx, command.Data); err != nil {
 				_ = write(Message{Type: "error", Error: err.Error()})
 			}
-		case "shape_set", "shape_remove", "monitor_set", "monitor_remove":
+		case "shape_set", "shape_remove", "monitor_set", "monitor_remove", "isolate_set", "isolate_remove":
 			err := handleBandwidthCommand(ctx, bandwidth, command)
 			result := Message{Type: "result", RequestID: command.RequestID}
 			if err != nil {
@@ -164,6 +165,12 @@ func handleBandwidthCommand(ctx context.Context, bandwidth *bandwidthSession, co
 	if command.Type == "monitor_remove" {
 		return bandwidth.removeMonitorRoutes(ctx, addresses, mac)
 	}
+	if command.Type == "isolate_set" {
+		return bandwidth.isolateRoutes(ctx, addresses, mac, command.Continuous)
+	}
+	if command.Type == "isolate_remove" {
+		return bandwidth.restoreIsolation(ctx, addresses, mac)
+	}
 	if command.Policy == nil {
 		return errors.New("bandwidth policy is required")
 	}
@@ -178,11 +185,50 @@ func isIPFrame(frame []byte) bool {
 	return etherType == 0x0800 || etherType == packet.EtherTypeIPv6
 }
 
-func ValidateOutboundFrame(frame []byte, localMAC, gatewayMAC net.HardwareAddr, localIP, gatewayIP netip.Addr, prefix netip.Prefix) error {
+func ValidateOutboundFrame(frame []byte, localMAC, gatewayMAC net.HardwareAddr, localIP, gatewayIP netip.Addr, prefix netip.Prefix, ipv6Prefixes []netip.Prefix) error {
 	if err := ValidateDiscoveryFrame(frame, localMAC, localIP, prefix); err == nil {
 		return nil
 	}
+	if err := ValidateIPv6DiscoveryFrame(frame, localMAC, ipv6Prefixes); err == nil {
+		return nil
+	}
 	return ValidateControlFrame(frame, localMAC, gatewayMAC, localIP, gatewayIP, prefix)
+}
+
+func ValidateIPv6DiscoveryFrame(frame []byte, localMAC net.HardwareAddr, prefixes []netip.Prefix) error {
+	message, err := packet.ParseNDP(frame)
+	if err != nil || message.Type != packet.ICMPv6NeighborSolicitation {
+		return errors.New("helper accepts only IPv6 Neighbor Solicitation discovery frames")
+	}
+	if !bytes.Equal(message.SourceMAC, localMAC) || len(frame) < packet.EthernetHeaderLen || !bytes.Equal(frame[6:12], localMAC) {
+		return errors.New("IPv6 discovery sender MAC does not match the selected interface")
+	}
+	sourceAllowed, targetAllowed := false, false
+	for _, prefix := range prefixes {
+		if !prefix.IsValid() || !prefix.Addr().Is6() {
+			continue
+		}
+		if message.SourceIP == prefix.Addr() {
+			sourceAllowed = true
+		}
+		if prefix.Masked().Contains(message.TargetIP) {
+			targetAllowed = true
+		}
+	}
+	if !sourceAllowed || !targetAllowed || message.SourceIP == message.TargetIP {
+		return errors.New("IPv6 discovery identities are outside the selected interface")
+	}
+	if message.DestinationIP != packet.SolicitedNodeMulticast(message.TargetIP) ||
+		!bytes.Equal(message.DestinationMAC, packet.SolicitedNodeMulticastMAC(message.TargetIP)) {
+		return errors.New("IPv6 discovery must use the target solicited-node multicast identity")
+	}
+	canonical, err := packet.MarshalNeighborSolicitation(packet.NeighborSolicitation{
+		SourceIP: message.SourceIP, SourceMAC: localMAC, TargetIP: message.TargetIP,
+	})
+	if err != nil || !bytes.Equal(frame, canonical) {
+		return errors.New("IPv6 discovery frame is not a canonical Neighbor Solicitation")
+	}
+	return nil
 }
 
 func ValidateControlFrame(frame []byte, localMAC, gatewayMAC net.HardwareAddr, localIP, gatewayIP netip.Addr, prefix netip.Prefix) error {

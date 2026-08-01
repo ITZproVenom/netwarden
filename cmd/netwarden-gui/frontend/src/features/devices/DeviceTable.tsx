@@ -11,6 +11,7 @@ import { isControlEligible } from "./device-list"
 export function DeviceTable({
   devices,
   bandwidthByMAC,
+  bandwidthBlockedMACs,
   checkedMACs,
   onCheckedChange,
   onCheckVisible,
@@ -18,13 +19,14 @@ export function DeviceTable({
 }: {
   devices: Device[]
   bandwidthByMAC: Map<string, BandwidthLimit>
+  bandwidthBlockedMACs: Set<string>
   checkedMACs: Set<string>
   onCheckedChange: (mac: string, checked: boolean) => void
   onCheckVisible: (checked: boolean) => void
   onOpen: (device: Device, trigger: HTMLElement) => void
 }) {
   const eligible = devices.filter(
-    (device) => isControlEligible(device) && !bandwidthByMAC.has(device.mac.toLowerCase()),
+    (device) => isControlEligible(device) && !bandwidthBlockedMACs.has(device.mac.toLowerCase()),
   )
   const allChecked = eligible.length > 0 && eligible.every((device) => checkedMACs.has(device.mac))
   const someChecked = eligible.some((device) => checkedMACs.has(device.mac))
@@ -60,6 +62,7 @@ export function DeviceTable({
               key={device.mac}
               device={device}
               bandwidthLimit={bandwidthByMAC.get(device.mac.toLowerCase())}
+              bandwidthBlocked={bandwidthBlockedMACs.has(device.mac.toLowerCase())}
               checked={checkedMACs.has(device.mac)}
               onCheckedChange={(checked) => onCheckedChange(device.mac, checked)}
               onOpen={(trigger) => onOpen(device, trigger)}
@@ -74,12 +77,14 @@ export function DeviceTable({
 function DeviceRow({
   device,
   bandwidthLimit,
+  bandwidthBlocked,
   checked,
   onCheckedChange,
   onOpen,
 }: {
   device: Device
   bandwidthLimit?: BandwidthLimit
+  bandwidthBlocked: boolean
   checked: boolean
   onCheckedChange: (checked: boolean) => void
   onOpen: (trigger: HTMLElement) => void
@@ -117,7 +122,7 @@ function DeviceRow({
         <SelectionCheckbox
           label={`Select ${device.name || device.ip}`}
           checked={checked}
-          disabled={!isControlEligible(device) || Boolean(bandwidthLimit)}
+          disabled={!isControlEligible(device) || bandwidthBlocked}
           onChange={onCheckedChange}
         />
       </TableCell>

@@ -342,6 +342,9 @@ func (s *BandwidthService) Contains(mac net.HardwareAddr) bool {
 	}
 	s.mu.RLock()
 	_, found := s.active[key]
+	if !found {
+		_, found = s.monitored[key]
+	}
 	s.mu.RUnlock()
 	return found
 }

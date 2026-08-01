@@ -84,18 +84,8 @@ hour/day/week/month views. Monitor-all rolls back newly installed routes if any
 device fails, monitored IPv4 routes follow address changes, and forwarding
 drops or sampling failures appear as health warnings. Monitoring routes remain
 temporary and are restored when monitoring stops or NetWarden shuts down. IPv6
-traffic classification and accounting are implemented, while IPv6 interception
-remains unavailable until the NDP redirection lifecycle is completed.
-
-## IPv6 support
-
-NetWarden passively observes validated ICMPv6 Neighbor Discovery messages and
-groups IPv4, link-local IPv6, and global IPv6 addresses under the same device
-identity. Validated Router Advertisements provide IPv6 default-router and
-prefix discovery, lifetime tracking, and trust-on-first-use router identity
-alerts. Active scanning, disconnect controls, and bandwidth limits remain
-IPv4-only. The interface labels IPv6-only devices accordingly instead of
-offering controls that cannot affect their traffic.
+traffic classification, interception, accounting, monitoring, and limits use a
+validated NDP redirection and restoration lifecycle.
 
 ## Privacy and responsible use
 

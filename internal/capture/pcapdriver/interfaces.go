@@ -39,12 +39,12 @@ func ListInterfaces() ([]Interface, error) {
 		seenPrefix := make(map[netip.Prefix]struct{})
 		for _, address := range candidate.Addresses {
 			ip, ok := netip.AddrFromSlice(address.IP)
-			if !ok || !ip.Unmap().Is4() {
+			if !ok {
 				continue
 			}
 			ip = ip.Unmap()
 			bits, total := address.Netmask.Size()
-			if total != 32 || bits < 0 {
+			if bits < 0 || total != ip.BitLen() {
 				continue
 			}
 			prefix := netip.PrefixFrom(ip, bits)
@@ -115,7 +115,7 @@ func systemInterfacesByAddress() (map[netip.Addr]systemInterface, error) {
 		}
 		for _, address := range addresses {
 			prefix, err := netip.ParsePrefix(address.String())
-			if err != nil || !prefix.Addr().Unmap().Is4() {
+			if err != nil {
 				continue
 			}
 			result[prefix.Addr().Unmap()] = systemInterface{

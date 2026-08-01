@@ -247,11 +247,88 @@ func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*
 	})
 	runtime.traffic = trafficmetrics.NewMonitor(runtime.bandwidth, time.Second, time.Hour)
 	runtime.traffic.RestoreState(durableHistory.Traffic, now)
+	if source, ok := ipv6DiscoverySource(localIPv6); ok {
+		scanner.ConfigureIPv6(discovery.NewNDPProber(driver, networkContext.Local.MAC, source), runtime.ipv6DiscoveryCandidates)
+	}
 	scanner.SetObserver(runtime.handleScanEvent)
 	if pinned && gatewayMAC.String() != baselineMAC.String() {
 		monitor.ObserveGatewayClaim(gatewayMAC, now)
 	}
 	return runtime, nil
+}
+
+func ipv6DiscoverySource(addresses []netip.Addr) (netip.Addr, bool) {
+	for _, address := range addresses {
+		if address.Is6() && address.IsLinkLocalUnicast() {
+			return address, true
+		}
+	}
+	for _, address := range addresses {
+		if address.Is6() && !address.IsUnspecified() && !address.IsMulticast() {
+			return address, true
+		}
+	}
+	return netip.Addr{}, false
+}
+
+func (r *Runtime) ipv6DiscoveryCandidates() []netip.Addr {
+	seen := make(map[netip.Addr]struct{})
+	var result []netip.Addr
+	add := func(address netip.Addr) {
+		if address.Is6() && !address.IsUnspecified() && !address.IsMulticast() && r.ipv6AddressOnLink(address) {
+			if _, exists := seen[address]; !exists {
+				seen[address] = struct{}{}
+				result = append(result, address)
+			}
+		}
+	}
+	devices := r.registry.Snapshot()
+	for _, current := range devices {
+		for _, address := range current.Addresses {
+			add(address)
+		}
+	}
+	context := r.ipv6.Snapshot(time.Now().UTC())
+	for _, router := range context.Routers {
+		add(router.IP)
+	}
+	for _, router := range context.Routers {
+		for _, prefix := range router.Prefixes {
+			if !prefix.OnLink || prefix.Prefix.Bits() != 64 {
+				continue
+			}
+			for _, current := range devices {
+				mac, err := net.ParseMAC(current.MAC)
+				if err != nil || len(mac) != 6 {
+					continue
+				}
+				if candidate, ok := eui64Address(prefix.Prefix, mac); ok {
+					add(candidate)
+				}
+			}
+		}
+	}
+	return result
+}
+
+func (r *Runtime) ipv6AddressOnLink(address netip.Addr) bool {
+	for _, prefix := range r.config.Interface.Prefixes {
+		if prefix.IsValid() && prefix.Addr().Is6() && prefix.Masked().Contains(address) {
+			return true
+		}
+	}
+	return false
+}
+
+func eui64Address(prefix netip.Prefix, mac net.HardwareAddr) (netip.Addr, bool) {
+	if !prefix.IsValid() || !prefix.Addr().Is6() || prefix.Bits() != 64 || len(mac) != 6 {
+		return netip.Addr{}, false
+	}
+	value := prefix.Masked().Addr().As16()
+	value[8], value[9], value[10] = mac[0]^0x02, mac[1], mac[2]
+	value[11], value[12] = 0xff, 0xfe
+	value[13], value[14], value[15] = mac[3], mac[4], mac[5]
+	return netip.AddrFrom16(value), true
 }
 
 func (r *Runtime) Network() network.Context { return r.network.Clone() }
@@ -400,7 +477,7 @@ func (r *Runtime) StopAllBandwidthMonitors(ctx context.Context) error {
 func (r *Runtime) ControlCommands(auditor ControlAuditor, factory ControlControllerFactory) *ControlCommands {
 	networkContext := r.Network()
 	if factory == nil {
-		factory = runtimeControlControllerFactory{driver: r.driver}
+		factory = runtimeControlControllerFactory{driver: r.driver, devices: r.registry}
 	}
 	return NewControlCommands(nil, ControlDependencies{
 		Devices: r.registry,
@@ -419,9 +496,15 @@ func (r *Runtime) ControlCommands(auditor ControlAuditor, factory ControlControl
 	})
 }
 
-type runtimeControlControllerFactory struct{ driver capture.Driver }
+type runtimeControlControllerFactory struct {
+	driver  capture.Driver
+	devices isolationDeviceSource
+}
 
-func (f runtimeControlControllerFactory) Prepare(_ context.Context, _ ControlRequest, scope ControlScope) (ControlControllerLease, error) {
+func (f runtimeControlControllerFactory) Prepare(_ context.Context, request ControlRequest, scope ControlScope) (ControlControllerLease, error) {
+	if backend, ok := f.driver.(DeviceIsolationBackend); ok {
+		return ControlControllerLease{Controller: newDeviceIsolationController(backend, f.devices, request.Operation == ControlContinuous)}, nil
+	}
 	controller, err := control.NewController(f.driver,
 		control.Endpoint{IP: scope.LocalIP, MAC: scope.LocalMAC},
 		control.Endpoint{IP: scope.GatewayIP, MAC: scope.GatewayMAC},
@@ -537,7 +620,7 @@ func (r *Runtime) forwardEvents(ctx context.Context) {
 		case event := <-r.service.Events():
 			if event.Kind == core.EventAddressChanged {
 				reconcileCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				err := r.bandwidth.ReconcileDevice(reconcileCtx, event.Device)
+				err := errors.Join(r.bandwidth.ReconcileDevice(reconcileCtx, event.Device), r.control.ReconcileDevice(reconcileCtx, event.Device))
 				cancel()
 				if err != nil {
 					r.publish(Event{Kind: EventBandwidthMonitoringFailed, Device: &event.Device, Err: err})
