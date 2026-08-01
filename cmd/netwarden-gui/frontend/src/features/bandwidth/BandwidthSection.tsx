@@ -8,8 +8,10 @@ import type { BandwidthLimit, Device } from "@/lib/wails/types"
 import { useRemoveBandwidthLimit, useSetBandwidthLimit } from "./bandwidth.queries"
 import { displayMbps } from "./format"
 import { bandwidthValidation, parseMbps } from "./validation"
-import { isControlEligible } from "@/features/devices/device-list"
 import { useStartBandwidthMonitor, useStopBandwidthMonitor } from "./monitor.queries"
+
+const isBandwidthEligible = (device: Device) =>
+  device.online && device.role === "Device" && device.controlState === ""
 
 export function BandwidthSection({
   device,
@@ -35,15 +37,13 @@ export function BandwidthSection({
     setUpload(limit?.uploadBitsPerSecond ? displayMbps(limit.uploadBitsPerSecond) : "")
   }, [device.mac, limit?.downloadBitsPerSecond, limit?.uploadBitsPerSecond])
   const validation = bandwidthValidation(download, upload)
-  const eligible = available && isControlEligible(device)
+  const eligible = available && isBandwidthEligible(device)
   const pending = setLimit.isPending || removeLimit.isPending
   const reason = !available
     ? "Bandwidth control is unavailable with the active capture backend."
-    : device.role !== "Device"
-      ? "This protected network endpoint cannot be limited."
-      : !device.ip.includes(".")
-        ? "IPv6-only devices are visible, but IPv6 bandwidth control is not supported yet."
-      : device.controlState !== ""
+      : device.role !== "Device"
+        ? "This protected network endpoint cannot be limited."
+        : device.controlState !== ""
         ? "Restore normal access before applying a bandwidth limit."
         : !device.online
           ? "The device must be online before applying a limit."
@@ -52,7 +52,7 @@ export function BandwidthSection({
     <section className="space-y-4 py-6">
       <div className="flex items-center justify-between gap-3 rounded-lg border bg-background/30 p-3">
         <div><h4 className="text-xs font-semibold">Traffic monitoring</h4><p className="mt-1 text-xs text-muted-foreground">Measure live rates, totals, peaks, and history.</p></div>
-        {monitored ? <Button size="sm" variant="outline" disabled={Boolean(limit) || stopMonitor.isPending} onClick={() => stopMonitor.mutate(device.mac)}><RotateCcw /> Stop</Button> : <Button size="sm" variant="outline" disabled={!monitoringAvailable || !isControlEligible(device) || startMonitor.isPending} onClick={() => startMonitor.mutate({ip: device.ip, mac: device.mac})}><Gauge /> Start</Button>}
+        {monitored ? <Button size="sm" variant="outline" disabled={Boolean(limit) || stopMonitor.isPending} onClick={() => stopMonitor.mutate(device.mac)}><RotateCcw /> Stop</Button> : <Button size="sm" variant="outline" disabled={!monitoringAvailable || !isBandwidthEligible(device) || startMonitor.isPending} onClick={() => startMonitor.mutate({ip: device.ip, mac: device.mac})}><Gauge /> Start</Button>}
       </div>
       <div className="flex items-center justify-between gap-3">
         <div>

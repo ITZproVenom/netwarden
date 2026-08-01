@@ -21,6 +21,54 @@ const (
 
 var ErrMalformedNDP = errors.New("malformed Ethernet IPv6 neighbor-discovery frame")
 
+// NeighborAdvertisement is the narrowly supported NDP transmission used to
+// redirect and restore a verified neighbor-cache entry.
+type NeighborAdvertisement struct {
+	SourceIP, DestinationIP, TargetIP netip.Addr
+	SourceMAC, DestinationMAC         net.HardwareAddr
+	AdvertisedMAC                     net.HardwareAddr
+	Router, Solicited, Override       bool
+}
+
+// MarshalNeighborAdvertisement builds an Ethernet/IPv6 Neighbor
+// Advertisement with one target-link-layer-address option. It deliberately
+// cannot marshal arbitrary IPv6 payloads.
+func MarshalNeighborAdvertisement(message NeighborAdvertisement) ([]byte, error) {
+	if !message.SourceIP.Is6() || !message.DestinationIP.Is6() || !message.TargetIP.Is6() ||
+		message.SourceIP.IsUnspecified() || message.DestinationIP.IsUnspecified() || message.TargetIP.IsMulticast() ||
+		!validNDPUnicastMAC(message.SourceMAC) || !validNDPUnicastMAC(message.DestinationMAC) || !validNDPUnicastMAC(message.AdvertisedMAC) {
+		return nil, ErrMalformedNDP
+	}
+	const ipv6HeaderLength, icmpLength = 40, 32
+	frame := make([]byte, EthernetHeaderLen+ipv6HeaderLength+icmpLength)
+	copy(frame[0:6], message.DestinationMAC)
+	copy(frame[6:12], message.SourceMAC)
+	binary.BigEndian.PutUint16(frame[12:14], EtherTypeIPv6)
+	ipv6 := frame[EthernetHeaderLen:]
+	ipv6[0] = 0x60
+	binary.BigEndian.PutUint16(ipv6[4:6], icmpLength)
+	ipv6[6], ipv6[7] = NextHeaderICMPv6, NDPHopLimit
+	source, destination, target := message.SourceIP.As16(), message.DestinationIP.As16(), message.TargetIP.As16()
+	copy(ipv6[8:24], source[:])
+	copy(ipv6[24:40], destination[:])
+	icmp := ipv6[ipv6HeaderLength:]
+	icmp[0] = ICMPv6NeighborAdvertisement
+	if message.Router {
+		icmp[4] |= 0x80
+	}
+	if message.Solicited {
+		icmp[4] |= 0x40
+	}
+	if message.Override {
+		icmp[4] |= 0x20
+	}
+	copy(icmp[8:24], target[:])
+	icmp[24], icmp[25] = 2, 1
+	copy(icmp[26:32], message.AdvertisedMAC)
+	binary.BigEndian.PutUint16(icmp[2:4], icmpv6Checksum(message.SourceIP, message.DestinationIP, icmp))
+	return frame, nil
+}
+
 // NDP is the validated identity-bearing subset of an ICMPv6 Neighbor
 // Discovery message. Address selection remains a discovery-layer concern.
 type NDP struct {
@@ -148,6 +196,10 @@ func validNDPUnicastMAC(mac net.HardwareAddr) bool {
 }
 
 func validICMPv6Checksum(source, destination netip.Addr, payload []byte) bool {
+	return icmpv6Checksum(source, destination, payload) == 0
+}
+
+func icmpv6Checksum(source, destination netip.Addr, payload []byte) uint16 {
 	sourceBytes, destinationBytes := source.As16(), destination.As16()
 	var sum uint32
 	sum = checksumBytes(sum, sourceBytes[:])
@@ -160,7 +212,7 @@ func validICMPv6Checksum(source, destination netip.Addr, payload []byte) bool {
 	for sum>>16 != 0 {
 		sum = (sum & 0xffff) + (sum >> 16)
 	}
-	return uint16(sum) == 0xffff
+	return ^uint16(sum)
 }
 
 func checksumBytes(sum uint32, value []byte) uint32 {

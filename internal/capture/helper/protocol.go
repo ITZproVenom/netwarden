@@ -26,6 +26,7 @@ type Message struct {
 	CapturedAt time.Time                    `json:"captured_at,omitempty"`
 	Error      string                       `json:"error,omitempty"`
 	TargetIP   string                       `json:"target_ip,omitempty"`
+	TargetIPs  []string                     `json:"target_ips,omitempty"`
 	TargetMAC  string                       `json:"target_mac,omitempty"`
 	Policy     *shaping.Policy              `json:"policy,omitempty"`
 	Traffic    []shaping.DeviceTrafficStats `json:"traffic,omitempty"`
@@ -72,7 +73,11 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 				gatewayMu.Unlock()
 				bandwidth.observeGateway(message.SenderMAC)
 			}
-			if isIPFrame(frame.Data) && bandwidth.submit(frame.Data) {
+			ndpMessage, ndpErr := packet.ParseNDP(frame.Data)
+			if ndpErr == nil {
+				bandwidth.observeNDP(ndpMessage)
+			}
+			if isIPFrame(frame.Data) && ndpErr != nil && bandwidth.submit(frame.Data) {
 				return nil
 			}
 			if len(frame.Data) >= packet.EthernetHeaderLen && bytes.Equal(frame.Data[6:12], localMAC) {
@@ -134,27 +139,35 @@ func handleBandwidthCommand(ctx context.Context, bandwidth *bandwidthSession, co
 	if command.RequestID == "" {
 		return errors.New("bandwidth command requires a request ID")
 	}
-	ip, err := netip.ParseAddr(command.TargetIP)
-	if err != nil {
-		return fmt.Errorf("invalid bandwidth target IP: %w", err)
+	addressTexts := command.TargetIPs
+	if len(addressTexts) == 0 {
+		addressTexts = []string{command.TargetIP}
+	}
+	addresses := make([]netip.Addr, 0, len(addressTexts))
+	for _, text := range addressTexts {
+		ip, err := netip.ParseAddr(text)
+		if err != nil {
+			return fmt.Errorf("invalid bandwidth target IP: %w", err)
+		}
+		addresses = append(addresses, ip)
 	}
 	mac, err := net.ParseMAC(command.TargetMAC)
 	if err != nil {
 		return fmt.Errorf("invalid bandwidth target MAC: %w", err)
 	}
 	if command.Type == "shape_remove" {
-		return bandwidth.remove(ctx, ip, mac)
+		return bandwidth.removeRoutes(ctx, addresses, mac)
 	}
 	if command.Type == "monitor_set" {
-		return bandwidth.monitor(ctx, ip, mac)
+		return bandwidth.monitorRoutes(ctx, addresses, mac)
 	}
 	if command.Type == "monitor_remove" {
-		return bandwidth.removeMonitor(ctx, ip, mac)
+		return bandwidth.removeMonitorRoutes(ctx, addresses, mac)
 	}
 	if command.Policy == nil {
 		return errors.New("bandwidth policy is required")
 	}
-	return bandwidth.set(ctx, ip, mac, *command.Policy)
+	return bandwidth.setRoutes(ctx, addresses, mac, *command.Policy)
 }
 
 func isIPFrame(frame []byte) bool {

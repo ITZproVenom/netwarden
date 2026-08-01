@@ -194,8 +194,18 @@ func (d *Driver) SetBandwidthLimit(ctx context.Context, ip netip.Addr, mac net.H
 	return err
 }
 
+func (d *Driver) SetDeviceBandwidthLimit(ctx context.Context, addresses []netip.Addr, mac net.HardwareAddr, policy shaping.Policy) error {
+	_, err := d.request(ctx, helper.Message{Type: "shape_set", TargetIPs: addressStrings(addresses), TargetMAC: mac.String(), Policy: &policy})
+	return err
+}
+
 func (d *Driver) RemoveBandwidthLimit(ctx context.Context, ip netip.Addr, mac net.HardwareAddr) error {
 	_, err := d.request(ctx, helper.Message{Type: "shape_remove", TargetIP: ip.String(), TargetMAC: mac.String()})
+	return err
+}
+
+func (d *Driver) RemoveDeviceBandwidthLimit(ctx context.Context, addresses []netip.Addr, mac net.HardwareAddr) error {
+	_, err := d.request(ctx, helper.Message{Type: "shape_remove", TargetIPs: addressStrings(addresses), TargetMAC: mac.String()})
 	return err
 }
 
@@ -204,9 +214,29 @@ func (d *Driver) StartBandwidthMonitor(ctx context.Context, ip netip.Addr, mac n
 	return err
 }
 
+func (d *Driver) StartDeviceBandwidthMonitor(ctx context.Context, addresses []netip.Addr, mac net.HardwareAddr) error {
+	_, err := d.request(ctx, helper.Message{Type: "monitor_set", TargetIPs: addressStrings(addresses), TargetMAC: mac.String()})
+	return err
+}
+
 func (d *Driver) StopBandwidthMonitor(ctx context.Context, ip netip.Addr, mac net.HardwareAddr) error {
 	_, err := d.request(ctx, helper.Message{Type: "monitor_remove", TargetIP: ip.String(), TargetMAC: mac.String()})
 	return err
+}
+
+func (d *Driver) StopDeviceBandwidthMonitor(ctx context.Context, addresses []netip.Addr, mac net.HardwareAddr) error {
+	_, err := d.request(ctx, helper.Message{Type: "monitor_remove", TargetIPs: addressStrings(addresses), TargetMAC: mac.String()})
+	return err
+}
+
+func addressStrings(addresses []netip.Addr) []string {
+	result := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		if address.IsValid() {
+			result = append(result, address.String())
+		}
+	}
+	return result
 }
 
 func (d *Driver) BandwidthTraffic(ctx context.Context) ([]shaping.DeviceTrafficStats, error) {

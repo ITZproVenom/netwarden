@@ -24,6 +24,39 @@ func TestParseNDPNeighborAdvertisement(t *testing.T) {
 	}
 }
 
+func TestMarshalNeighborAdvertisementRoundTrip(t *testing.T) {
+	source := netip.MustParseAddr("fe80::1")
+	destination := netip.MustParseAddr("fe80::20")
+	sourceMAC, _ := net.ParseMAC("02:00:00:00:00:10")
+	destinationMAC, _ := net.ParseMAC("02:00:00:00:00:20")
+	frame, err := MarshalNeighborAdvertisement(NeighborAdvertisement{
+		SourceIP: source, DestinationIP: destination, TargetIP: source,
+		SourceMAC: sourceMAC, DestinationMAC: destinationMAC, AdvertisedMAC: sourceMAC,
+		Router: true, Solicited: true, Override: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := ParseNDP(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Type != ICMPv6NeighborAdvertisement || message.SourceIP != source || message.TargetIP != source || message.SourceMAC.String() != sourceMAC.String() {
+		t.Fatalf("advertisement = %#v", message)
+	}
+	if string(frame[:6]) != string(destinationMAC) || string(frame[6:12]) != string(sourceMAC) {
+		t.Fatalf("ethernet identities = %x", frame[:12])
+	}
+}
+
+func TestMarshalNeighborAdvertisementRejectsUnsafeIdentity(t *testing.T) {
+	mac, _ := net.ParseMAC("02:00:00:00:00:10")
+	_, err := MarshalNeighborAdvertisement(NeighborAdvertisement{SourceIP: netip.MustParseAddr("192.0.2.1"), DestinationIP: netip.MustParseAddr("fe80::20"), TargetIP: netip.MustParseAddr("fe80::1"), SourceMAC: mac, DestinationMAC: mac, AdvertisedMAC: mac})
+	if err == nil {
+		t.Fatal("accepted an IPv4 source for NDP")
+	}
+}
+
 func TestParseNDPRejectsInvalidHopLimitAndChecksum(t *testing.T) {
 	source := netip.MustParseAddr("fe80::2")
 	destination := netip.MustParseAddr("ff02::1")

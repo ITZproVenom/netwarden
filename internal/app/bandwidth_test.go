@@ -27,6 +27,28 @@ type recordingBandwidthController struct {
 	failMonitorIP netip.Addr
 }
 
+type recordingDeviceBandwidthController struct {
+	recordingBandwidthController
+	setAddresses, removedAddresses, monitoredAddresses, stoppedAddresses [][]netip.Addr
+}
+
+func (c *recordingDeviceBandwidthController) SetDeviceBandwidthLimit(_ context.Context, addresses []netip.Addr, _ net.HardwareAddr, _ shaping.Policy) error {
+	c.setAddresses = append(c.setAddresses, append([]netip.Addr(nil), addresses...))
+	return nil
+}
+func (c *recordingDeviceBandwidthController) RemoveDeviceBandwidthLimit(_ context.Context, addresses []netip.Addr, _ net.HardwareAddr) error {
+	c.removedAddresses = append(c.removedAddresses, append([]netip.Addr(nil), addresses...))
+	return nil
+}
+func (c *recordingDeviceBandwidthController) StartDeviceBandwidthMonitor(_ context.Context, addresses []netip.Addr, _ net.HardwareAddr) error {
+	c.monitoredAddresses = append(c.monitoredAddresses, append([]netip.Addr(nil), addresses...))
+	return nil
+}
+func (c *recordingDeviceBandwidthController) StopDeviceBandwidthMonitor(_ context.Context, addresses []netip.Addr, _ net.HardwareAddr) error {
+	c.stoppedAddresses = append(c.stoppedAddresses, append([]netip.Addr(nil), addresses...))
+	return nil
+}
+
 func (c *recordingBandwidthController) StartBandwidthMonitor(_ context.Context, ip netip.Addr, mac net.HardwareAddr) error {
 	if c.monitorErr != nil {
 		return c.monitorErr
@@ -93,6 +115,33 @@ func TestBandwidthServiceUsesLivePeerAndRecordedIdentityForRemoval(t *testing.T)
 	}
 	if len(controller.removed) != 1 || controller.removed[0].IP != target.IP || len(service.Snapshot()) != 0 {
 		t.Fatalf("removals = %#v, active = %#v", controller.removed, service.Snapshot())
+	}
+}
+
+func TestBandwidthServiceInstallsAndReconcilesEveryDeviceAddress(t *testing.T) {
+	registry, target := bandwidthRegistry(t)
+	ipv6 := netip.MustParseAddr("2001:db8:1::20")
+	if _, _, err := registry.Observe(device.Observation{IP: ipv6, MAC: target.MAC, SeenAt: time.Now().Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	controller := &recordingDeviceBandwidthController{}
+	service := NewBandwidthService(controller, registry, nil)
+	if err := service.StartMonitoring(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	if len(controller.monitoredAddresses) != 1 || len(controller.monitoredAddresses[0]) != 2 {
+		t.Fatalf("installed addresses = %#v", controller.monitoredAddresses)
+	}
+	privacy := netip.MustParseAddr("2001:db8:1::99")
+	current, _, err := registry.Observe(device.Observation{IP: privacy, MAC: target.MAC, SeenAt: time.Now().Add(2 * time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ReconcileDevice(context.Background(), current); err != nil {
+		t.Fatal(err)
+	}
+	if len(controller.stoppedAddresses) != 1 || len(controller.monitoredAddresses) != 2 || len(controller.monitoredAddresses[1]) != 3 {
+		t.Fatalf("reconciliation stop/start = %#v / %#v", controller.stoppedAddresses, controller.monitoredAddresses)
 	}
 }
 

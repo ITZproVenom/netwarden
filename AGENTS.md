@@ -72,17 +72,17 @@ Implemented:
 - Router Advertisement parsing, default-router selection, prefix/lifetime tracking, and persisted trust/conflict state.
 - IPv6 network/status UI.
 - IPv6 frame classification, Ethernet rewriting, scheduling, and traffic accounting once traffic reaches the forwarder.
+- NDP redirection, refresh, and corrective restoration for verified router and device identities.
+- Narrow privileged-helper IPv6 control: the GUI supplies identities and policies, while the helper exclusively marshals validated Neighbor Advertisements.
+- Device-level dual-stack monitoring and limits across IPv4 plus all known IPv6 addresses, with one per-MAC accounting identity.
+- IPv6-only and dual-stack monitoring/limits, including reconciliation when privacy addresses are learned or expire.
 
-The major gap is that real IPv6 device traffic is not redirected into the forwarder. Active discovery, disconnect controls, monitoring, and limits remain IPv4-only.
+Active discovery and disconnect controls remain IPv4-only.
 
 Future IPv6 work, in priority order:
 
-1. Implement a safe NDP redirection/refresh/restoration lifecycle, including Neighbor Advertisement marshalling and verified router/device identities.
-2. Replace the single-IPv4 bandwidth target model with a dual-stack device target that manages IPv4 plus multiple IPv6 routes without double-counting usage.
-3. Add narrowly validated privileged-helper commands for IPv6 redirect and restore; never expose arbitrary IPv6 transmission.
-4. Enable IPv6-only and dual-stack bandwidth monitoring/limits, including privacy-address reconciliation and restoring every installed route.
-5. Add practical active IPv6 discovery using learned prefixes, multicast, and known addresses; never attempt exhaustive `/64` scanning.
-6. Add IPv6 disconnect/isolation controls as a separate optional milestone.
+1. Add practical active IPv6 discovery using learned prefixes, multicast, and known addresses; never attempt exhaustive `/64` scanning.
+2. Add IPv6 disconnect/isolation controls as a separate optional milestone.
 
 Lower-priority IPv6 work includes a reusable extension-header parser (the NDP parser intentionally rejects extension headers), multi-router/privacy-address live tests, and SEND-aware behavior. Do not implement automatic overload restoration as part of this roadmap unless newly requested.
 

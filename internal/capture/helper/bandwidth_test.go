@@ -123,6 +123,47 @@ func TestBandwidthSessionDoesNotConsumeUnmanagedIPv6Discovery(t *testing.T) {
 	}
 }
 
+func TestBandwidthSessionRedirectsAndRestoresEveryDualStackRoute(t *testing.T) {
+	local := mustHelperMAC(t, "02:00:00:00:00:10")
+	gateway := mustHelperMAC(t, "02:00:00:00:00:01")
+	device := mustHelperMAC(t, "02:00:00:00:00:20")
+	local6, router6, device6 := netip.MustParseAddr("fe80::10"), netip.MustParseAddr("fe80::1"), netip.MustParseAddr("2001:db8:1::20")
+	device4 := netip.MustParseAddr("192.168.1.20")
+	recorder := &bandwidthRecorder{sent: make(chan []byte, 32)}
+	session, err := newBandwidthSession(context.Background(), local, netip.MustParseAddr("192.168.1.10"), netip.MustParseAddr("192.168.1.1"), netip.MustParsePrefix("192.168.1.10/24"), recorder.send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.close() })
+	session.observeGateway(gateway)
+	session.observeNDP(packet.NDP{Type: packet.ICMPv6NeighborSolicitation, SourceIP: local6, SourceMAC: local})
+	session.observeNDP(packet.NDP{Type: packet.ICMPv6RouterAdvertisement, SourceIP: router6, SourceMAC: gateway})
+	if err := session.setRoutes(context.Background(), []netip.Addr{device4, device6}, device, shaping.Policy{UploadBitsPerSecond: 1_000_000}); err != nil {
+		t.Fatal(err)
+	}
+	receiveBandwidthFrame(t, recorder.sent)
+	receiveBandwidthFrame(t, recorder.sent)
+	for range 2 {
+		frame := receiveBandwidthFrame(t, recorder.sent)
+		message, err := packet.ParseNDP(frame)
+		if err != nil || message.Type != packet.ICMPv6NeighborAdvertisement {
+			t.Fatalf("IPv6 redirect = %#v, %v", message, err)
+		}
+	}
+	if err := session.removeRoutes(context.Background(), []netip.Addr{device4, device6}, device); err != nil {
+		t.Fatal(err)
+	}
+	for range 4 {
+		receiveBandwidthFrame(t, recorder.sent)
+	}
+	for range 4 {
+		frame := receiveBandwidthFrame(t, recorder.sent)
+		if _, err := packet.ParseNDP(frame); err != nil {
+			t.Fatalf("IPv6 restoration: %v", err)
+		}
+	}
+}
+
 func TestBandwidthSessionTransitionsMonitorLimitAndBackWithoutRestoringEarly(t *testing.T) {
 	local := mustHelperMAC(t, "02:00:00:00:00:10")
 	gateway := mustHelperMAC(t, "02:00:00:00:00:01")

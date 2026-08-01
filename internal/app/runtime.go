@@ -364,7 +364,7 @@ func (r *Runtime) StartAllBandwidthMonitors(ctx context.Context) error {
 	}
 	var started []net.HardwareAddr
 	for _, current := range r.Devices() {
-		if !current.Online || current.Role != device.RolePeer || !current.IP.Is4() {
+		if !current.Online || current.Role != device.RolePeer {
 			continue
 		}
 		mac, err := net.ParseMAC(current.MAC)
