@@ -64,8 +64,11 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 	runResult := make(chan error, 1)
 	var gatewayMu sync.RWMutex
 	var gatewayMAC net.HardwareAddr
-	go func() {
-		runResult <- driver.Run(ctx, func(frame capture.Frame) error {
+	consume := func(frame capture.Frame) error {
+		var ndpValid bool
+		etherType := frameEtherType(frame.Data)
+		switch etherType {
+		case packet.EtherTypeARP:
 			if message, err := packet.ParseARP(frame.Data); err == nil && message.SenderIP == gatewayIP && !bytes.Equal(message.SenderMAC, localMAC) {
 				gatewayMu.Lock()
 				if len(gatewayMAC) == 0 {
@@ -74,18 +77,27 @@ func Serve(ctx context.Context, driver capture.Driver, localMAC net.HardwareAddr
 				gatewayMu.Unlock()
 				bandwidth.observeGateway(message.SenderMAC)
 			}
-			ndpMessage, ndpErr := packet.ParseNDP(frame.Data)
-			if ndpErr == nil {
-				bandwidth.observeNDP(ndpMessage)
+		case packet.EtherTypeIPv6:
+			if message, err := packet.ParseNDP(frame.Data); err == nil {
+				ndpValid = true
+				bandwidth.observeNDP(message)
 			}
-			if isIPFrame(frame.Data) && ndpErr != nil && (bandwidth.dropIsolated(frame.Data) || bandwidth.submit(frame.Data)) {
-				return nil
-			}
-			if len(frame.Data) >= packet.EthernetHeaderLen && bytes.Equal(frame.Data[6:12], localMAC) {
-				return nil
-			}
-			return write(Message{Type: "frame", Data: frame.Data, CapturedAt: frame.CapturedAt})
-		})
+		}
+		if (etherType == etherTypeIPv4 || etherType == packet.EtherTypeIPv6) && !ndpValid &&
+			(bandwidth.dropIsolated(frame.Data) || bandwidth.submit(frame.Data)) {
+			return nil
+		}
+		if len(frame.Data) >= packet.EthernetHeaderLen && bytes.Equal(frame.Data[6:12], localMAC) {
+			return nil
+		}
+		return write(Message{Type: "frame", Data: frame.Data, CapturedAt: frame.CapturedAt})
+	}
+	go func() {
+		if borrowed, ok := driver.(capture.BorrowedFrameDriver); ok {
+			runResult <- borrowed.RunBorrowed(ctx, consume)
+		} else {
+			runResult <- driver.Run(ctx, consume)
+		}
 	}()
 	decoder := json.NewDecoder(input)
 	for {
@@ -178,11 +190,17 @@ func handleBandwidthCommand(ctx context.Context, bandwidth *bandwidthSession, co
 }
 
 func isIPFrame(frame []byte) bool {
-	if len(frame) < packet.EthernetHeaderLen {
-		return false
-	}
-	etherType := binary.BigEndian.Uint16(frame[12:14])
+	etherType := frameEtherType(frame)
 	return etherType == 0x0800 || etherType == packet.EtherTypeIPv6
+}
+
+const etherTypeIPv4 = 0x0800
+
+func frameEtherType(frame []byte) uint16 {
+	if len(frame) < packet.EthernetHeaderLen {
+		return 0
+	}
+	return binary.BigEndian.Uint16(frame[12:14])
 }
 
 func ValidateOutboundFrame(frame []byte, localMAC, gatewayMAC net.HardwareAddr, localIP, gatewayIP netip.Addr, prefix netip.Prefix, ipv6Prefixes []netip.Prefix) error {

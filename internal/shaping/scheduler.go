@@ -2,7 +2,6 @@ package shaping
 
 import (
 	"context"
-	"fmt"
 	"time"
 )
 
@@ -18,27 +17,39 @@ type scheduledPacket struct {
 }
 
 type scheduledFlow struct {
-	key      string
+	key      schedulerFlowKey
 	packets  []scheduledPacket
 	readyAt  time.Time
 	limited  bool
 	prepared bool
 }
 
+type schedulerFlowKey struct {
+	device    string
+	direction Direction
+}
+
 // packetScheduler owns all per-device/per-direction flow state. It reserves
 // limiter eligibility without blocking and is the only component that calls
 // the transmitter, preserving serialized packet injection.
 type packetScheduler struct {
-	forwarder     *Forwarder
-	flows         map[string]*scheduledFlow
-	order         []string
-	monitorCursor int
-	limitedCursor int
-	monitorStreak int
+	forwarder      *Forwarder
+	flows          map[schedulerFlowKey]*scheduledFlow
+	order          []schedulerFlowKey
+	monitorCursor  int
+	limitedCursor  int
+	monitorStreak  int
+	monitorFlows   int
+	limitedFlows   int
+	policyRevision uint64
 }
 
 func newPacketScheduler(forwarder *Forwarder) *packetScheduler {
-	return &packetScheduler{forwarder: forwarder, flows: make(map[string]*scheduledFlow)}
+	return &packetScheduler{
+		forwarder:      forwarder,
+		flows:          make(map[schedulerFlowKey]*scheduledFlow),
+		policyRevision: forwarder.manager.policyRevision(),
+	}
 }
 
 func (s *packetScheduler) run(ctx context.Context) {
@@ -53,7 +64,10 @@ func (s *packetScheduler) run(ctx context.Context) {
 			return
 		}
 		now := time.Now()
-		s.pruneUnmanaged(now)
+		if revision := s.forwarder.manager.policyRevision(); revision != s.policyRevision {
+			s.pruneUnmanaged()
+			s.policyRevision = revision
+		}
 		if flow := s.nextReady(now); flow != nil {
 			s.transmit(ctx, flow)
 			if ctx.Err() != nil {
@@ -120,28 +134,51 @@ func (s *packetScheduler) add(frame queuedFrame, queue *directionalQueue, now ti
 	}
 }
 
-func flowKey(frame queuedFrame) string {
-	return fmt.Sprintf("%s/%d", frame.deviceMAC.String(), frame.direction)
+func flowKey(frame queuedFrame) schedulerFlowKey {
+	return schedulerFlowKey{device: frame.deviceKey, direction: frame.direction}
 }
 
 func (s *packetScheduler) prepare(flow *scheduledFlow, now time.Time) {
+	s.deactivate(flow)
 	if len(flow.packets) == 0 {
-		flow.prepared = false
 		return
 	}
 	packet := flow.packets[0].frame
-	readyAt, managed, limited, err := s.forwarder.manager.EligibleAt(now, packet.deviceMAC, packet.direction, len(packet.data))
+	readyAt, managed, limited, err := s.forwarder.manager.eligibleAtKey(now, packet.deviceKey, packet.direction, len(packet.data))
 	flow.prepared = true
 	flow.limited = limited
 	flow.readyAt = readyAt
 	if err != nil || !managed {
 		flow.readyAt = now
 	}
+	if flow.limited {
+		s.limitedFlows++
+	} else {
+		s.monitorFlows++
+	}
+}
+
+func (s *packetScheduler) deactivate(flow *scheduledFlow) {
+	if !flow.prepared {
+		return
+	}
+	if flow.limited {
+		s.limitedFlows--
+	} else {
+		s.monitorFlows--
+	}
+	flow.prepared = false
 }
 
 func (s *packetScheduler) nextReady(now time.Time) *scheduledFlow {
-	monitor, monitorIndex := s.findReady(false, now, s.monitorCursor)
-	limited, limitedIndex := s.findReady(true, now, s.limitedCursor)
+	var monitor, limited *scheduledFlow
+	var monitorIndex, limitedIndex int
+	if s.monitorFlows > 0 {
+		monitor, monitorIndex = s.findReady(false, now, s.monitorCursor)
+	}
+	if s.limitedFlows > 0 {
+		limited, limitedIndex = s.findReady(true, now, s.limitedCursor)
+	}
 	if monitor != nil && (s.monitorStreak < monitorPriorityBurst || limited == nil) {
 		s.monitorCursor = (monitorIndex + 1) % len(s.order)
 		s.monitorStreak++
@@ -191,9 +228,15 @@ func (s *packetScheduler) nextWait(now time.Time) (time.Duration, bool) {
 	return min(schedulerMaintenanceInterval, max(time.Duration(0), earliest.Sub(now))), true
 }
 
-func (s *packetScheduler) pruneUnmanaged(now time.Time) {
-	for _, flow := range s.flows {
-		if len(flow.packets) == 0 || s.forwarder.manager.Has(flow.packets[0].frame.deviceMAC) {
+func (s *packetScheduler) pruneUnmanaged() {
+	kept := s.order[:0]
+	for _, key := range s.order {
+		flow := s.flows[key]
+		if flow == nil {
+			continue
+		}
+		if s.forwarder.manager.hasKey(flow.key.device) {
+			kept = append(kept, key)
 			continue
 		}
 		for _, packet := range flow.packets {
@@ -201,15 +244,18 @@ func (s *packetScheduler) pruneUnmanaged(now time.Time) {
 			s.forwarder.canceledDrops.Add(1)
 		}
 		flow.packets = nil
-		flow.prepared = false
-		flow.readyAt = now
+		s.deactivate(flow)
+		delete(s.flows, key)
 	}
+	s.order = kept
+	s.monitorCursor = 0
+	s.limitedCursor = 0
 }
 
 func (s *packetScheduler) transmit(ctx context.Context, flow *scheduledFlow) {
 	packet := flow.packets[0]
 	frame := packet.frame
-	if !s.forwarder.manager.Has(frame.deviceMAC) {
+	if !s.forwarder.manager.hasKey(frame.deviceKey) {
 		s.forwarder.canceledDrops.Add(1)
 		s.finish(flow, packet, time.Now())
 		return
@@ -246,6 +292,6 @@ func (s *packetScheduler) cancelAll() {
 			s.forwarder.canceledDrops.Add(1)
 		}
 		flow.packets = nil
-		flow.prepared = false
+		s.deactivate(flow)
 	}
 }

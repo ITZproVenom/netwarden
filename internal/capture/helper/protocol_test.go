@@ -1,12 +1,50 @@
 package helper
 
 import (
+	"bytes"
+	"context"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 
+	"github.com/amdzy/NetWarden/internal/capture"
 	"github.com/amdzy/NetWarden/internal/packet"
 )
+
+type borrowedProtocolDriver struct {
+	borrowed atomic.Bool
+	regular  atomic.Bool
+}
+
+func (d *borrowedProtocolDriver) Run(ctx context.Context, _ func(capture.Frame) error) error {
+	d.regular.Store(true)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (d *borrowedProtocolDriver) RunBorrowed(ctx context.Context, _ func(capture.Frame) error) error {
+	d.borrowed.Store(true)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (*borrowedProtocolDriver) Send(context.Context, []byte) error { return nil }
+func (*borrowedProtocolDriver) Close() error                       { return nil }
+
+func TestServeUsesBorrowedFrameDriverWhenAvailable(t *testing.T) {
+	driver := &borrowedProtocolDriver{}
+	localMAC, _ := net.ParseMAC("02:00:00:00:00:10")
+	err := Serve(context.Background(), driver, localMAC,
+		netip.MustParseAddr("192.168.1.10"), netip.MustParseAddr("192.168.1.1"),
+		netip.MustParsePrefix("192.168.1.10/24"), nil, bytes.NewReader(nil), &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !driver.borrowed.Load() || driver.regular.Load() {
+		t.Fatalf("borrowed=%t regular=%t", driver.borrowed.Load(), driver.regular.Load())
+	}
+}
 
 func TestValidateDiscoveryFrameRestrictsSenderAndOperation(t *testing.T) {
 	localMAC, _ := net.ParseMAC("02:00:00:00:00:10")

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/amdzy/NetWarden/internal/packet"
@@ -41,17 +42,18 @@ type bandwidthSession struct {
 	manager   *shaping.Manager
 	forwarder *shaping.Forwarder
 
-	mu            sync.RWMutex
-	gatewayMAC    net.HardwareAddr
-	localIPv6     netip.Addr
-	routerIPv6    netip.Addr
-	routerIPv6MAC net.HardwareAddr
-	targets       map[string]bandwidthTarget
-	isolated      map[string]bandwidthTarget
-	cancel        context.CancelFunc
-	done          chan error
-	closeOnce     sync.Once
-	closeErr      error
+	mu              sync.RWMutex
+	gatewayMAC      net.HardwareAddr
+	localIPv6       netip.Addr
+	routerIPv6      netip.Addr
+	routerIPv6MAC   net.HardwareAddr
+	targets         map[string]bandwidthTarget
+	isolated        map[string]bandwidthTarget
+	isolationActive atomic.Bool
+	cancel          context.CancelFunc
+	done            chan error
+	closeOnce       sync.Once
+	closeErr        error
 }
 
 func (s *bandwidthSession) observeNDP(message packet.NDP) {
@@ -222,6 +224,9 @@ func (s *bandwidthSession) submit(frame []byte) bool {
 }
 
 func (s *bandwidthSession) dropIsolated(frame []byte) bool {
+	if !s.isolationActive.Load() {
+		return false
+	}
 	source, destination, ok := frameAddresses(frame)
 	if !ok {
 		return false
@@ -292,6 +297,7 @@ func (s *bandwidthSession) isolateRoutes(ctx context.Context, addresses []netip.
 	}
 	target := bandwidthTarget{ip: addresses[0], addresses: append([]netip.Addr(nil), addresses...), mac: append(net.HardwareAddr(nil), mac...), continuous: continuous}
 	s.mu.Lock()
+	s.isolationActive.Store(true)
 	s.isolated[key] = target
 	s.mu.Unlock()
 	if err := s.redirect(ctx, target); err != nil {
@@ -301,6 +307,7 @@ func (s *bandwidthSession) isolateRoutes(ctx context.Context, addresses []netip.
 		} else {
 			delete(s.isolated, key)
 		}
+		s.isolationActive.Store(len(s.isolated) > 0)
 		s.mu.Unlock()
 		_ = s.restore(context.Background(), target)
 		if replacing {
@@ -329,6 +336,7 @@ func (s *bandwidthSession) restoreIsolation(ctx context.Context, addresses []net
 	if found {
 		delete(s.isolated, key)
 	}
+	s.isolationActive.Store(len(s.isolated) > 0)
 	s.mu.Unlock()
 	if !found {
 		target = bandwidthTarget{ip: firstOrRecorded(addresses, bandwidthTarget{}), addresses: normalizeTargetAddresses(addresses), mac: append(net.HardwareAddr(nil), mac...)}
@@ -339,6 +347,7 @@ func (s *bandwidthSession) restoreIsolation(ctx context.Context, addresses []net
 	if err := s.restore(ctx, target); err != nil {
 		if found {
 			s.mu.Lock()
+			s.isolationActive.Store(true)
 			s.isolated[key] = target
 			s.mu.Unlock()
 		}
@@ -525,6 +534,7 @@ func (s *bandwidthSession) closeActive() error {
 		targets = append(targets, target)
 	}
 	s.isolated = make(map[string]bandwidthTarget)
+	s.isolationActive.Store(false)
 	s.mu.Unlock()
 	var result error
 	for _, target := range targets {

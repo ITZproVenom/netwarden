@@ -5,6 +5,7 @@ import (
 	"net"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,6 +24,7 @@ type managedPolicy struct {
 type Manager struct {
 	mu       sync.RWMutex
 	policies map[string]*managedPolicy
+	revision atomic.Uint64
 }
 
 func NewManager() *Manager { return &Manager{policies: make(map[string]*managedPolicy)} }
@@ -38,6 +40,7 @@ func (m *Manager) Track(mac net.HardwareAddr) error {
 	m.mu.Lock()
 	if _, exists := m.policies[key]; !exists {
 		m.policies[key] = &managedPolicy{}
+		m.revision.Add(1)
 	}
 	m.mu.Unlock()
 	return nil
@@ -52,6 +55,7 @@ func (m *Manager) SetUnrestricted(mac net.HardwareAddr) error {
 	}
 	m.mu.Lock()
 	m.policies[key] = &managedPolicy{}
+	m.revision.Add(1)
 	m.mu.Unlock()
 	return nil
 }
@@ -64,6 +68,7 @@ func (m *Manager) Untrack(mac net.HardwareAddr) error {
 	m.mu.Lock()
 	if managed := m.policies[key]; managed != nil && managed.limiter == nil {
 		delete(m.policies, key)
+		m.revision.Add(1)
 	}
 	m.mu.Unlock()
 	return nil
@@ -74,6 +79,10 @@ func (m *Manager) Limited(mac net.HardwareAddr) bool {
 	if err != nil {
 		return false
 	}
+	return m.limitedKey(key)
+}
+
+func (m *Manager) limitedKey(key string) bool {
 	m.mu.RLock()
 	managed := m.policies[key]
 	m.mu.RUnlock()
@@ -92,6 +101,7 @@ func (m *Manager) Set(mac net.HardwareAddr, policy Policy) error {
 	policy = policy.Effective()
 	m.mu.Lock()
 	m.policies[key] = &managedPolicy{policy: policy, limiter: limiter}
+	m.revision.Add(1)
 	m.mu.Unlock()
 	return nil
 }
@@ -102,7 +112,10 @@ func (m *Manager) Remove(mac net.HardwareAddr) error {
 		return err
 	}
 	m.mu.Lock()
-	delete(m.policies, key)
+	if _, exists := m.policies[key]; exists {
+		delete(m.policies, key)
+		m.revision.Add(1)
+	}
 	m.mu.Unlock()
 	return nil
 }
@@ -112,11 +125,17 @@ func (m *Manager) Has(mac net.HardwareAddr) bool {
 	if err != nil {
 		return false
 	}
+	return m.hasKey(key)
+}
+
+func (m *Manager) hasKey(key string) bool {
 	m.mu.RLock()
 	_, found := m.policies[key]
 	m.mu.RUnlock()
 	return found
 }
+
+func (m *Manager) policyRevision() uint64 { return m.revision.Load() }
 
 func (m *Manager) Wait(ctx context.Context, mac net.HardwareAddr, direction Direction, packetBytes int) error {
 	key, err := normalizeDeviceMAC(mac)
@@ -145,6 +164,10 @@ func (m *Manager) EligibleAt(now time.Time, mac net.HardwareAddr, direction Dire
 	if err != nil {
 		return time.Time{}, false, false, err
 	}
+	return m.eligibleAtKey(now, key, direction, packetBytes)
+}
+
+func (m *Manager) eligibleAtKey(now time.Time, key string, direction Direction, packetBytes int) (time.Time, bool, bool, error) {
 	if err := validateDirection(direction); err != nil {
 		return time.Time{}, false, false, err
 	}

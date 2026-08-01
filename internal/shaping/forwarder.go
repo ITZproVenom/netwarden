@@ -81,8 +81,14 @@ type DeviceTrafficStats struct {
 type queuedFrame struct {
 	data      []byte
 	deviceMAC net.HardwareAddr
+	deviceKey string
 	direction Direction
 	limited   bool
+}
+
+type forwardingRoute struct {
+	mac net.HardwareAddr
+	key string
 }
 
 // directionalQueue bounds bursts by both frame count and memory. Packet
@@ -149,7 +155,7 @@ type Forwarder struct {
 	download   directionalQueue
 
 	routesMu sync.RWMutex
-	routes   map[netip.Addr]net.HardwareAddr
+	routes   map[netip.Addr]forwardingRoute
 	runMu    sync.Mutex
 	running  bool
 	stopped  bool
@@ -208,7 +214,7 @@ func NewForwarder(manager *Manager, sender FrameSender, config ForwarderConfig) 
 	return &Forwarder{
 		manager: manager, sender: sender, localMAC: localMAC, gatewayMAC: gatewayMAC,
 		upload: newDirectionalQueue(capacity, byteCapacity), download: newDirectionalQueue(capacity, byteCapacity),
-		routes: make(map[netip.Addr]net.HardwareAddr), errors: make(chan error, 32), traffic: make(map[string]DeviceTrafficStats),
+		routes: make(map[netip.Addr]forwardingRoute), errors: make(chan error, 32), traffic: make(map[string]DeviceTrafficStats),
 		deviceDrops: make(map[string]DeviceQueueDropStats),
 	}, nil
 }
@@ -236,7 +242,7 @@ func (f *Forwarder) SetRoute(ip netip.Addr, mac net.HardwareAddr) error {
 	}
 	canonical, _ := net.ParseMAC(key)
 	f.routesMu.Lock()
-	f.routes[ip] = append(net.HardwareAddr(nil), canonical...)
+	f.routes[ip] = forwardingRoute{mac: append(net.HardwareAddr(nil), canonical...), key: key}
 	f.routesMu.Unlock()
 	return nil
 }
@@ -343,32 +349,34 @@ func (f *Forwarder) classify(frame []byte) (queuedFrame, error) {
 	if !bytes.Equal(destination, f.localMAC) {
 		return queuedFrame{}, ErrFrameNotManaged
 	}
+	var gatewayMAC [6]byte
 	f.identityMu.RLock()
-	gatewayMAC := append(net.HardwareAddr(nil), f.gatewayMAC...)
+	gatewayLength := copy(gatewayMAC[:], f.gatewayMAC)
 	f.identityMu.RUnlock()
-	if len(gatewayMAC) != 6 {
+	if gatewayLength != len(gatewayMAC) {
 		return queuedFrame{}, ErrFrameNotManaged
 	}
 	result := queuedFrame{data: append([]byte(nil), frame[:ethernetHeaderLength+networkLength]...)}
-	if bytes.Equal(source, gatewayMAC) {
+	if bytes.Equal(source, gatewayMAC[:]) {
 		f.routesMu.RLock()
-		deviceMAC := append(net.HardwareAddr(nil), f.routes[destinationIP]...)
+		route := f.routes[destinationIP]
 		f.routesMu.RUnlock()
-		if !f.manager.Has(deviceMAC) {
+		if !f.manager.hasKey(route.key) {
 			return queuedFrame{}, ErrFrameNotManaged
 		}
-		result.deviceMAC, result.direction = deviceMAC, Download
-		result.limited = f.manager.Limited(deviceMAC)
-		copy(result.data[:6], deviceMAC)
+		result.deviceMAC, result.deviceKey, result.direction = route.mac, route.key, Download
+		result.limited = f.manager.limitedKey(route.key)
+		copy(result.data[:6], route.mac)
 		copy(result.data[6:12], f.localMAC)
 		return result, nil
 	}
-	if !f.manager.Has(source) {
+	deviceKey, err := normalizeDeviceMAC(source)
+	if err != nil || !f.manager.hasKey(deviceKey) {
 		return queuedFrame{}, ErrFrameNotManaged
 	}
-	result.deviceMAC, result.direction = append(net.HardwareAddr(nil), source...), Upload
-	result.limited = f.manager.Limited(source)
-	copy(result.data[:6], gatewayMAC)
+	result.deviceMAC, result.deviceKey, result.direction = append(net.HardwareAddr(nil), source...), deviceKey, Upload
+	result.limited = f.manager.limitedKey(deviceKey)
+	copy(result.data[:6], gatewayMAC[:])
 	copy(result.data[6:12], f.localMAC)
 	return result, nil
 }
@@ -385,9 +393,13 @@ func (f *Forwarder) recordQueueDrop(frame queuedFrame) {
 	} else {
 		f.monitorQueueDrops.Add(1)
 	}
-	key, err := normalizeDeviceMAC(frame.deviceMAC)
-	if err != nil {
-		return
+	key := frame.deviceKey
+	if key == "" {
+		var err error
+		key, err = normalizeDeviceMAC(frame.deviceMAC)
+		if err != nil {
+			return
+		}
 	}
 	f.dropMu.Lock()
 	drops := f.deviceDrops[key]
@@ -445,9 +457,13 @@ func classifyNetworkPacket(frame []byte) (netip.Addr, netip.Addr, int, bool) {
 }
 
 func (f *Forwarder) recordTraffic(frame queuedFrame) {
-	key, err := normalizeDeviceMAC(frame.deviceMAC)
-	if err != nil {
-		return
+	key := frame.deviceKey
+	if key == "" {
+		var err error
+		key, err = normalizeDeviceMAC(frame.deviceMAC)
+		if err != nil {
+			return
+		}
 	}
 	f.trafficMu.Lock()
 	stats := f.traffic[key]

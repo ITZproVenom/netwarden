@@ -22,6 +22,20 @@ type bandwidthRecorder struct {
 	failAt int
 }
 
+func BenchmarkBandwidthSessionDropIsolatedInactive(b *testing.B) {
+	local := net.HardwareAddr{0x02, 0, 0, 0, 0, 0x10}
+	device := net.HardwareAddr{0x02, 0, 0, 0, 0, 0x20}
+	frame := helperIPv4Frame(local, device, netip.MustParseAddr("192.0.2.20"), netip.MustParseAddr("198.51.100.1"))
+	session := &bandwidthSession{}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if session.dropIsolated(frame) {
+			b.Fatal("inactive isolation dropped a frame")
+		}
+	}
+}
+
 func (r *bandwidthRecorder) send(_ context.Context, frame []byte) error {
 	copyOfFrame := append([]byte(nil), frame...)
 	r.mu.Lock()
