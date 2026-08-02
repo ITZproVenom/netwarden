@@ -16,7 +16,7 @@ network gateway.
 - Set temporary download and upload speed limits for eligible devices.
 - Monitor live per-device upload/download rates, totals, peaks, and recent history.
 - Monitor your gateway identity for suspicious changes.
-- Passively discover IPv6 device addresses from validated Neighbor Discovery traffic.
+- Discover IPv6 device addresses and track the advertised router and prefixes.
 - Review recent activity, errors, and control history in Diagnostics.
 - Adjust scan timing, offline detection, history retention, and automatic
   startup.
@@ -63,29 +63,34 @@ affected devices when you restore them, stop monitoring, or close the app.
 
 Network behavior differs between routers and devices, so treat this feature as
 a local management tool rather than a permanent access-control system.
+IPv6 disconnects block traffic routed through the verified default router;
+direct peer-to-peer link-local traffic is outside the current control path.
 
 ## Bandwidth limits
 
 Open an eligible online device to set separate download and upload limits in
-Mbps. Leave either direction at zero to keep it unlimited. Active limits appear
-in the Devices table and remain in effect only while NetWarden is monitoring
-the network; they are not saved or automatically reapplied after a restart.
+Mbps or MB/s. Leave either direction at zero to keep it unlimited. Active
+limits appear in the Devices table and remain in effect only while NetWarden is
+monitoring the network; they are not saved or automatically reapplied after a
+restart.
 
-Removing a limit restores the device's normal direct network path. Support depends on the local IPv4
-network and may vary between routers, switches, and devices.
+Removing a limit restores the device's normal direct network path. IPv4,
+IPv6-only, and dual-stack devices are supported when the required local gateway
+identities are verified. Behavior may vary between routers, switches, and
+devices.
 
 ## Bandwidth monitor
 
-Start monitoring an eligible IPv4 device from the Bandwidth view to route its
-traffic through NetWarden without applying a speed limit. The view derives live
-rates, session totals, peaks, and recent activity from aggregate forwarding
-counters. Usage is compacted into persistent minute, hour, and day buckets for
-hour/day/week/month views. Monitor-all rolls back newly installed routes if any
-device fails, monitored IPv4 routes follow address changes, and forwarding
-drops or sampling failures appear as health warnings. Monitoring routes remain
-temporary and are restored when monitoring stops or NetWarden shuts down. IPv6
-traffic classification, interception, accounting, monitoring, and limits use a
-validated NDP redirection and restoration lifecycle.
+Start monitoring an eligible device from the Bandwidth view to route its IPv4
+and IPv6 traffic through NetWarden without applying a speed limit. The view
+derives live rates, session totals, peaks, and recent activity from aggregate
+forwarding counters. Usage is compacted into persistent minute, hour, and day
+buckets for hour/day/week/month views. Monitor-all rolls back newly installed
+routes if any device fails, monitored routes follow device address changes, and
+forwarding drops or sampling failures appear as health warnings. Monitoring
+routes remain temporary and are restored when monitoring stops or NetWarden
+shuts down. IPv6 interception uses a validated NDP redirection and restoration
+lifecycle.
 
 ## Privacy and responsible use
 
@@ -103,7 +108,7 @@ go vet ./...
 
 cd cmd/netwarden-gui/frontend
 npm ci
-npm test -- --run
+npm test
 npm run build
 npm run lint
 ```
@@ -121,4 +126,5 @@ archives and prepares a draft GitHub Release.
 
 ## License
 
-NetWarden is available under the [MIT License](LICENSE).
+NetWarden is free software licensed under the [GNU General Public License
+version 3 or later](LICENSE) (`GPL-3.0-or-later`).
