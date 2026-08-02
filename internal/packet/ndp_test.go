@@ -1,0 +1,179 @@
+package packet
+
+import (
+	"encoding/binary"
+	"net"
+	"net/netip"
+	"testing"
+	"time"
+)
+
+func TestParseNDPNeighborAdvertisement(t *testing.T) {
+	source := netip.MustParseAddr("fe80::20c:29ff:fe12:3456")
+	destination := netip.MustParseAddr("ff02::1")
+	mac, _ := net.ParseMAC("02:0c:29:12:34:56")
+	frame := ndpTestFrame(t, ICMPv6NeighborAdvertisement, source, destination, source, mac)
+
+	message, err := ParseNDP(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Type != ICMPv6NeighborAdvertisement || message.SourceIP != source ||
+		message.TargetIP != source || message.SourceMAC.String() != mac.String() {
+		t.Fatalf("unexpected NDP message: %#v", message)
+	}
+}
+
+func TestMarshalNeighborSolicitationUsesSolicitedNodeMulticast(t *testing.T) {
+	mac, _ := net.ParseMAC("02:00:00:00:00:10")
+	source := netip.MustParseAddr("fe80::10")
+	target := netip.MustParseAddr("2001:db8:1::1234:5678")
+	frame, err := MarshalNeighborSolicitation(NeighborSolicitation{SourceIP: source, SourceMAC: mac, TargetIP: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := ParseNDP(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Type != ICMPv6NeighborSolicitation || message.SourceIP != source || message.TargetIP != target {
+		t.Fatalf("unexpected solicitation: %#v", message)
+	}
+	if message.DestinationIP != netip.MustParseAddr("ff02::1:ff34:5678") || message.DestinationMAC.String() != "33:33:ff:34:56:78" {
+		t.Fatalf("unexpected multicast identity: %s / %s", message.DestinationIP, message.DestinationMAC)
+	}
+	frame[len(frame)-1] ^= 1
+	if _, err := ParseNDP(frame); err == nil {
+		t.Fatal("accepted a solicitation with an invalid checksum")
+	}
+}
+
+func TestMarshalNeighborSolicitationRejectsInvalidIdentity(t *testing.T) {
+	mac, _ := net.ParseMAC("02:00:00:00:00:10")
+	for _, test := range []NeighborSolicitation{
+		{SourceIP: netip.IPv6Unspecified(), SourceMAC: mac, TargetIP: netip.MustParseAddr("2001:db8::1")},
+		{SourceIP: netip.MustParseAddr("fe80::1"), SourceMAC: mac, TargetIP: netip.MustParseAddr("ff02::1")},
+		{SourceIP: netip.MustParseAddr("fe80::1"), SourceMAC: net.HardwareAddr{1, 2, 3}, TargetIP: netip.MustParseAddr("2001:db8::1")},
+	} {
+		if _, err := MarshalNeighborSolicitation(test); err == nil {
+			t.Fatalf("accepted invalid solicitation: %#v", test)
+		}
+	}
+}
+
+func TestMarshalNeighborAdvertisementRoundTrip(t *testing.T) {
+	source := netip.MustParseAddr("fe80::1")
+	destination := netip.MustParseAddr("fe80::20")
+	sourceMAC, _ := net.ParseMAC("02:00:00:00:00:10")
+	destinationMAC, _ := net.ParseMAC("02:00:00:00:00:20")
+	frame, err := MarshalNeighborAdvertisement(NeighborAdvertisement{
+		SourceIP: source, DestinationIP: destination, TargetIP: source,
+		SourceMAC: sourceMAC, DestinationMAC: destinationMAC, AdvertisedMAC: sourceMAC,
+		Router: true, Solicited: true, Override: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := ParseNDP(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Type != ICMPv6NeighborAdvertisement || message.SourceIP != source || message.TargetIP != source || message.SourceMAC.String() != sourceMAC.String() {
+		t.Fatalf("advertisement = %#v", message)
+	}
+	if string(frame[:6]) != string(destinationMAC) || string(frame[6:12]) != string(sourceMAC) {
+		t.Fatalf("ethernet identities = %x", frame[:12])
+	}
+}
+
+func TestMarshalNeighborAdvertisementRejectsUnsafeIdentity(t *testing.T) {
+	mac, _ := net.ParseMAC("02:00:00:00:00:10")
+	_, err := MarshalNeighborAdvertisement(NeighborAdvertisement{SourceIP: netip.MustParseAddr("192.0.2.1"), DestinationIP: netip.MustParseAddr("fe80::20"), TargetIP: netip.MustParseAddr("fe80::1"), SourceMAC: mac, DestinationMAC: mac, AdvertisedMAC: mac})
+	if err == nil {
+		t.Fatal("accepted an IPv4 source for NDP")
+	}
+}
+
+func TestParseNDPRejectsInvalidHopLimitAndChecksum(t *testing.T) {
+	source := netip.MustParseAddr("fe80::2")
+	destination := netip.MustParseAddr("ff02::1")
+	mac, _ := net.ParseMAC("02:00:00:00:00:02")
+
+	badHopLimit := ndpTestFrame(t, ICMPv6NeighborAdvertisement, source, destination, source, mac)
+	badHopLimit[EthernetHeaderLen+7] = 64
+	if _, err := ParseNDP(badHopLimit); err == nil {
+		t.Fatal("accepted NDP message with non-link-local hop limit")
+	}
+
+	badChecksum := ndpTestFrame(t, ICMPv6NeighborAdvertisement, source, destination, source, mac)
+	badChecksum[len(badChecksum)-1] ^= 0xff
+	if _, err := ParseNDP(badChecksum); err == nil {
+		t.Fatal("accepted NDP message with invalid checksum")
+	}
+}
+
+func TestParseNDPRouterAdvertisement(t *testing.T) {
+	source := netip.MustParseAddr("fe80::1")
+	destination := netip.MustParseAddr("ff02::1")
+	mac, _ := net.ParseMAC("02:00:00:00:00:01")
+	icmp := make([]byte, 56)
+	icmp[0] = ICMPv6RouterAdvertisement
+	binary.BigEndian.PutUint16(icmp[6:8], 1800)
+	icmp[16], icmp[17] = 1, 1
+	copy(icmp[18:24], mac)
+	icmp[24], icmp[25], icmp[26], icmp[27] = 3, 4, 64, 0xc0
+	binary.BigEndian.PutUint32(icmp[28:32], 3600)
+	binary.BigEndian.PutUint32(icmp[32:36], 1800)
+	copy(icmp[40:56], netip.MustParseAddr("2001:db8:1::").AsSlice())
+	frame := icmpv6TestFrame(source, destination, mac, icmp)
+
+	message, err := ParseNDP(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.RouterLifetime != 30*time.Minute || len(message.Prefixes) != 1 ||
+		message.Prefixes[0].Prefix.String() != "2001:db8:1::/64" || !message.Prefixes[0].OnLink || !message.Prefixes[0].Autonomous {
+		t.Fatalf("unexpected router advertisement: %#v", message)
+	}
+}
+
+func ndpTestFrame(t *testing.T, messageType uint8, source, destination, target netip.Addr, mac net.HardwareAddr) []byte {
+	t.Helper()
+	icmp := make([]byte, 32)
+	icmp[0] = messageType
+	copy(icmp[8:24], target.AsSlice())
+	icmp[24], icmp[25] = 2, 1
+	copy(icmp[26:32], mac)
+
+	return icmpv6TestFrame(source, destination, mac, icmp)
+}
+
+func icmpv6TestFrame(source, destination netip.Addr, mac net.HardwareAddr, icmp []byte) []byte {
+	frame := make([]byte, EthernetHeaderLen+40+len(icmp))
+	copy(frame[:6], []byte{0x33, 0x33, 0, 0, 0, 1})
+	copy(frame[6:12], mac)
+	binary.BigEndian.PutUint16(frame[12:14], EtherTypeIPv6)
+	ipv6 := frame[EthernetHeaderLen:]
+	ipv6[0] = 0x60
+	binary.BigEndian.PutUint16(ipv6[4:6], uint16(len(icmp)))
+	ipv6[6], ipv6[7] = NextHeaderICMPv6, NDPHopLimit
+	copy(ipv6[8:24], source.AsSlice())
+	copy(ipv6[24:40], destination.AsSlice())
+	copy(ipv6[40:], icmp)
+
+	payload := ipv6[40:]
+	var sum uint32
+	sourceBytes, destinationBytes := source.As16(), destination.As16()
+	sum = checksumBytes(sum, sourceBytes[:])
+	sum = checksumBytes(sum, destinationBytes[:])
+	var length [4]byte
+	binary.BigEndian.PutUint32(length[:], uint32(len(payload)))
+	sum = checksumBytes(sum, length[:])
+	sum += NextHeaderICMPv6
+	sum = checksumBytes(sum, payload)
+	for sum>>16 != 0 {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	binary.BigEndian.PutUint16(payload[2:4], ^uint16(sum))
+	return frame
+}

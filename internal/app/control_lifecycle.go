@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/amdzy/NetWarden/internal/control"
+	"github.com/amdzy/NetWarden/internal/device"
 )
 
 // ControlLifecycle owns active control state and cleanup. Preparing a command
@@ -23,6 +24,25 @@ type ControlLifecycle struct {
 	publish  func(Event)
 	stopping bool
 	crash    ControlCrashRecoveryPolicy
+}
+
+type controlDeviceReconciler interface {
+	Reconcile(context.Context, device.Device) error
+}
+
+func (l *ControlLifecycle) ReconcileDevice(ctx context.Context, current device.Device) error {
+	l.mu.Lock()
+	controller := l.lease.Controller
+	_, active := l.targets[strings.ToLower(current.MAC)]
+	l.mu.Unlock()
+	if !active {
+		return nil
+	}
+	reconciler, ok := controller.(controlDeviceReconciler)
+	if !ok {
+		return nil
+	}
+	return reconciler.Reconcile(ctx, current)
 }
 
 type ControlCrashRecoveryPolicy string

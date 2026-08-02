@@ -54,7 +54,7 @@ func runHelperMode() (bool, error) {
 	if !prefix.IsValid() {
 		return true, errors.New("selected interface does not contain the default IPv4 route")
 	}
-	filter := fmt.Sprintf("arp or (ip and ether dst %s)", selected.MAC.String())
+	filter := fmt.Sprintf("arp or icmp6 or ((ip or ip6) and ether dst %s)", selected.MAC.String())
 	driver, err := pcapdriver.Open(selected.Name, pcapdriver.Config{Promiscuous: true, Filter: filter})
 	if err != nil {
 		return true, err
@@ -65,7 +65,7 @@ func runHelperMode() (bool, error) {
 		return true, err
 	}
 	defer closeTransport()
-	return true, helper.Serve(context.Background(), driver, selected.MAC, prefix.Addr(), route.GatewayIP, prefix, input, output)
+	return true, helper.Serve(context.Background(), driver, selected.MAC, prefix.Addr(), route.GatewayIP, prefix, selected.Prefixes, input, output)
 }
 
 func helperTransport(address, token string) (io.Reader, io.Writer, func() error, error) {

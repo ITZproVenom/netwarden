@@ -479,10 +479,13 @@ func (c *ControlCommands) eligibleDevice(current device.Device) bool {
 
 func (c *ControlCommands) recoveryDevice(current device.Device) bool {
 	scope := c.deps.Scope
-	if current.Role != device.RolePeer || !scope.Prefix.IsValid() || !scope.Prefix.Contains(current.IP) {
+	if current.Role != device.RolePeer || !scope.Prefix.IsValid() {
 		return false
 	}
-	if !usableControlHost(scope.Prefix, current.IP) {
+	if current.IP.Is4() && (!scope.Prefix.Contains(current.IP) || !usableControlHost(scope.Prefix, current.IP)) {
+		return false
+	}
+	if !current.IP.Is4() && (!current.IP.Is6() || current.IP.IsUnspecified() || current.IP.IsMulticast() || current.IP.IsLoopback()) {
 		return false
 	}
 	if current.IP == scope.LocalIP || current.IP == scope.GatewayIP {
@@ -500,8 +503,8 @@ func (c *ControlCommands) recoveryDevice(current device.Device) bool {
 }
 
 func controlEndpoint(target ControlTarget) (control.Endpoint, error) {
-	if !target.IP.IsValid() || !target.IP.Is4() || target.IP.IsUnspecified() || target.IP.IsMulticast() {
-		return control.Endpoint{}, errors.New("a valid target IPv4 address is required")
+	if !target.IP.IsValid() || target.IP.IsUnspecified() || target.IP.IsMulticast() || target.IP.IsLoopback() {
+		return control.Endpoint{}, errors.New("a valid target unicast address is required")
 	}
 	if len(target.MAC) != 6 || target.MAC[0]&1 != 0 {
 		return control.Endpoint{}, errors.New("a 6-byte unicast target MAC is required")

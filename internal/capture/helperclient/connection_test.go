@@ -73,6 +73,31 @@ func TestBandwidthRequestWaitsForMatchingHelperResult(t *testing.T) {
 	_ = driver.Close()
 }
 
+func TestBandwidthTrafficReturnsAggregatedHelperCounters(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	go func() {
+		encoder := json.NewEncoder(server)
+		decoder := json.NewDecoder(server)
+		_ = encoder.Encode(helper.Message{Type: "ready"})
+		var command helper.Message
+		if decoder.Decode(&command) == nil {
+			_ = encoder.Encode(helper.Message{Type: "result", RequestID: command.RequestID,
+				Traffic: []shaping.DeviceTrafficStats{{MAC: "02:00:00:00:00:20", UploadBytes: 120, DownloadBytes: 340}}})
+		}
+	}()
+	driver, err := OpenConnection(context.Background(), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	traffic, err := driver.BandwidthTraffic(context.Background())
+	if err != nil || len(traffic) != 1 || traffic[0].UploadBytes != 120 || traffic[0].DownloadBytes != 340 {
+		t.Fatalf("traffic=%#v err=%v", traffic, err)
+	}
+	_ = server.Close()
+	_ = driver.Close()
+}
+
 func TestOpenConnectionStopsWaitingWhenContextIsCanceled(t *testing.T) {
 	client, server := net.Pipe()
 	defer server.Close()

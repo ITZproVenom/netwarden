@@ -78,6 +78,16 @@ func classifyOpenError(device string, err error) error {
 }
 
 func (d *Driver) Run(ctx context.Context, consume func(capture.Frame) error) error {
+	return d.run(ctx, consume, true)
+}
+
+// RunBorrowed avoids copying libpcap's buffer for consumers that finish all
+// processing before the callback returns.
+func (d *Driver) RunBorrowed(ctx context.Context, consume func(capture.Frame) error) error {
+	return d.run(ctx, consume, false)
+}
+
+func (d *Driver) run(ctx context.Context, consume func(capture.Frame) error, copyFrame bool) error {
 	if consume == nil {
 		return errors.New("frame consumer is required")
 	}
@@ -95,10 +105,10 @@ func (d *Driver) Run(ctx context.Context, consume func(capture.Frame) error) err
 			}
 			return fmt.Errorf("read packet: %w", err)
 		}
-		frame := capture.Frame{
-			Data:       append([]byte(nil), data...),
-			CapturedAt: info.Timestamp,
+		if copyFrame {
+			data = append([]byte(nil), data...)
 		}
+		frame := capture.Frame{Data: data, CapturedAt: info.Timestamp}
 		if err := consume(frame); err != nil {
 			return err
 		}

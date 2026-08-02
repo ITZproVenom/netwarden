@@ -33,8 +33,13 @@ type Driver struct {
 	mu      sync.Mutex
 	closed  bool
 	stop    sync.Once
-	pending map[string]chan error
+	pending map[string]chan helperResponse
 	nextID  atomic.Uint64
+}
+
+type helperResponse struct {
+	message helper.Message
+	err     error
 }
 
 const (
@@ -108,7 +113,7 @@ func OpenConnection(ctx context.Context, connection io.ReadWriteCloser) (*Driver
 }
 
 func newDriver(input io.WriteCloser, output io.Closer, wait <-chan error) *Driver {
-	return &Driver{input: input, output: output, wait: wait, done: make(chan struct{}), frames: make(chan capture.Frame, 64), errors: make(chan error, 1), pending: make(map[string]chan error)}
+	return &Driver{input: input, output: output, wait: wait, done: make(chan struct{}), frames: make(chan capture.Frame, 64), errors: make(chan error, 1), pending: make(map[string]chan helperResponse)}
 }
 
 func waitUntilReady(ctx context.Context, decoder *json.Decoder) (helper.Message, error) {
@@ -176,7 +181,7 @@ func (d *Driver) read(decoder *json.Decoder) {
 				if message.Error != "" {
 					err = errors.New(message.Error)
 				}
-				response <- err
+				response <- helperResponse{message: message, err: err}
 			}
 		}
 	}
@@ -185,40 +190,105 @@ func (d *Driver) read(decoder *json.Decoder) {
 // SetBandwidthLimit installs a validated policy in the privileged helper.
 // Redirected packet payloads never cross into this client process.
 func (d *Driver) SetBandwidthLimit(ctx context.Context, ip netip.Addr, mac net.HardwareAddr, policy shaping.Policy) error {
-	return d.request(ctx, helper.Message{Type: "shape_set", TargetIP: ip.String(), TargetMAC: mac.String(), Policy: &policy})
+	_, err := d.request(ctx, helper.Message{Type: "shape_set", TargetIP: ip.String(), TargetMAC: mac.String(), Policy: &policy})
+	return err
+}
+
+func (d *Driver) SetDeviceBandwidthLimit(ctx context.Context, addresses []netip.Addr, mac net.HardwareAddr, policy shaping.Policy) error {
+	_, err := d.request(ctx, helper.Message{Type: "shape_set", TargetIPs: addressStrings(addresses), TargetMAC: mac.String(), Policy: &policy})
+	return err
 }
 
 func (d *Driver) RemoveBandwidthLimit(ctx context.Context, ip netip.Addr, mac net.HardwareAddr) error {
-	return d.request(ctx, helper.Message{Type: "shape_remove", TargetIP: ip.String(), TargetMAC: mac.String()})
+	_, err := d.request(ctx, helper.Message{Type: "shape_remove", TargetIP: ip.String(), TargetMAC: mac.String()})
+	return err
 }
 
-func (d *Driver) request(ctx context.Context, command helper.Message) error {
+func (d *Driver) RemoveDeviceBandwidthLimit(ctx context.Context, addresses []netip.Addr, mac net.HardwareAddr) error {
+	_, err := d.request(ctx, helper.Message{Type: "shape_remove", TargetIPs: addressStrings(addresses), TargetMAC: mac.String()})
+	return err
+}
+
+func (d *Driver) StartBandwidthMonitor(ctx context.Context, ip netip.Addr, mac net.HardwareAddr) error {
+	_, err := d.request(ctx, helper.Message{Type: "monitor_set", TargetIP: ip.String(), TargetMAC: mac.String()})
+	return err
+}
+
+func (d *Driver) StartDeviceBandwidthMonitor(ctx context.Context, addresses []netip.Addr, mac net.HardwareAddr) error {
+	_, err := d.request(ctx, helper.Message{Type: "monitor_set", TargetIPs: addressStrings(addresses), TargetMAC: mac.String()})
+	return err
+}
+
+func (d *Driver) StopBandwidthMonitor(ctx context.Context, ip netip.Addr, mac net.HardwareAddr) error {
+	_, err := d.request(ctx, helper.Message{Type: "monitor_remove", TargetIP: ip.String(), TargetMAC: mac.String()})
+	return err
+}
+
+func (d *Driver) StopDeviceBandwidthMonitor(ctx context.Context, addresses []netip.Addr, mac net.HardwareAddr) error {
+	_, err := d.request(ctx, helper.Message{Type: "monitor_remove", TargetIPs: addressStrings(addresses), TargetMAC: mac.String()})
+	return err
+}
+
+func (d *Driver) SetDeviceIsolation(ctx context.Context, addresses []netip.Addr, mac net.HardwareAddr, continuous bool) error {
+	_, err := d.request(ctx, helper.Message{Type: "isolate_set", TargetIPs: addressStrings(addresses), TargetMAC: mac.String(), Continuous: continuous})
+	return err
+}
+
+func (d *Driver) RestoreDevice(ctx context.Context, addresses []netip.Addr, mac net.HardwareAddr) error {
+	_, err := d.request(ctx, helper.Message{Type: "isolate_remove", TargetIPs: addressStrings(addresses), TargetMAC: mac.String()})
+	return err
+}
+
+func addressStrings(addresses []netip.Addr) []string {
+	result := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		if address.IsValid() {
+			result = append(result, address.String())
+		}
+	}
+	return result
+}
+
+func (d *Driver) BandwidthTraffic(ctx context.Context) ([]shaping.DeviceTrafficStats, error) {
+	response, err := d.request(ctx, helper.Message{Type: "shape_traffic"})
+	return response.Traffic, err
+}
+
+func (d *Driver) BandwidthForwarderStats(ctx context.Context) (shaping.ForwarderStats, error) {
+	response, err := d.request(ctx, helper.Message{Type: "shape_traffic"})
+	if err != nil || response.Forwarder == nil {
+		return shaping.ForwarderStats{}, err
+	}
+	return *response.Forwarder, nil
+}
+
+func (d *Driver) request(ctx context.Context, command helper.Message) (helper.Message, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return helper.Message{}, err
 	}
 	command.RequestID = fmt.Sprintf("%d", d.nextID.Add(1))
-	response := make(chan error, 1)
+	response := make(chan helperResponse, 1)
 	d.mu.Lock()
 	if d.closed {
 		d.mu.Unlock()
-		return errors.New("capture helper is closed")
+		return helper.Message{}, errors.New("capture helper is closed")
 	}
 	d.pending[command.RequestID] = response
 	if err := json.NewEncoder(d.input).Encode(command); err != nil {
 		delete(d.pending, command.RequestID)
 		d.mu.Unlock()
-		return err
+		return helper.Message{}, err
 	}
 	d.mu.Unlock()
 	select {
-	case err := <-response:
-		return err
+	case result := <-response:
+		return result.message, result.err
 	case <-ctx.Done():
 		d.removePending(command.RequestID)
-		return ctx.Err()
+		return helper.Message{}, ctx.Err()
 	case <-d.done:
 		d.removePending(command.RequestID)
-		return errors.New("capture helper stopped before replying")
+		return helper.Message{}, errors.New("capture helper stopped before replying")
 	}
 }
 

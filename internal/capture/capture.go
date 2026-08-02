@@ -20,3 +20,11 @@ type Driver interface {
 	Send(context.Context, []byte) error
 	Close() error
 }
+
+// BorrowedFrameDriver is an optional fast path for synchronous consumers. The
+// frame data is valid only until the callback returns and must not be retained.
+// Driver.Run remains the ownership-safe default for all other consumers.
+type BorrowedFrameDriver interface {
+	Driver
+	RunBorrowed(context.Context, func(Frame) error) error
+}

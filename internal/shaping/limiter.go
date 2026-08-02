@@ -44,7 +44,11 @@ func (l *Limiter) Wait(ctx context.Context, direction Direction, packetBytes int
 	if packetBytes <= 0 {
 		return nil
 	}
-	delay := l.bucket(direction).reserve(time.Now(), packetBytes)
+	eligibleAt, err := l.EligibleAt(time.Now(), direction, packetBytes)
+	if err != nil {
+		return err
+	}
+	delay := time.Until(eligibleAt)
 	if delay <= 0 {
 		return nil
 	}
@@ -56,6 +60,18 @@ func (l *Limiter) Wait(ctx context.Context, direction Direction, packetBytes int
 	case <-timer.C:
 		return nil
 	}
+}
+
+// EligibleAt reserves capacity without blocking and returns when a scheduler
+// may transmit the packet. Reservations preserve packet order within a flow.
+func (l *Limiter) EligibleAt(now time.Time, direction Direction, packetBytes int) (time.Time, error) {
+	if err := validateDirection(direction); err != nil {
+		return time.Time{}, err
+	}
+	if packetBytes <= 0 {
+		return now, nil
+	}
+	return now.Add(l.bucket(direction).reserve(now, packetBytes)), nil
 }
 
 func (l *Limiter) bucket(direction Direction) *bucket {

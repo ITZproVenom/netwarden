@@ -6,40 +6,57 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import type { BandwidthLimit, Device } from "@/lib/wails/types"
 import { useRemoveBandwidthLimit, useSetBandwidthLimit } from "./bandwidth.queries"
-import { displayMbps } from "./format"
+import { displayRateValue, rateUnitLabel } from "./format"
 import { bandwidthValidation, parseMbps } from "./validation"
+import { useStartBandwidthMonitor, useStopBandwidthMonitor } from "./monitor.queries"
+import { useRateUnit } from "@/lib/measurement"
+
+const isBandwidthEligible = (device: Device) =>
+  device.online && device.role === "Device" && device.controlState === ""
 
 export function BandwidthSection({
   device,
   limit,
   available,
+  monitoringAvailable,
+  monitored,
 }: {
   device: Device
   limit?: BandwidthLimit
   available: boolean
+  monitoringAvailable: boolean
+  monitored: boolean
 }) {
+  const { rateUnit } = useRateUnit()
+  const unitLabel = rateUnitLabel(rateUnit)
   const [download, setDownload] = useState("")
   const [upload, setUpload] = useState("")
   const setLimit = useSetBandwidthLimit()
   const removeLimit = useRemoveBandwidthLimit()
+  const startMonitor = useStartBandwidthMonitor()
+  const stopMonitor = useStopBandwidthMonitor()
   useEffect(() => {
-    setDownload(limit?.downloadBitsPerSecond ? displayMbps(limit.downloadBitsPerSecond) : "")
-    setUpload(limit?.uploadBitsPerSecond ? displayMbps(limit.uploadBitsPerSecond) : "")
-  }, [device.mac, limit?.downloadBitsPerSecond, limit?.uploadBitsPerSecond])
+    setDownload(limit?.downloadBitsPerSecond ? displayRateValue(limit.downloadBitsPerSecond, rateUnit) : "")
+    setUpload(limit?.uploadBitsPerSecond ? displayRateValue(limit.uploadBitsPerSecond, rateUnit) : "")
+  }, [device.mac, limit?.downloadBitsPerSecond, limit?.uploadBitsPerSecond, rateUnit])
   const validation = bandwidthValidation(download, upload)
-  const eligible = available && device.online && device.role === "Device" && device.controlState === ""
+  const eligible = available && isBandwidthEligible(device)
   const pending = setLimit.isPending || removeLimit.isPending
   const reason = !available
     ? "Bandwidth control is unavailable with the active capture backend."
-    : device.role !== "Device"
-      ? "This protected network endpoint cannot be limited."
-      : device.controlState !== ""
+      : device.role !== "Device"
+        ? "This protected network endpoint cannot be limited."
+        : device.controlState !== ""
         ? "Restore normal access before applying a bandwidth limit."
         : !device.online
           ? "The device must be online before applying a limit."
           : "Set either direction to 0 to leave it unlimited."
   return (
     <section className="space-y-4 py-6">
+      <div className="flex items-center justify-between gap-3 rounded-lg border bg-background/30 p-3">
+        <div><h4 className="text-xs font-semibold">Traffic monitoring</h4><p className="mt-1 text-xs text-muted-foreground">Measure live rates, totals, peaks, and history.</p></div>
+        {monitored ? <Button size="sm" variant="outline" disabled={Boolean(limit) || stopMonitor.isPending} onClick={() => stopMonitor.mutate(device.mac)}><RotateCcw /> Stop</Button> : <Button size="sm" variant="outline" disabled={!monitoringAvailable || !isBandwidthEligible(device) || startMonitor.isPending} onClick={() => startMonitor.mutate({ip: device.ip, mac: device.mac})}><Gauge /> Start</Button>}
+      </div>
       <div className="flex items-center justify-between gap-3">
         <div>
           <h4 className="text-xs font-semibold">Bandwidth limit</h4>
@@ -55,18 +72,18 @@ export function BandwidthSection({
           <div className="flex justify-between gap-3 py-1">
             <span className="text-muted-foreground">Download</span>
             <span>
-              {limit.downloadBitsPerSecond ? `${displayMbps(limit.downloadBitsPerSecond)} Mbps` : "Unlimited"}
+              {limit.downloadBitsPerSecond ? `${displayRateValue(limit.downloadBitsPerSecond, rateUnit)} ${unitLabel}` : "Unlimited"}
             </span>
           </div>
           <div className="flex justify-between gap-3 py-1">
             <span className="text-muted-foreground">Upload</span>
-            <span>{limit.uploadBitsPerSecond ? `${displayMbps(limit.uploadBitsPerSecond)} Mbps` : "Unlimited"}</span>
+            <span>{limit.uploadBitsPerSecond ? `${displayRateValue(limit.uploadBitsPerSecond, rateUnit)} ${unitLabel}` : "Unlimited"}</span>
           </div>
         </div>
       )}
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-2">
-          <Label htmlFor={`download-limit-${device.mac}`}>Download Mbps</Label>
+          <Label htmlFor={`download-limit-${device.mac}`}>Download {unitLabel}</Label>
           <Input
             id={`download-limit-${device.mac}`}
             type="number"
@@ -80,7 +97,7 @@ export function BandwidthSection({
           />
         </div>
         <div className="space-y-2">
-          <Label htmlFor={`upload-limit-${device.mac}`}>Upload Mbps</Label>
+          <Label htmlFor={`upload-limit-${device.mac}`}>Upload {unitLabel}</Label>
           <Input
             id={`upload-limit-${device.mac}`}
             type="number"
@@ -105,8 +122,8 @@ export function BandwidthSection({
             setLimit.mutate({
               ip: device.ip,
               mac: device.mac,
-              downloadBitsPerSecond: parseMbps(download) ?? 0,
-              uploadBitsPerSecond: parseMbps(upload) ?? 0,
+              downloadBitsPerSecond: (parseMbps(download) ?? 0) * (rateUnit === "megabytes" ? 8 : 1),
+              uploadBitsPerSecond: (parseMbps(upload) ?? 0) * (rateUnit === "megabytes" ? 8 : 1),
             })
           }
         >

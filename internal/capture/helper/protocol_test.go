@@ -1,12 +1,50 @@
 package helper
 
 import (
+	"bytes"
+	"context"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 
+	"github.com/amdzy/NetWarden/internal/capture"
 	"github.com/amdzy/NetWarden/internal/packet"
 )
+
+type borrowedProtocolDriver struct {
+	borrowed atomic.Bool
+	regular  atomic.Bool
+}
+
+func (d *borrowedProtocolDriver) Run(ctx context.Context, _ func(capture.Frame) error) error {
+	d.regular.Store(true)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (d *borrowedProtocolDriver) RunBorrowed(ctx context.Context, _ func(capture.Frame) error) error {
+	d.borrowed.Store(true)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (*borrowedProtocolDriver) Send(context.Context, []byte) error { return nil }
+func (*borrowedProtocolDriver) Close() error                       { return nil }
+
+func TestServeUsesBorrowedFrameDriverWhenAvailable(t *testing.T) {
+	driver := &borrowedProtocolDriver{}
+	localMAC, _ := net.ParseMAC("02:00:00:00:00:10")
+	err := Serve(context.Background(), driver, localMAC,
+		netip.MustParseAddr("192.168.1.10"), netip.MustParseAddr("192.168.1.1"),
+		netip.MustParsePrefix("192.168.1.10/24"), nil, bytes.NewReader(nil), &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !driver.borrowed.Load() || driver.regular.Load() {
+		t.Fatalf("borrowed=%t regular=%t", driver.borrowed.Load(), driver.regular.Load())
+	}
+}
 
 func TestValidateDiscoveryFrameRestrictsSenderAndOperation(t *testing.T) {
 	localMAC, _ := net.ParseMAC("02:00:00:00:00:10")
@@ -56,5 +94,33 @@ func TestValidateControlFrameAllowsOnlyScopedIsolationAndVerifiedRestoration(t *
 	unknownMAC, _ := net.ParseMAC("02:00:00:00:00:99")
 	if err := ValidateControlFrame(makeFrame(unknownMAC), localMAC, gatewayMAC, localIP, gatewayIP, prefix); err == nil {
 		t.Fatal("accepted an unverified control sender")
+	}
+}
+
+func TestValidateIPv6DiscoveryFrameAllowsOnlyScopedSolicitations(t *testing.T) {
+	localMAC, _ := net.ParseMAC("02:00:00:00:00:10")
+	localIP := netip.MustParseAddr("fe80::10")
+	prefixes := []netip.Prefix{netip.MustParsePrefix("fe80::10/64"), netip.MustParsePrefix("2001:db8:1::10/64")}
+	makeFrame := func(target netip.Addr) []byte {
+		frame, err := packet.MarshalNeighborSolicitation(packet.NeighborSolicitation{SourceIP: localIP, SourceMAC: localMAC, TargetIP: target})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return frame
+	}
+	valid := makeFrame(netip.MustParseAddr("2001:db8:1::20"))
+	if err := ValidateIPv6DiscoveryFrame(valid, localMAC, prefixes); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateIPv6DiscoveryFrame(makeFrame(netip.MustParseAddr("2001:db8:2::20")), localMAC, prefixes); err == nil {
+		t.Fatal("accepted an off-link target")
+	}
+	valid[0] ^= 1
+	if err := ValidateIPv6DiscoveryFrame(valid, localMAC, prefixes); err == nil {
+		t.Fatal("accepted the wrong multicast MAC")
+	}
+	nonCanonical := append(makeFrame(netip.MustParseAddr("2001:db8:1::20")), 0)
+	if err := ValidateIPv6DiscoveryFrame(nonCanonical, localMAC, prefixes); err == nil {
+		t.Fatal("accepted a non-canonical solicitation")
 	}
 }

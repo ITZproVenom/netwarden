@@ -14,6 +14,8 @@ import (
 
 	"github.com/amdzy/NetWarden/internal/defense"
 	"github.com/amdzy/NetWarden/internal/device"
+	"github.com/amdzy/NetWarden/internal/discovery"
+	trafficmetrics "github.com/amdzy/NetWarden/internal/traffic"
 )
 
 const CurrentVersion = 1
@@ -21,9 +23,11 @@ const CurrentVersion = 1
 var ErrCorrupt = errors.New("history is corrupt")
 
 type Snapshot struct {
-	Version   int                `json:"version"`
-	Devices   []device.Device    `json:"devices,omitempty"`
-	Conflicts []defense.Conflict `json:"gateway_conflicts,omitempty"`
+	Version     int                       `json:"version"`
+	Devices     []device.Device           `json:"devices,omitempty"`
+	Conflicts   []defense.Conflict        `json:"gateway_conflicts,omitempty"`
+	IPv6Routers discovery.IPv6RouterState `json:"ipv6_routers,omitempty"`
+	Traffic     trafficmetrics.State      `json:"traffic,omitempty"`
 }
 
 type Store struct {
@@ -134,6 +138,14 @@ func (s *Store) Query(query Query) (Snapshot, error) {
 		conflicts = append(conflicts, current)
 	}
 	snapshot.Devices, snapshot.Conflicts = devices, conflicts
+	ipv6Conflicts := snapshot.IPv6Routers.Conflicts[:0]
+	for _, current := range snapshot.IPv6Routers.Conflicts {
+		if !query.Since.IsZero() && current.LastSeen.Before(query.Since) || mac != "" && strings.ToLower(current.ClaimedMAC) != mac {
+			continue
+		}
+		ipv6Conflicts = append(ipv6Conflicts, current)
+	}
+	snapshot.IPv6Routers.Conflicts = ipv6Conflicts
 	return snapshot, nil
 }
 
@@ -154,6 +166,14 @@ func Prune(snapshot Snapshot, before time.Time) Snapshot {
 		}
 	}
 	snapshot.Devices, snapshot.Conflicts = devices, conflicts
+	ipv6Conflicts := snapshot.IPv6Routers.Conflicts[:0]
+	for _, current := range snapshot.IPv6Routers.Conflicts {
+		if !current.LastSeen.Before(before) {
+			ipv6Conflicts = append(ipv6Conflicts, current)
+		}
+	}
+	snapshot.IPv6Routers.Conflicts = ipv6Conflicts
+	snapshot.Traffic = trafficmetrics.PruneState(snapshot.Traffic, before)
 	return snapshot
 }
 

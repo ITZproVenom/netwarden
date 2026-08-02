@@ -23,6 +23,7 @@ import (
 	"github.com/amdzy/NetWarden/internal/network"
 	networkgateway "github.com/amdzy/NetWarden/internal/network/gateway"
 	"github.com/amdzy/NetWarden/internal/shaping"
+	trafficmetrics "github.com/amdzy/NetWarden/internal/traffic"
 )
 
 type OpenDriver func(string) (capture.Driver, error)
@@ -49,36 +50,44 @@ type Dependencies struct {
 }
 
 type Config struct {
-	Interface        pcapdriver.Interface
-	ScanInterval     time.Duration
-	ProbeDelay       time.Duration
-	MaximumHosts     int
-	OfflineAfter     time.Duration
-	LivenessCheck    time.Duration
-	ConflictCooldown time.Duration
-	NetworkCheck     time.Duration
-	DeviceRetention  time.Duration
-	PinnedGatewayMAC net.HardwareAddr
-	HistoryRetention time.Duration
+	Interface            pcapdriver.Interface
+	ScanInterval         time.Duration
+	ProbeDelay           time.Duration
+	MaximumHosts         int
+	OfflineAfter         time.Duration
+	LivenessCheck        time.Duration
+	ConflictCooldown     time.Duration
+	NetworkCheck         time.Duration
+	DeviceRetention      time.Duration
+	PinnedGatewayMAC     net.HardwareAddr
+	HistoryRetention     time.Duration
+	IPv6AddressRetention time.Duration
 }
 
 type Status struct {
-	Running                 bool
-	Stopped                 bool
-	Scanning                bool
-	PeriodicScanEnabled     bool
-	DeviceCount             int
-	DroppedEvents           uint64
-	LastPersistenceError    string
-	Generation              uint64
-	RestartCount            uint64
-	Rebuilding              bool
-	LastRestartReason       string
-	SupervisorDroppedEvents uint64
-	ActiveControlTargets    int
-	ContinuousControl       bool
-	BandwidthAvailable      bool
-	ActiveBandwidthLimits   int
+	Running                      bool
+	Stopped                      bool
+	Scanning                     bool
+	PeriodicScanEnabled          bool
+	DeviceCount                  int
+	DroppedEvents                uint64
+	LastPersistenceError         string
+	Generation                   uint64
+	RestartCount                 uint64
+	Rebuilding                   bool
+	LastRestartReason            string
+	SupervisorDroppedEvents      uint64
+	ActiveControlTargets         int
+	ContinuousControl            bool
+	BandwidthAvailable           bool
+	ActiveBandwidthLimits        int
+	BandwidthMonitoringAvailable bool
+	ActiveBandwidthMonitors      int
+	IPv6Available                bool
+	IPv6RouterIP                 string
+	IPv6RouterMAC                string
+	IPv6PrefixCount              int
+	IPv6RouterConflicts          int
 }
 
 type Runtime struct {
@@ -88,6 +97,7 @@ type Runtime struct {
 	service  *core.Service
 	scanner  *discovery.Scanner
 	monitor  *defense.Monitor
+	ipv6     *discovery.IPv6RouterTracker
 	metadata MetadataEditor
 	settings *appconfig.Store
 	history  *history.Store
@@ -107,13 +117,14 @@ type Runtime struct {
 	doneOnce   sync.Once
 	control    *ControlLifecycle
 	bandwidth  *BandwidthService
+	traffic    *trafficmetrics.Monitor
 }
 
 func DefaultDependencies() Dependencies {
 	return Dependencies{
 		Gateway: networkgateway.SystemDiscoverer{},
 		Open: func(name string) (capture.Driver, error) {
-			return pcapdriver.Open(name, pcapdriver.Config{Promiscuous: true, Filter: "arp"})
+			return pcapdriver.Open(name, pcapdriver.Config{Promiscuous: true, Filter: "arp or icmp6"})
 		},
 		Resolve: discovery.ResolveARP,
 	}
@@ -196,7 +207,15 @@ func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*
 		monitor = defense.NewPinnedMonitor(networkContext.Gateway.IP, networkContext.Gateway.MAC, config.ConflictCooldown)
 	}
 	monitor.RestoreHistory(durableHistory.Conflicts)
-	options := []core.Option{core.WithARPObserver(monitor), core.WithRemovalAfter(config.DeviceRetention), core.WithIgnoredSenderMAC(config.Interface.MAC)}
+	localIPv6 := make([]netip.Addr, 0)
+	for _, candidate := range config.Interface.Prefixes {
+		if candidate.Addr().Is6() {
+			localIPv6 = append(localIPv6, candidate.Addr())
+		}
+	}
+	ipv6 := discovery.NewIPv6RouterTracker(localIPv6)
+	ipv6.RestoreState(durableHistory.IPv6Routers)
+	options := []core.Option{core.WithARPObserver(monitor), core.WithNDPObserver(ipv6), core.WithRemovalAfter(config.DeviceRetention), core.WithIPv6AddressRetention(config.IPv6AddressRetention), core.WithIgnoredSenderMAC(config.Interface.MAC)}
 	if dependencies.Metadata != nil {
 		options = append(options, core.WithEnricher(dependencies.Metadata))
 	} else if dependencies.Enricher != nil {
@@ -210,7 +229,7 @@ func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*
 	scanner := discovery.NewScanner(prober, config.MaximumHosts, config.ProbeDelay)
 	runtime := &Runtime{
 		network: networkContext, driver: driver, registry: registry,
-		service: service, scanner: scanner, monitor: monitor, config: config,
+		service: service, scanner: scanner, monitor: monitor, ipv6: ipv6, config: config,
 		metadata: dependencies.Metadata, settings: dependencies.Settings,
 		events: make(chan Event, 128), gateway: dependencies.Gateway, route: route,
 		history: dependencies.History, persist: make(chan struct{}, 1),
@@ -226,6 +245,11 @@ func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*
 		}
 		return false
 	})
+	runtime.traffic = trafficmetrics.NewMonitor(runtime.bandwidth, time.Second, time.Hour)
+	runtime.traffic.RestoreState(durableHistory.Traffic, now)
+	if source, ok := ipv6DiscoverySource(localIPv6); ok {
+		scanner.ConfigureIPv6(discovery.NewNDPProber(driver, networkContext.Local.MAC, source), runtime.ipv6DiscoveryCandidates)
+	}
 	scanner.SetObserver(runtime.handleScanEvent)
 	if pinned && gatewayMAC.String() != baselineMAC.String() {
 		monitor.ObserveGatewayClaim(gatewayMAC, now)
@@ -233,26 +257,111 @@ func Bootstrap(ctx context.Context, dependencies Dependencies, config Config) (*
 	return runtime, nil
 }
 
+func ipv6DiscoverySource(addresses []netip.Addr) (netip.Addr, bool) {
+	for _, address := range addresses {
+		if address.Is6() && address.IsLinkLocalUnicast() {
+			return address, true
+		}
+	}
+	for _, address := range addresses {
+		if address.Is6() && !address.IsUnspecified() && !address.IsMulticast() {
+			return address, true
+		}
+	}
+	return netip.Addr{}, false
+}
+
+func (r *Runtime) ipv6DiscoveryCandidates() []netip.Addr {
+	seen := make(map[netip.Addr]struct{})
+	var result []netip.Addr
+	add := func(address netip.Addr) {
+		if address.Is6() && !address.IsUnspecified() && !address.IsMulticast() && r.ipv6AddressOnLink(address) {
+			if _, exists := seen[address]; !exists {
+				seen[address] = struct{}{}
+				result = append(result, address)
+			}
+		}
+	}
+	devices := r.registry.Snapshot()
+	for _, current := range devices {
+		for _, address := range current.Addresses {
+			add(address)
+		}
+	}
+	context := r.ipv6.Snapshot(time.Now().UTC())
+	for _, router := range context.Routers {
+		add(router.IP)
+	}
+	for _, router := range context.Routers {
+		for _, prefix := range router.Prefixes {
+			if !prefix.OnLink || prefix.Prefix.Bits() != 64 {
+				continue
+			}
+			for _, current := range devices {
+				mac, err := net.ParseMAC(current.MAC)
+				if err != nil || len(mac) != 6 {
+					continue
+				}
+				if candidate, ok := eui64Address(prefix.Prefix, mac); ok {
+					add(candidate)
+				}
+			}
+		}
+	}
+	return result
+}
+
+func (r *Runtime) ipv6AddressOnLink(address netip.Addr) bool {
+	for _, prefix := range r.config.Interface.Prefixes {
+		if prefix.IsValid() && prefix.Addr().Is6() && prefix.Masked().Contains(address) {
+			return true
+		}
+	}
+	return false
+}
+
+func eui64Address(prefix netip.Prefix, mac net.HardwareAddr) (netip.Addr, bool) {
+	if !prefix.IsValid() || !prefix.Addr().Is6() || prefix.Bits() != 64 || len(mac) != 6 {
+		return netip.Addr{}, false
+	}
+	value := prefix.Masked().Addr().As16()
+	value[8], value[9], value[10] = mac[0]^0x02, mac[1], mac[2]
+	value[11], value[12] = 0xff, 0xfe
+	value[13], value[14], value[15] = mac[3], mac[4], mac[5]
+	return netip.AddrFrom16(value), true
+}
+
 func (r *Runtime) Network() network.Context { return r.network.Clone() }
 func (r *Runtime) Devices() []device.Device { return r.registry.Snapshot() }
 func (r *Runtime) Events() <-chan Event     { return r.events }
 func (r *Runtime) Done() <-chan struct{}    { return r.done }
 func (r *Runtime) DroppedEvents() uint64 {
-	return r.dropped.Load() + r.service.DroppedEvents() + r.monitor.DroppedEvents()
+	return r.dropped.Load() + r.service.DroppedEvents() + r.monitor.DroppedEvents() + r.ipv6.DroppedEvents()
 }
 
 func (r *Runtime) Status() Status {
 	r.mu.Lock()
 	running, stopped, persistErr := r.running, r.stopped, r.persistErr
 	r.mu.Unlock()
-	return Status{
+	ipv6 := r.ipv6.Snapshot(time.Now().UTC())
+	status := Status{
 		Running: running, Stopped: stopped, Scanning: r.scanner.Scanning(),
 		PeriodicScanEnabled: r.scanner.PeriodicEnabled(), DeviceCount: len(r.Devices()),
 		DroppedEvents: r.DroppedEvents(), LastPersistenceError: errorText(persistErr),
 		ActiveControlTargets: len(r.control.Snapshot()), ContinuousControl: r.control.ContinuousRunning(),
 		BandwidthAvailable: r.bandwidth.Available(), ActiveBandwidthLimits: len(r.bandwidth.Snapshot()),
+		BandwidthMonitoringAvailable: r.bandwidth.MonitoringAvailable(), ActiveBandwidthMonitors: len(r.bandwidth.MonitoringSnapshot()),
+		IPv6Available: len(ipv6.LocalAddresses) > 0,
 	}
+	status.IPv6RouterConflicts = ipv6.ConflictCount
+	if ipv6.DefaultRouter != nil {
+		status.IPv6RouterIP, status.IPv6RouterMAC = ipv6.DefaultRouter.IP.String(), ipv6.DefaultRouter.MAC
+		status.IPv6PrefixCount = len(ipv6.DefaultRouter.Prefixes)
+	}
+	return status
 }
+
+func (r *Runtime) IPv6Network() discovery.IPv6Context { return r.ipv6.Snapshot(time.Now().UTC()) }
 
 func errorText(err error) string {
 	if err == nil {
@@ -270,7 +379,8 @@ func (r *Runtime) SetPeriodicScanEnabled(enabled bool) { r.scanner.SetPeriodicEn
 func (r *Runtime) ConflictHistory() []defense.Conflict { return r.monitor.History() }
 func (r *Runtime) ControlTargets() []ControlTarget     { return r.control.Snapshot() }
 
-func (r *Runtime) BandwidthLimits() []BandwidthTarget { return r.bandwidth.Snapshot() }
+func (r *Runtime) BandwidthLimits() []BandwidthTarget   { return r.bandwidth.Snapshot() }
+func (r *Runtime) BandwidthMonitors() []BandwidthTarget { return r.bandwidth.MonitoringSnapshot() }
 
 func (r *Runtime) SetBandwidthLimit(ctx context.Context, target ControlTarget, policy shaping.Policy) error {
 	return r.bandwidth.Set(ctx, target, policy)
@@ -282,10 +392,92 @@ func (r *Runtime) RemoveBandwidthLimit(ctx context.Context, mac net.HardwareAddr
 
 func (r *Runtime) ClearBandwidthLimits(ctx context.Context) error { return r.bandwidth.Clear(ctx) }
 
+func (r *Runtime) StartBandwidthMonitor(ctx context.Context, target ControlTarget) error {
+	if err := r.bandwidth.StartMonitoring(ctx, target); err != nil {
+		return err
+	}
+	r.traffic.StartSession(target.MAC.String(), time.Now().UTC())
+	return nil
+}
+
+func (r *Runtime) StopBandwidthMonitor(ctx context.Context, mac net.HardwareAddr) error {
+	if err := r.bandwidth.StopMonitoring(ctx, mac); err != nil {
+		return err
+	}
+	r.traffic.StopSession(mac.String(), time.Now().UTC())
+	return nil
+}
+
+func (r *Runtime) BandwidthTraffic(ctx context.Context) ([]shaping.DeviceTrafficStats, error) {
+	return r.bandwidth.Traffic(ctx)
+}
+
+func (r *Runtime) BandwidthMeasurements() ([]trafficmetrics.DeviceSnapshot, error) {
+	return r.traffic.Snapshot()
+}
+
+type BandwidthHealth struct {
+	Forwarder     shaping.ForwarderStats
+	SamplingError string
+}
+
+func (r *Runtime) BandwidthMonitorHealth(ctx context.Context) BandwidthHealth {
+	stats, err := r.bandwidth.ForwarderStats(ctx)
+	_, sampleErr := r.traffic.Snapshot()
+	if sampleErr != nil {
+		err = sampleErr
+	}
+	return BandwidthHealth{Forwarder: stats, SamplingError: errorText(err)}
+}
+
+func (r *Runtime) BandwidthHistory(mac string, since time.Time, granularity string) []trafficmetrics.Bucket {
+	return r.traffic.History(mac, since, granularity)
+}
+
+func (r *Runtime) StartAllBandwidthMonitors(ctx context.Context) error {
+	original := make(map[string]struct{})
+	for _, target := range r.bandwidth.MonitoringSnapshot() {
+		original[target.MAC.String()] = struct{}{}
+	}
+	var started []net.HardwareAddr
+	for _, current := range r.Devices() {
+		if !current.Online || current.Role != device.RolePeer {
+			continue
+		}
+		mac, err := net.ParseMAC(current.MAC)
+		if err != nil {
+			continue
+		}
+		if err := r.StartBandwidthMonitor(ctx, ControlTarget{IP: current.IP, MAC: mac}); err != nil {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			var rollbackErr error
+			for index := len(started) - 1; index >= 0; index-- {
+				rollbackErr = errors.Join(rollbackErr, r.StopBandwidthMonitor(rollbackCtx, started[index]))
+			}
+			cancel()
+			return errors.Join(fmt.Errorf("monitor all rollback after %s: %w", current.MAC, err), rollbackErr)
+		}
+		if _, existed := original[mac.String()]; !existed {
+			started = append(started, mac)
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) StopAllBandwidthMonitors(ctx context.Context) error {
+	var result error
+	for _, target := range r.bandwidth.MonitoringSnapshot() {
+		if err := r.StopBandwidthMonitor(ctx, target.MAC); err != nil {
+			result = errors.Join(result, err)
+		}
+	}
+	return result
+}
+
 func (r *Runtime) ControlCommands(auditor ControlAuditor, factory ControlControllerFactory) *ControlCommands {
 	networkContext := r.Network()
 	if factory == nil {
-		factory = runtimeControlControllerFactory{driver: r.driver}
+		factory = runtimeControlControllerFactory{driver: r.driver, devices: r.registry}
 	}
 	return NewControlCommands(nil, ControlDependencies{
 		Devices: r.registry,
@@ -304,9 +496,15 @@ func (r *Runtime) ControlCommands(auditor ControlAuditor, factory ControlControl
 	})
 }
 
-type runtimeControlControllerFactory struct{ driver capture.Driver }
+type runtimeControlControllerFactory struct {
+	driver  capture.Driver
+	devices isolationDeviceSource
+}
 
-func (f runtimeControlControllerFactory) Prepare(_ context.Context, _ ControlRequest, scope ControlScope) (ControlControllerLease, error) {
+func (f runtimeControlControllerFactory) Prepare(_ context.Context, request ControlRequest, scope ControlScope) (ControlControllerLease, error) {
+	if backend, ok := f.driver.(DeviceIsolationBackend); ok {
+		return ControlControllerLease{Controller: newDeviceIsolationController(backend, f.devices, request.Operation == ControlContinuous)}, nil
+	}
 	controller, err := control.NewController(f.driver,
 		control.Endpoint{IP: scope.LocalIP, MAC: scope.LocalMAC},
 		control.Endpoint{IP: scope.GatewayIP, MAC: scope.GatewayMAC},
@@ -361,7 +559,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	defer r.doneOnce.Do(func() { close(r.done) })
 	r.publish(Event{Kind: EventRuntimeStarting})
 
-	workerResults := make(chan error, 3)
+	workerResults := make(chan error, 4)
 	var eventWorkers sync.WaitGroup
 	eventWorkers.Add(1)
 	go func() {
@@ -381,19 +579,23 @@ func (r *Runtime) Run(ctx context.Context) error {
 		workerResults <- workerError(StageDiscovery, r.scanner.Run(workerCtx, r.network.Prefix, r.config.ScanInterval))
 	}()
 	go func() { workerResults <- r.watchNetwork(workerCtx) }()
+	go func() { workerResults <- r.traffic.Run(workerCtx) }()
 	r.publish(Event{Kind: EventRuntimeStarted})
 
 	first := <-workerResults
 	r.publish(Event{Kind: EventRuntimeStopping, Err: first})
+	r.traffic.StopAllSessions(time.Now().UTC())
 	cancel()
 	second := <-workerResults
 	third := <-workerResults
-	first = meaningfulError(first, second, third, ctx.Err())
+	fourth := <-workerResults
+	first = meaningfulError(first, second, third, fourth, ctx.Err())
 	controlCtx, cancelControl := context.WithTimeout(context.Background(), 5*time.Second)
 	controlErr := r.control.RestoreAll(controlCtx, "runtime shutdown or network change")
 	cancelControl()
 	bandwidthCtx, cancelBandwidth := context.WithTimeout(context.Background(), 5*time.Second)
 	bandwidthErr := r.bandwidth.Clear(bandwidthCtx)
+	monitorErr := r.bandwidth.ClearMonitoring(bandwidthCtx)
 	cancelBandwidth()
 	closeErr := r.service.Close()
 	cancel()
@@ -405,7 +607,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	r.stopped = true
 	r.cancel = nil
 	r.mu.Unlock()
-	result := errors.Join(first, stageError(StageShutdown, controlErr), stageError(StageShutdown, bandwidthErr), stageError(StageShutdown, closeErr))
+	result := errors.Join(first, stageError(StageShutdown, controlErr), stageError(StageShutdown, bandwidthErr), stageError(StageShutdown, monitorErr), stageError(StageShutdown, closeErr))
 	r.publish(Event{Kind: EventRuntimeStopped, Err: result})
 	return result
 }
@@ -416,10 +618,31 @@ func (r *Runtime) forwardEvents(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case event := <-r.service.Events():
+			if event.Kind == core.EventAddressChanged {
+				reconcileCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				err := errors.Join(r.bandwidth.ReconcileDevice(reconcileCtx, event.Device), r.control.ReconcileDevice(reconcileCtx, event.Device))
+				cancel()
+				if err != nil {
+					r.publish(Event{Kind: EventBandwidthMonitoringFailed, Device: &event.Device, Err: err})
+				}
+			}
 			r.publish(eventFromCore(event))
 			r.schedulePersist()
 		case event := <-r.monitor.Events():
 			r.publish(eventFromDefense(event))
+			r.schedulePersist()
+		case event := <-r.ipv6.Events():
+			if event.Kind == discovery.IPv6RouterIdentityConflict || event.Kind == discovery.IPv6RouterIdentityRestored {
+				kind := defense.GatewayIdentityConflict
+				if event.Kind == discovery.IPv6RouterIdentityRestored {
+					kind = defense.GatewayIdentityRestored
+				}
+				r.publish(eventFromDefense(defense.Event{Kind: kind, ObservedAt: event.ObservedAt,
+					GatewayIP: event.RouterIP, ExpectedMAC: event.ExpectedMAC, ClaimedMAC: event.ClaimedMAC,
+					Baseline: defense.BaselineLearned}))
+			}
+			r.schedulePersist()
+		case <-r.traffic.Changes():
 			r.schedulePersist()
 		}
 	}
@@ -453,7 +676,7 @@ func (r *Runtime) persistHistory(ctx context.Context) {
 	var timer *time.Timer
 	var timerC <-chan time.Time
 	flush := func() {
-		snapshot := history.Snapshot{Devices: r.Devices(), Conflicts: r.ConflictHistory()}
+		snapshot := history.Snapshot{Devices: r.Devices(), Conflicts: r.ConflictHistory(), IPv6Routers: r.ipv6.State(), Traffic: r.traffic.State()}
 		snapshot = history.Prune(snapshot, time.Now().UTC().Add(-r.config.HistoryRetention))
 		err := r.history.Save(snapshot)
 		r.mu.Lock()
@@ -528,8 +751,9 @@ func (r *Runtime) Close() error {
 	cancelControl()
 	bandwidthCtx, cancelBandwidth := context.WithTimeout(context.Background(), 5*time.Second)
 	bandwidthErr := r.bandwidth.Clear(bandwidthCtx)
+	monitorErr := r.bandwidth.ClearMonitoring(bandwidthCtx)
 	cancelBandwidth()
-	return errors.Join(controlErr, bandwidthErr, r.driver.Close())
+	return errors.Join(controlErr, bandwidthErr, monitorErr, r.driver.Close())
 }
 
 func prefixForRoute(prefixes []netip.Prefix, route networkgateway.Route) (netip.Prefix, error) {
@@ -568,6 +792,9 @@ func applyRuntimeDefaults(config *Config) {
 	}
 	if config.HistoryRetention <= 0 {
 		config.HistoryRetention = 90 * 24 * time.Hour
+	}
+	if config.IPv6AddressRetention <= 0 {
+		config.IPv6AddressRetention = 24 * time.Hour
 	}
 }
 

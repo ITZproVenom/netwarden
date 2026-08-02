@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -10,6 +11,7 @@ import (
 
 	coreapp "github.com/amdzy/NetWarden/internal/app"
 	"github.com/amdzy/NetWarden/internal/shaping"
+	trafficmetrics "github.com/amdzy/NetWarden/internal/traffic"
 )
 
 type BandwidthLimitDTO struct {
@@ -18,6 +20,112 @@ type BandwidthLimitDTO struct {
 	DownloadBitsPerSecond uint64 `json:"downloadBitsPerSecond"`
 	UploadBitsPerSecond   uint64 `json:"uploadBitsPerSecond"`
 	BurstBytes            int    `json:"burstBytes"`
+}
+
+type BandwidthTrafficDTO struct {
+	MAC             string `json:"mac"`
+	UploadPackets   uint64 `json:"uploadPackets"`
+	UploadBytes     uint64 `json:"uploadBytes"`
+	DownloadPackets uint64 `json:"downloadPackets"`
+	DownloadBytes   uint64 `json:"downloadBytes"`
+}
+
+type BandwidthMonitorDTO struct {
+	IP  string `json:"ip"`
+	MAC string `json:"mac"`
+}
+
+func (a *GUIApp) BandwidthMonitors() ([]BandwidthMonitorDTO, error) {
+	a.mu.RLock()
+	supervisor := a.supervisor
+	a.mu.RUnlock()
+	if supervisor == nil || supervisor.Current() == nil {
+		return []BandwidthMonitorDTO{}, nil
+	}
+	targets := supervisor.Current().BandwidthMonitors()
+	result := make([]BandwidthMonitorDTO, 0, len(targets))
+	for _, target := range targets {
+		result = append(result, BandwidthMonitorDTO{IP: target.IP.String(), MAC: target.MAC.String()})
+	}
+	return result, nil
+}
+
+type BandwidthMeasurementDTO struct {
+	MAC             string                     `json:"mac"`
+	UploadBytes     uint64                     `json:"uploadBytes"`
+	DownloadBytes   uint64                     `json:"downloadBytes"`
+	UploadBPS       uint64                     `json:"uploadBPS"`
+	DownloadBPS     uint64                     `json:"downloadBPS"`
+	PeakUploadBPS   uint64                     `json:"peakUploadBPS"`
+	PeakUploadAt    time.Time                  `json:"peakUploadAt,omitempty"`
+	PeakDownloadBPS uint64                     `json:"peakDownloadBPS"`
+	PeakDownloadAt  time.Time                  `json:"peakDownloadAt,omitempty"`
+	History         []BandwidthHistoryPointDTO `json:"history"`
+}
+
+type BandwidthHistoryPointDTO struct {
+	At            time.Time `json:"at"`
+	UploadBytes   uint64    `json:"uploadBytes"`
+	DownloadBytes uint64    `json:"downloadBytes"`
+	UploadBPS     uint64    `json:"uploadBPS"`
+	DownloadBPS   uint64    `json:"downloadBPS"`
+}
+
+type BandwidthBucketDTO struct {
+	Start           time.Time `json:"start"`
+	UploadBytes     uint64    `json:"uploadBytes"`
+	DownloadBytes   uint64    `json:"downloadBytes"`
+	PeakUploadBPS   uint64    `json:"peakUploadBPS"`
+	PeakDownloadBPS uint64    `json:"peakDownloadBPS"`
+}
+
+type BandwidthHealthDTO struct {
+	QueueDrops         uint64                         `json:"queueDrops"`
+	UploadQueueDrops   uint64                         `json:"uploadQueueDrops"`
+	DownloadQueueDrops uint64                         `json:"downloadQueueDrops"`
+	MonitorQueueDrops  uint64                         `json:"monitorQueueDrops"`
+	LimitedQueueDrops  uint64                         `json:"limitedQueueDrops"`
+	CanceledDrops      uint64                         `json:"canceledDrops"`
+	SendErrors         uint64                         `json:"sendErrors"`
+	UnmanagedFrames    uint64                         `json:"unmanagedFrames"`
+	QueueCapacity      int                            `json:"queueCapacity"`
+	UploadQueueDepth   int                            `json:"uploadQueueDepth"`
+	DownloadQueueDepth int                            `json:"downloadQueueDepth"`
+	PeakUploadDepth    uint64                         `json:"peakUploadDepth"`
+	PeakDownloadDepth  uint64                         `json:"peakDownloadDepth"`
+	QueueByteCapacity  int64                          `json:"queueByteCapacity"`
+	UploadQueueBytes   int64                          `json:"uploadQueueBytes"`
+	DownloadQueueBytes int64                          `json:"downloadQueueBytes"`
+	PeakUploadBytes    uint64                         `json:"peakUploadBytes"`
+	PeakDownloadBytes  uint64                         `json:"peakDownloadBytes"`
+	DeviceQueueDrops   []BandwidthDeviceQueueDropsDTO `json:"deviceQueueDrops"`
+	RecentQueueDrops   uint64                         `json:"recentQueueDrops"`
+	RecentSendErrors   uint64                         `json:"recentSendErrors"`
+	SampleSeconds      int64                          `json:"sampleSeconds"`
+	ActiveWarning      bool                           `json:"activeWarning"`
+	SampledAt          time.Time                      `json:"sampledAt"`
+	SamplingError      string                         `json:"samplingError,omitempty"`
+}
+
+type BandwidthDeviceQueueDropsDTO struct {
+	MAC           string `json:"mac"`
+	UploadDrops   uint64 `json:"uploadDrops"`
+	DownloadDrops uint64 `json:"downloadDrops"`
+}
+
+type bandwidthHealthState struct {
+	initialized bool
+	sampledAt   time.Time
+	queueDrops  uint64
+	sendErrors  uint64
+	unhealthy   bool
+}
+
+type bandwidthHealthSample struct {
+	queueDrops uint64
+	sendErrors uint64
+	seconds    int64
+	unhealthy  bool
 }
 
 func (a *GUIApp) BandwidthLimits() ([]BandwidthLimitDTO, error) {
@@ -90,6 +198,238 @@ func (a *GUIApp) ClearBandwidthLimits() error {
 	err = runtime.ClearBandwidthLimits(ctx)
 	a.logBandwidthResult("clear", "", "", err)
 	return err
+}
+
+func (a *GUIApp) StartBandwidthMonitor(ipText, macText string) error {
+	runtime, err := a.activeRuntime()
+	if err != nil {
+		return err
+	}
+	ip, err := netip.ParseAddr(ipText)
+	if err != nil {
+		return fmt.Errorf("parse target IP: %w", err)
+	}
+	mac, err := net.ParseMAC(macText)
+	if err != nil {
+		return fmt.Errorf("parse target MAC: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
+	defer cancel()
+	err = runtime.StartBandwidthMonitor(ctx, coreapp.ControlTarget{IP: ip, MAC: mac})
+	a.logBandwidthResult("monitor_start", ipText, macText, err)
+	return err
+}
+
+func (a *GUIApp) StopBandwidthMonitor(macText string) error {
+	runtime, err := a.activeRuntime()
+	if err != nil {
+		return err
+	}
+	mac, err := net.ParseMAC(macText)
+	if err != nil {
+		return fmt.Errorf("parse target MAC: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
+	defer cancel()
+	err = runtime.StopBandwidthMonitor(ctx, mac)
+	a.logBandwidthResult("monitor_stop", "", macText, err)
+	return err
+}
+
+func (a *GUIApp) StartAllBandwidthMonitors() error {
+	runtime, err := a.activeRuntime()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
+	defer cancel()
+	err = runtime.StartAllBandwidthMonitors(ctx)
+	a.logBandwidthResult("monitor_start_all", "", "", err)
+	return err
+}
+
+func (a *GUIApp) StopAllBandwidthMonitors() error {
+	runtime, err := a.activeRuntime()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
+	defer cancel()
+	err = runtime.StopAllBandwidthMonitors(ctx)
+	a.logBandwidthResult("monitor_stop_all", "", "", err)
+	return err
+}
+
+func (a *GUIApp) BandwidthTraffic() ([]BandwidthTrafficDTO, error) {
+	runtime, err := a.activeRuntime()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 5*time.Second)
+	defer cancel()
+	traffic, err := runtime.BandwidthTraffic(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]BandwidthTrafficDTO, 0, len(traffic))
+	for _, current := range traffic {
+		result = append(result, BandwidthTrafficDTO{MAC: current.MAC, UploadPackets: current.UploadPackets,
+			UploadBytes: current.UploadBytes, DownloadPackets: current.DownloadPackets, DownloadBytes: current.DownloadBytes})
+	}
+	return result, nil
+}
+
+func (a *GUIApp) BandwidthMeasurements() ([]BandwidthMeasurementDTO, error) {
+	runtime, err := a.activeRuntime()
+	if err != nil {
+		return nil, err
+	}
+	measurements, err := runtime.BandwidthMeasurements()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]BandwidthMeasurementDTO, 0, len(measurements))
+	for _, current := range measurements {
+		item := BandwidthMeasurementDTO{MAC: current.MAC, UploadBytes: current.UploadBytes, DownloadBytes: current.DownloadBytes,
+			UploadBPS: current.UploadBPS, DownloadBPS: current.DownloadBPS, PeakUploadBPS: current.PeakUploadBPS,
+			PeakUploadAt: current.PeakUploadAt, PeakDownloadBPS: current.PeakDownloadBPS, PeakDownloadAt: current.PeakDownloadAt,
+			History: make([]BandwidthHistoryPointDTO, 0, len(current.History))}
+		for _, point := range current.History {
+			item.History = append(item.History, BandwidthHistoryPointDTO{At: point.At, UploadBytes: point.UploadBytes,
+				DownloadBytes: point.DownloadBytes, UploadBPS: point.UploadBPS, DownloadBPS: point.DownloadBPS})
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
+func (a *GUIApp) BandwidthHistory(macText, rangeText string) ([]BandwidthBucketDTO, error) {
+	mac, err := net.ParseMAC(macText)
+	if err != nil {
+		return nil, fmt.Errorf("parse target MAC: %w", err)
+	}
+	now := time.Now().UTC()
+	var since time.Time
+	granularity := "minute"
+	switch rangeText {
+	case "hour":
+		since = now.Add(-time.Hour)
+	case "day":
+		since, granularity = now.Add(-24*time.Hour), "hour"
+	case "week":
+		since, granularity = now.Add(-7*24*time.Hour), "hour"
+	case "month":
+		since, granularity = now.Add(-31*24*time.Hour), "day"
+	default:
+		return nil, errors.New("history range must be hour, day, week, or month")
+	}
+	a.mu.RLock()
+	supervisor := a.supervisor
+	a.mu.RUnlock()
+	var buckets []trafficmetrics.Bucket
+	if supervisor != nil && supervisor.Current() != nil {
+		buckets = supervisor.Current().BandwidthHistory(mac.String(), since, granularity)
+	} else if snapshot, loadErr := loadHistorySnapshot(); loadErr == nil {
+		for _, bucket := range snapshot.Traffic.Buckets {
+			if bucket.MAC == mac.String() && bucket.Granularity == granularity && !bucket.Start.Before(since) {
+				buckets = append(buckets, bucket)
+			}
+		}
+	} else {
+		return nil, loadErr
+	}
+	result := make([]BandwidthBucketDTO, 0, len(buckets))
+	for _, bucket := range buckets {
+		result = append(result, BandwidthBucketDTO{Start: bucket.Start, UploadBytes: bucket.UploadBytes,
+			DownloadBytes: bucket.DownloadBytes, PeakUploadBPS: bucket.PeakUploadBPS, PeakDownloadBPS: bucket.PeakDownloadBPS})
+	}
+	return result, nil
+}
+
+func (a *GUIApp) BandwidthMonitorHealth() (BandwidthHealthDTO, error) {
+	runtime, err := a.activeRuntime()
+	if err != nil {
+		return BandwidthHealthDTO{}, err
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 5*time.Second)
+	defer cancel()
+	health := runtime.BandwidthMonitorHealth(ctx)
+	now := time.Now().UTC()
+	sample := a.recordBandwidthHealth(now, health)
+	drops := make([]BandwidthDeviceQueueDropsDTO, 0, len(health.Forwarder.DeviceQueueDrops))
+	for _, device := range health.Forwarder.DeviceQueueDrops {
+		drops = append(drops, BandwidthDeviceQueueDropsDTO{MAC: device.MAC, UploadDrops: device.UploadDrops, DownloadDrops: device.DownloadDrops})
+	}
+	return BandwidthHealthDTO{
+		QueueDrops: health.Forwarder.QueueDrops, UploadQueueDrops: health.Forwarder.UploadQueueDrops,
+		DownloadQueueDrops: health.Forwarder.DownloadQueueDrops, MonitorQueueDrops: health.Forwarder.MonitorQueueDrops,
+		LimitedQueueDrops: health.Forwarder.LimitedQueueDrops, CanceledDrops: health.Forwarder.CanceledDrops,
+		SendErrors: health.Forwarder.SendErrors, UnmanagedFrames: health.Forwarder.UnmanagedFrames,
+		QueueCapacity: health.Forwarder.QueueCapacity, UploadQueueDepth: health.Forwarder.UploadQueueDepth,
+		DownloadQueueDepth: health.Forwarder.DownloadQueueDepth, PeakUploadDepth: health.Forwarder.PeakUploadDepth,
+		PeakDownloadDepth: health.Forwarder.PeakDownloadDepth, DeviceQueueDrops: drops,
+		QueueByteCapacity: health.Forwarder.QueueByteCapacity, UploadQueueBytes: health.Forwarder.UploadQueueBytes,
+		DownloadQueueBytes: health.Forwarder.DownloadQueueBytes, PeakUploadBytes: health.Forwarder.PeakUploadBytes,
+		PeakDownloadBytes: health.Forwarder.PeakDownloadBytes,
+		RecentQueueDrops:  sample.queueDrops, RecentSendErrors: sample.sendErrors, SampleSeconds: sample.seconds,
+		ActiveWarning: sample.unhealthy, SampledAt: now, SamplingError: health.SamplingError,
+	}, nil
+}
+
+func (a *GUIApp) recordBandwidthHealth(now time.Time, health coreapp.BandwidthHealth) bandwidthHealthSample {
+	a.bandwidthHealthMu.Lock()
+	previous := a.bandwidthHealth
+	queueDrops := counterDelta(health.Forwarder.QueueDrops, previous.queueDrops)
+	sendErrors := counterDelta(health.Forwarder.SendErrors, previous.sendErrors)
+	seconds := int64(0)
+	if previous.initialized {
+		seconds = max(1, int64(now.Sub(previous.sampledAt).Seconds()+0.5))
+	} else {
+		queueDrops = health.Forwarder.QueueDrops
+		sendErrors = health.Forwarder.SendErrors
+	}
+	unhealthy := health.SamplingError != "" || queueDrops > 0 || sendErrors > 0
+	a.bandwidthHealth = bandwidthHealthState{initialized: true, sampledAt: now, queueDrops: health.Forwarder.QueueDrops,
+		sendErrors: health.Forwarder.SendErrors, unhealthy: unhealthy}
+	a.bandwidthHealthMu.Unlock()
+
+	if unhealthy && !previous.unhealthy {
+		mostAffectedMAC, mostAffectedDrops := mostAffectedQueueDrops(health.Forwarder.DeviceQueueDrops)
+		a.log(slog.LevelWarn, "bandwidth monitor health degraded", "component", "bandwidth_health",
+			"queue_drops", queueDrops, "send_errors", sendErrors, "sample_seconds", seconds,
+			"lifetime_upload_drops", health.Forwarder.UploadQueueDrops, "lifetime_download_drops", health.Forwarder.DownloadQueueDrops,
+			"lifetime_monitor_drops", health.Forwarder.MonitorQueueDrops, "lifetime_limited_drops", health.Forwarder.LimitedQueueDrops,
+			"upload_queue_depth", health.Forwarder.UploadQueueDepth, "download_queue_depth", health.Forwarder.DownloadQueueDepth,
+			"peak_upload_depth", health.Forwarder.PeakUploadDepth, "peak_download_depth", health.Forwarder.PeakDownloadDepth,
+			"peak_upload_bytes", health.Forwarder.PeakUploadBytes, "peak_download_bytes", health.Forwarder.PeakDownloadBytes,
+			"most_affected_mac", mostAffectedMAC, "most_affected_drops", mostAffectedDrops,
+			"sampling_error", health.SamplingError)
+	}
+	if !unhealthy && previous.unhealthy {
+		a.log(slog.LevelInfo, "bandwidth monitor health recovered", "component", "bandwidth_health",
+			"lifetime_queue_drops", health.Forwarder.QueueDrops, "lifetime_send_errors", health.Forwarder.SendErrors,
+			"peak_upload_depth", health.Forwarder.PeakUploadDepth, "peak_download_depth", health.Forwarder.PeakDownloadDepth)
+	}
+	return bandwidthHealthSample{queueDrops: queueDrops, sendErrors: sendErrors, seconds: seconds, unhealthy: unhealthy}
+}
+
+func counterDelta(current, previous uint64) uint64 {
+	if current < previous {
+		return current
+	}
+	return current - previous
+}
+
+func mostAffectedQueueDrops(devices []shaping.DeviceQueueDropStats) (string, uint64) {
+	var mac string
+	var maximum uint64
+	for _, device := range devices {
+		total := device.UploadDrops + device.DownloadDrops
+		if total > maximum {
+			mac, maximum = device.MAC, total
+		}
+	}
+	return mac, maximum
 }
 
 func (a *GUIApp) activeRuntime() (*coreapp.Runtime, error) {

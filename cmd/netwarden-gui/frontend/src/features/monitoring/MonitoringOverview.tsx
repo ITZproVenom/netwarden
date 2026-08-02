@@ -30,7 +30,11 @@ export function MonitoringOverview() {
     { label: "Known devices", value: devices.length, icon: Users },
     { label: "Online now", value: devices.filter((device) => device.online).length, icon: Activity },
     { label: "Current scan", value: status?.Scanning ? "Running" : "Idle", icon: RefreshCw },
-    { label: "Gateway alerts", value: status?.ConflictCount || "Clear", icon: Activity },
+    {
+      label: "Gateway alerts",
+      value: (status?.ConflictCount || 0) + (status?.IPv6RouterConflicts || 0) || "Clear",
+      icon: Activity,
+    },
   ]
 
   return (
@@ -92,6 +96,11 @@ export function MonitoringOverview() {
           </Card>
         ))}
       </div>
+      {running && status?.IPv6Available && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          IPv6 {status.IPv6RouterIP ? `via ${status.IPv6RouterIP} · ${status.IPv6PrefixCount} advertised prefix${status.IPv6PrefixCount === 1 ? "" : "es"}` : "enabled · waiting for a Router Advertisement"}
+        </p>
+      )}
       <div className="mt-3 flex flex-wrap justify-end gap-5">
         <Button variant="outline" size="sm" disabled={!running || status?.Scanning} onClick={() => scan.mutate()}>
           <RefreshCw className={status?.Scanning ? "animate-spin" : ""} />

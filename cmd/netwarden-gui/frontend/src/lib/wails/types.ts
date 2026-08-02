@@ -3,6 +3,7 @@ export type Bootstrap = { interfaces: Adapter[]; selectedInterface: string; gate
 export type DeviceControlState = "" | "active" | "continuous" | "restoring" | "failed"
 export type Device = {
   ip: string
+  addresses: string[]
   mac: string
   name: string
   vendor: string
@@ -37,6 +38,38 @@ export type RuntimeStatus = {
   LastPersistenceError: string
   BandwidthAvailable: boolean
   ActiveBandwidthLimits: number
+  BandwidthMonitoringAvailable: boolean
+  ActiveBandwidthMonitors: number
+  IPv6Available: boolean
+  IPv6RouterIP: string
+  IPv6RouterMAC: string
+  IPv6PrefixCount: number
+  IPv6RouterConflicts: number
+}
+export type IPv6Prefix = {
+  prefix: string
+  onLink: boolean
+  autonomous: boolean
+  validUntil: string
+  preferredUntil: string
+}
+export type IPv6Router = { ip: string; mac: string; expiresAt: string; preference: number; prefixes: IPv6Prefix[] }
+export type IPv6RouterConflict = {
+  routerIP: string
+  expectedMAC: string
+  claimedMAC: string
+  firstSeen: string
+  lastSeen: string
+  count: number
+  active: boolean
+}
+export type IPv6Network = {
+  localAddresses: string[]
+  defaultRouter?: IPv6Router
+  routers: IPv6Router[]
+  conflictCount: number
+  conflicts: IPv6RouterConflict[]
+  trustedIdentities: Array<{ routerIP: string; mac: string }>
 }
 export type HistorySummary = { devices: number; conflicts: number; oldest?: string; newest?: string }
 export type Activity = {
@@ -67,5 +100,61 @@ export type BandwidthLimit = {
   downloadBitsPerSecond: number
   uploadBitsPerSecond: number
   burstBytes: number
+}
+export type BandwidthTraffic = {
+  mac: string
+  uploadPackets: number
+  uploadBytes: number
+  downloadPackets: number
+  downloadBytes: number
+}
+export type BandwidthMonitor = { ip: string; mac: string }
+export type BandwidthHistoryPoint = {
+  at: string
+  uploadBytes: number
+  downloadBytes: number
+  uploadBPS: number
+  downloadBPS: number
+}
+export type BandwidthMeasurement = {
+  mac: string
+  uploadBytes: number
+  downloadBytes: number
+  uploadBPS: number
+  downloadBPS: number
+  peakUploadBPS: number
+  peakUploadAt?: string
+  peakDownloadBPS: number
+  peakDownloadAt?: string
+  history: BandwidthHistoryPoint[]
+}
+export type BandwidthBucket = { start: string; uploadBytes: number; downloadBytes: number; peakUploadBPS: number; peakDownloadBPS: number }
+export type BandwidthDeviceQueueDrops = { mac: string; uploadDrops: number; downloadDrops: number }
+export type BandwidthHealth = {
+  queueDrops: number
+  uploadQueueDrops: number
+  downloadQueueDrops: number
+  monitorQueueDrops: number
+  limitedQueueDrops: number
+  canceledDrops: number
+  sendErrors: number
+  unmanagedFrames: number
+  queueCapacity: number
+  uploadQueueDepth: number
+  downloadQueueDepth: number
+  peakUploadDepth: number
+  peakDownloadDepth: number
+  queueByteCapacity: number
+  uploadQueueBytes: number
+  downloadQueueBytes: number
+  peakUploadBytes: number
+  peakDownloadBytes: number
+  deviceQueueDrops: BandwidthDeviceQueueDrops[]
+  recentQueueDrops: number
+  recentSendErrors: number
+  sampleSeconds: number
+  activeWarning: boolean
+  sampledAt: string
+  samplingError?: string
 }
 export type AppInfo = { name: string; version: string; build: string }

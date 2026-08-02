@@ -18,8 +18,10 @@ import (
 	appconfig "github.com/amdzy/NetWarden/internal/config"
 	"github.com/amdzy/NetWarden/internal/defense"
 	"github.com/amdzy/NetWarden/internal/device"
+	"github.com/amdzy/NetWarden/internal/discovery"
 	"github.com/amdzy/NetWarden/internal/history"
 	"github.com/amdzy/NetWarden/internal/metadata"
+	networkgateway "github.com/amdzy/NetWarden/internal/network/gateway"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -30,6 +32,9 @@ type GUIApp struct {
 	cancel     context.CancelFunc
 	activity   []ActivityDTO
 	logger     *slog.Logger
+
+	bandwidthHealthMu sync.Mutex
+	bandwidthHealth   bandwidthHealthState
 }
 
 type InterfaceDTO struct {
@@ -51,8 +56,49 @@ type StatusDTO struct {
 	ConflictCount int `json:"ConflictCount"`
 }
 
+type IPv6NetworkDTO struct {
+	LocalAddresses    []string                `json:"localAddresses"`
+	DefaultRouter     *IPv6RouterDTO          `json:"defaultRouter,omitempty"`
+	Routers           []IPv6RouterDTO         `json:"routers"`
+	ConflictCount     int                     `json:"conflictCount"`
+	Conflicts         []IPv6RouterConflictDTO `json:"conflicts"`
+	TrustedIdentities []IPv6RouterIdentityDTO `json:"trustedIdentities"`
+}
+
+type IPv6RouterDTO struct {
+	IP         string          `json:"ip"`
+	MAC        string          `json:"mac"`
+	ExpiresAt  time.Time       `json:"expiresAt"`
+	Preference int8            `json:"preference"`
+	Prefixes   []IPv6PrefixDTO `json:"prefixes"`
+}
+
+type IPv6PrefixDTO struct {
+	Prefix         string    `json:"prefix"`
+	OnLink         bool      `json:"onLink"`
+	Autonomous     bool      `json:"autonomous"`
+	ValidUntil     time.Time `json:"validUntil"`
+	PreferredUntil time.Time `json:"preferredUntil"`
+}
+
+type IPv6RouterConflictDTO struct {
+	RouterIP    string    `json:"routerIP"`
+	ExpectedMAC string    `json:"expectedMAC"`
+	ClaimedMAC  string    `json:"claimedMAC"`
+	FirstSeen   time.Time `json:"firstSeen"`
+	LastSeen    time.Time `json:"lastSeen"`
+	Count       uint64    `json:"count"`
+	Active      bool      `json:"active"`
+}
+
+type IPv6RouterIdentityDTO struct {
+	RouterIP string `json:"routerIP"`
+	MAC      string `json:"mac"`
+}
+
 type DeviceDTO struct {
 	IP           string    `json:"ip"`
+	Addresses    []string  `json:"addresses"`
 	MAC          string    `json:"mac"`
 	Name         string    `json:"name"`
 	Vendor       string    `json:"vendor"`
@@ -131,15 +177,53 @@ func (a *GUIApp) Bootstrap() (BootstrapDTO, error) {
 	if err != nil {
 		return BootstrapDTO{}, err
 	}
-	result := BootstrapDTO{SelectedInterface: config.Interface, GatewayMAC: config.GatewayMAC, Interfaces: make([]InterfaceDTO, 0, len(interfaces))}
+	route, err := (networkgateway.SystemDiscoverer{}).Discover(context.Background())
+	if err != nil {
+		return BootstrapDTO{}, err
+	}
+	interfaces = interfacesForRoute(interfaces, route)
+	result := BootstrapDTO{GatewayMAC: config.GatewayMAC, Interfaces: make([]InterfaceDTO, 0, len(interfaces))}
 	for _, candidate := range interfaces {
 		item := InterfaceDTO{Name: candidate.Name, SystemName: candidate.SystemName, Description: candidate.Description, MAC: candidate.MAC.String()}
 		for _, prefix := range candidate.Prefixes {
 			item.Prefixes = append(item.Prefixes, prefix.String())
 		}
 		result.Interfaces = append(result.Interfaces, item)
+		if candidate.Name == config.Interface || candidate.SystemName == config.Interface {
+			result.SelectedInterface = candidate.Name
+		}
 	}
 	return result, nil
+}
+
+func interfacesForRoute(interfaces []pcapdriver.Interface, route networkgateway.Route) []pcapdriver.Interface {
+	usable := make([]pcapdriver.Interface, 0, 1)
+	seen := make(map[string]struct{})
+	for _, candidate := range interfaces {
+		if len(candidate.MAC) != 6 {
+			continue
+		}
+		matches := false
+		for _, prefix := range candidate.Prefixes {
+			if prefix.Addr() == route.InterfaceIP && prefix.Masked().Contains(route.GatewayIP) {
+				matches = true
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		key := candidate.SystemName
+		if key == "" {
+			key = candidate.Name
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		usable = append(usable, candidate)
+	}
+	return usable
 }
 
 func (a *GUIApp) StartMonitoring(interfaceName string) (resultErr error) {
@@ -252,6 +336,63 @@ func (a *GUIApp) Status() StatusDTO {
 		status.Rebuilding = true
 	}
 	return StatusDTO{Status: status, ConflictCount: len(supervisor.ConflictHistory())}
+}
+
+func (a *GUIApp) IPv6Network() IPv6NetworkDTO {
+	a.mu.RLock()
+	supervisor := a.supervisor
+	a.mu.RUnlock()
+	if supervisor == nil || supervisor.Current() == nil {
+		result := IPv6NetworkDTO{LocalAddresses: []string{}, Routers: []IPv6RouterDTO{}, Conflicts: []IPv6RouterConflictDTO{}, TrustedIdentities: []IPv6RouterIdentityDTO{}}
+		if snapshot, err := loadHistorySnapshot(); err == nil {
+			for _, identity := range snapshot.IPv6Routers.Baselines {
+				result.TrustedIdentities = append(result.TrustedIdentities, IPv6RouterIdentityDTO{RouterIP: identity.RouterIP.String(), MAC: identity.MAC})
+			}
+			for _, conflict := range snapshot.IPv6Routers.Conflicts {
+				result.Conflicts = append(result.Conflicts, IPv6RouterConflictDTO{RouterIP: conflict.RouterIP.String(), ExpectedMAC: conflict.ExpectedMAC,
+					ClaimedMAC: conflict.ClaimedMAC, FirstSeen: conflict.FirstSeen, LastSeen: conflict.LastSeen, Count: conflict.Count, Active: conflict.Active})
+				if conflict.Active {
+					result.ConflictCount++
+				}
+			}
+		}
+		return result
+	}
+	context := supervisor.Current().IPv6Network()
+	result := IPv6NetworkDTO{ConflictCount: context.ConflictCount, LocalAddresses: []string{}, Routers: []IPv6RouterDTO{}, Conflicts: []IPv6RouterConflictDTO{}, TrustedIdentities: []IPv6RouterIdentityDTO{}}
+	for _, address := range context.LocalAddresses {
+		result.LocalAddresses = append(result.LocalAddresses, address.String())
+	}
+	for _, conflict := range context.Conflicts {
+		result.Conflicts = append(result.Conflicts, IPv6RouterConflictDTO{
+			RouterIP: conflict.RouterIP.String(), ExpectedMAC: conflict.ExpectedMAC, ClaimedMAC: conflict.ClaimedMAC,
+			FirstSeen: conflict.FirstSeen, LastSeen: conflict.LastSeen, Count: conflict.Count, Active: conflict.Active,
+		})
+	}
+	for _, identity := range context.Baselines {
+		result.TrustedIdentities = append(result.TrustedIdentities, IPv6RouterIdentityDTO{RouterIP: identity.RouterIP.String(), MAC: identity.MAC})
+	}
+	for _, router := range context.Routers {
+		item := ipv6RouterDTO(router.IP.String(), router.MAC, router.ExpiresAt, router.Preference, router.Prefixes)
+		result.Routers = append(result.Routers, item)
+	}
+	if context.DefaultRouter != nil {
+		item := ipv6RouterDTO(context.DefaultRouter.IP.String(), context.DefaultRouter.MAC,
+			context.DefaultRouter.ExpiresAt, context.DefaultRouter.Preference, context.DefaultRouter.Prefixes)
+		result.DefaultRouter = &item
+	}
+	return result
+}
+
+func ipv6RouterDTO(ip, mac string, expiresAt time.Time, preference int8, prefixes []discovery.IPv6Prefix) IPv6RouterDTO {
+	result := IPv6RouterDTO{IP: ip, MAC: mac, ExpiresAt: expiresAt, Preference: preference}
+	for _, prefix := range prefixes {
+		result.Prefixes = append(result.Prefixes, IPv6PrefixDTO{
+			Prefix: prefix.Prefix.String(), OnLink: prefix.OnLink, Autonomous: prefix.Autonomous,
+			ValidUntil: prefix.ValidUntil, PreferredUntil: prefix.PreferredUntil,
+		})
+	}
+	return result
 }
 
 func (a *GUIApp) Devices() ([]DeviceDTO, error) {
@@ -801,6 +942,8 @@ func activityFromEvent(event coreapp.Event) ActivityDTO {
 		activity.Kind, activity.Title = "control", "Continuous control stopped"
 	case coreapp.EventControlAuditFailed:
 		activity.Kind, activity.Severity, activity.Title = "control", "error", "Control audit failed"
+	case coreapp.EventBandwidthMonitoringFailed:
+		activity.Kind, activity.Severity, activity.Title = "bandwidth", "error", "Bandwidth monitor route update failed"
 	}
 	if event.Device != nil {
 		parts := make([]string, 0, 3)
@@ -811,7 +954,8 @@ func activityFromEvent(event coreapp.Event) ActivityDTO {
 		activity.Detail = strings.Join(parts, " · ")
 	}
 	if event.Scan != nil {
-		activity.Detail = fmt.Sprintf("%s · %d addresses · %s", event.Scan.Prefix.Masked(), event.Scan.Probed, event.Scan.Duration.Round(time.Millisecond))
+		ipv4Probed := event.Scan.Probed - event.Scan.IPv6Probed
+		activity.Detail = fmt.Sprintf("%s · %d IPv4 + %d IPv6 addresses · %s", event.Scan.Prefix.Masked(), ipv4Probed, event.Scan.IPv6Probed, event.Scan.Duration.Round(time.Millisecond))
 		if event.Scan.Err != nil {
 			activity.Detail = event.Scan.Err.Error()
 		}
@@ -865,5 +1009,9 @@ func deviceDTO(value device.Device) DeviceDTO {
 	if deviceType == "" {
 		deviceType = device.TypeUnknown
 	}
-	return DeviceDTO{IP: value.IP.String(), MAC: value.MAC, Name: value.Name, Vendor: value.Vendor, Type: string(deviceType), Role: roles[value.Role], FirstSeen: value.FirstSeen, LastSeen: value.LastSeen, Online: value.Online}
+	addresses := make([]string, 0, len(value.Addresses))
+	for _, address := range value.Addresses {
+		addresses = append(addresses, address.String())
+	}
+	return DeviceDTO{IP: value.IP.String(), Addresses: addresses, MAC: value.MAC, Name: value.Name, Vendor: value.Vendor, Type: string(deviceType), Role: roles[value.Role], FirstSeen: value.FirstSeen, LastSeen: value.LastSeen, Online: value.Online}
 }

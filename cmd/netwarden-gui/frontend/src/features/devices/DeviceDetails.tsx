@@ -24,6 +24,7 @@ import type { Device } from "@/lib/wails/types"
 import type { BandwidthLimit } from "@/lib/wails/types"
 import { BandwidthSection } from "@/features/bandwidth/BandwidthSection"
 import { useSetNickname } from "./devices.queries"
+import { isControlEligible } from "./device-list"
 import {
   useControlAudit,
   useDisconnectDevice,
@@ -66,11 +67,15 @@ export function DeviceDetails({
   device,
   bandwidthLimit,
   bandwidthAvailable,
+  bandwidthMonitoringAvailable,
+  bandwidthMonitored,
   onClose,
 }: {
   device?: Device
   bandwidthLimit?: BandwidthLimit
   bandwidthAvailable: boolean
+  bandwidthMonitoringAvailable: boolean
+  bandwidthMonitored: boolean
   onClose: () => void
 }) {
   const [nickname, setNickname] = useState("")
@@ -100,7 +105,13 @@ export function DeviceDetails({
             <section className="py-6">
               <h4 className="mb-3 text-xs font-semibold">Identity</h4>
               <dl>
-                <CopyDetail label="IP address" value={device.ip} />
+                {(device.addresses?.length ? device.addresses : [device.ip]).map((address, index) => (
+                  <CopyDetail
+                    key={address}
+                    label={index === 0 ? "IP address" : address.includes(":") ? "IPv6 address" : "IPv4 address"}
+                    value={address}
+                  />
+                ))}
                 <CopyDetail label="MAC address" value={device.mac} />
                 <Detail label="Vendor" value={device.vendor || "Unknown"} />
                 <Detail label="Type" value={device.type || "Unknown"} />
@@ -115,9 +126,9 @@ export function DeviceDetails({
               </dl>
             </section>
             <Separator />
-            <ControlSection device={device} bandwidthLimited={Boolean(bandwidthLimit)} />
+            <ControlSection device={device} bandwidthActive={Boolean(bandwidthLimit) || bandwidthMonitored} />
             <Separator />
-            <BandwidthSection device={device} limit={bandwidthLimit} available={bandwidthAvailable} />
+            <BandwidthSection device={device} limit={bandwidthLimit} available={bandwidthAvailable} monitoringAvailable={bandwidthMonitoringAvailable} monitored={bandwidthMonitored} />
             <Separator />
             <section className="py-6">
               <h4 className="mb-3 text-xs font-semibold">Observation history</h4>
@@ -154,8 +165,8 @@ export function DeviceDetails({
   )
 }
 
-function ControlSection({ device, bandwidthLimited }: { device: Device; bandwidthLimited: boolean }) {
-  const eligible = device.online && device.role === "Device" && !bandwidthLimited
+function ControlSection({ device, bandwidthActive }: { device: Device; bandwidthActive: boolean }) {
+  const eligible = isControlEligible(device) && !bandwidthActive
   const disconnect = useDisconnectDevice()
   const continuous = useStartContinuousControl()
   const restore = useRestoreControl()
@@ -182,8 +193,8 @@ function ControlSection({ device, bandwidthLimited }: { device: Device; bandwidt
             ? "Disconnected"
             : eligible
               ? "Available"
-              : bandwidthLimited
-                ? "Bandwidth limited"
+              : bandwidthActive
+                ? "Bandwidth active"
                 : device.role !== "Device"
                   ? "Protected"
                   : "Offline"

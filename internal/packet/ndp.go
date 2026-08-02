@@ -1,0 +1,282 @@
+package packet
+
+import (
+	"encoding/binary"
+	"errors"
+	"net"
+	"net/netip"
+	"time"
+)
+
+const (
+	EtherTypeIPv6    = 0x86dd
+	NextHeaderICMPv6 = 58
+	NDPHopLimit      = 255
+
+	ICMPv6RouterSolicitation    = 133
+	ICMPv6RouterAdvertisement   = 134
+	ICMPv6NeighborSolicitation  = 135
+	ICMPv6NeighborAdvertisement = 136
+)
+
+var ErrMalformedNDP = errors.New("malformed Ethernet IPv6 neighbor-discovery frame")
+
+// NeighborAdvertisement is the narrowly supported NDP transmission used to
+// redirect and restore a verified neighbor-cache entry.
+type NeighborAdvertisement struct {
+	SourceIP, DestinationIP, TargetIP netip.Addr
+	SourceMAC, DestinationMAC         net.HardwareAddr
+	AdvertisedMAC                     net.HardwareAddr
+	Router, Solicited, Override       bool
+}
+
+type NeighborSolicitation struct {
+	SourceIP, TargetIP netip.Addr
+	SourceMAC          net.HardwareAddr
+}
+
+// MarshalNeighborSolicitation builds the narrowly supported active-discovery
+// probe. The destination is always the target's solicited-node multicast group.
+func MarshalNeighborSolicitation(message NeighborSolicitation) ([]byte, error) {
+	if !message.SourceIP.Is6() || !message.TargetIP.Is6() || message.SourceIP.IsUnspecified() ||
+		message.SourceIP.IsMulticast() || message.TargetIP.IsUnspecified() || message.TargetIP.IsMulticast() ||
+		!validNDPUnicastMAC(message.SourceMAC) {
+		return nil, ErrMalformedNDP
+	}
+	destinationIP := SolicitedNodeMulticast(message.TargetIP)
+	destinationMAC := SolicitedNodeMulticastMAC(message.TargetIP)
+	const ipv6HeaderLength, icmpLength = 40, 32
+	frame := make([]byte, EthernetHeaderLen+ipv6HeaderLength+icmpLength)
+	copy(frame[0:6], destinationMAC)
+	copy(frame[6:12], message.SourceMAC)
+	binary.BigEndian.PutUint16(frame[12:14], EtherTypeIPv6)
+	ipv6 := frame[EthernetHeaderLen:]
+	ipv6[0] = 0x60
+	binary.BigEndian.PutUint16(ipv6[4:6], icmpLength)
+	ipv6[6], ipv6[7] = NextHeaderICMPv6, NDPHopLimit
+	source, destination, target := message.SourceIP.As16(), destinationIP.As16(), message.TargetIP.As16()
+	copy(ipv6[8:24], source[:])
+	copy(ipv6[24:40], destination[:])
+	icmp := ipv6[ipv6HeaderLength:]
+	icmp[0] = ICMPv6NeighborSolicitation
+	copy(icmp[8:24], target[:])
+	icmp[24], icmp[25] = 1, 1
+	copy(icmp[26:32], message.SourceMAC)
+	binary.BigEndian.PutUint16(icmp[2:4], icmpv6Checksum(message.SourceIP, destinationIP, icmp))
+	return frame, nil
+}
+
+func SolicitedNodeMulticast(target netip.Addr) netip.Addr {
+	if !target.Is6() {
+		return netip.Addr{}
+	}
+	value := target.As16()
+	return netip.AddrFrom16([16]byte{0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0xff, value[13], value[14], value[15]})
+}
+
+func SolicitedNodeMulticastMAC(target netip.Addr) net.HardwareAddr {
+	if !target.Is6() {
+		return nil
+	}
+	value := target.As16()
+	return net.HardwareAddr{0x33, 0x33, 0xff, value[13], value[14], value[15]}
+}
+
+// MarshalNeighborAdvertisement builds an Ethernet/IPv6 Neighbor
+// Advertisement with one target-link-layer-address option. It deliberately
+// cannot marshal arbitrary IPv6 payloads.
+func MarshalNeighborAdvertisement(message NeighborAdvertisement) ([]byte, error) {
+	if !message.SourceIP.Is6() || !message.DestinationIP.Is6() || !message.TargetIP.Is6() ||
+		message.SourceIP.IsUnspecified() || message.DestinationIP.IsUnspecified() || message.TargetIP.IsMulticast() ||
+		!validNDPUnicastMAC(message.SourceMAC) || !validNDPUnicastMAC(message.DestinationMAC) || !validNDPUnicastMAC(message.AdvertisedMAC) {
+		return nil, ErrMalformedNDP
+	}
+	const ipv6HeaderLength, icmpLength = 40, 32
+	frame := make([]byte, EthernetHeaderLen+ipv6HeaderLength+icmpLength)
+	copy(frame[0:6], message.DestinationMAC)
+	copy(frame[6:12], message.SourceMAC)
+	binary.BigEndian.PutUint16(frame[12:14], EtherTypeIPv6)
+	ipv6 := frame[EthernetHeaderLen:]
+	ipv6[0] = 0x60
+	binary.BigEndian.PutUint16(ipv6[4:6], icmpLength)
+	ipv6[6], ipv6[7] = NextHeaderICMPv6, NDPHopLimit
+	source, destination, target := message.SourceIP.As16(), message.DestinationIP.As16(), message.TargetIP.As16()
+	copy(ipv6[8:24], source[:])
+	copy(ipv6[24:40], destination[:])
+	icmp := ipv6[ipv6HeaderLength:]
+	icmp[0] = ICMPv6NeighborAdvertisement
+	if message.Router {
+		icmp[4] |= 0x80
+	}
+	if message.Solicited {
+		icmp[4] |= 0x40
+	}
+	if message.Override {
+		icmp[4] |= 0x20
+	}
+	copy(icmp[8:24], target[:])
+	icmp[24], icmp[25] = 2, 1
+	copy(icmp[26:32], message.AdvertisedMAC)
+	binary.BigEndian.PutUint16(icmp[2:4], icmpv6Checksum(message.SourceIP, message.DestinationIP, icmp))
+	return frame, nil
+}
+
+// NDP is the validated identity-bearing subset of an ICMPv6 Neighbor
+// Discovery message. Address selection remains a discovery-layer concern.
+type NDP struct {
+	Type             uint8
+	SourceIP         netip.Addr
+	DestinationIP    netip.Addr
+	TargetIP         netip.Addr
+	SourceMAC        net.HardwareAddr
+	DestinationMAC   net.HardwareAddr
+	RouterLifetime   time.Duration
+	RouterPreference int8
+	Prefixes         []PrefixInformation
+}
+
+type PrefixInformation struct {
+	Prefix            netip.Prefix
+	OnLink            bool
+	Autonomous        bool
+	ValidLifetime     time.Duration
+	PreferredLifetime time.Duration
+}
+
+// ParseNDP validates an Ethernet/IPv6 ICMPv6 Neighbor Discovery frame. This
+// initial parser deliberately rejects extension headers: accepting them safely
+// belongs in a reusable IPv6 extension-chain parser, not in NDP-specific code.
+func ParseNDP(frame []byte) (NDP, error) {
+	const ipv6HeaderLength = 40
+	if len(frame) < EthernetHeaderLen+ipv6HeaderLength+8 ||
+		binary.BigEndian.Uint16(frame[12:14]) != EtherTypeIPv6 {
+		return NDP{}, ErrMalformedNDP
+	}
+	ipv6 := frame[EthernetHeaderLen:]
+	if ipv6[0]>>4 != 6 || ipv6[6] != NextHeaderICMPv6 || ipv6[7] != NDPHopLimit {
+		return NDP{}, ErrMalformedNDP
+	}
+	payloadLength := int(binary.BigEndian.Uint16(ipv6[4:6]))
+	if payloadLength < 8 || len(ipv6) < ipv6HeaderLength+payloadLength {
+		return NDP{}, ErrMalformedNDP
+	}
+	sourceIP := netip.AddrFrom16([16]byte(ipv6[8:24]))
+	destinationIP := netip.AddrFrom16([16]byte(ipv6[24:40]))
+	icmp := ipv6[ipv6HeaderLength : ipv6HeaderLength+payloadLength]
+	if icmp[1] != 0 || !isNDPType(icmp[0]) || !validICMPv6Checksum(sourceIP, destinationIP, icmp) {
+		return NDP{}, ErrMalformedNDP
+	}
+
+	message := NDP{Type: icmp[0], SourceIP: sourceIP, DestinationIP: destinationIP,
+		SourceMAC: append(net.HardwareAddr(nil), frame[6:12]...), DestinationMAC: append(net.HardwareAddr(nil), frame[0:6]...)}
+	optionOffset := 8
+	switch message.Type {
+	case ICMPv6RouterAdvertisement:
+		if len(icmp) < 16 {
+			return NDP{}, ErrMalformedNDP
+		}
+		optionOffset = 16
+		message.RouterLifetime = time.Duration(binary.BigEndian.Uint16(icmp[6:8])) * time.Second
+		switch (icmp[5] >> 3) & 0x03 {
+		case 1:
+			message.RouterPreference = 1
+		case 3:
+			message.RouterPreference = -1
+		}
+	case ICMPv6NeighborSolicitation, ICMPv6NeighborAdvertisement:
+		if len(icmp) < 24 {
+			return NDP{}, ErrMalformedNDP
+		}
+		message.TargetIP = netip.AddrFrom16([16]byte(icmp[8:24]))
+		if !message.TargetIP.Is6() || message.TargetIP.IsMulticast() || message.TargetIP.IsUnspecified() {
+			return NDP{}, ErrMalformedNDP
+		}
+		optionOffset = 24
+	}
+
+	for optionOffset < len(icmp) {
+		if len(icmp)-optionOffset < 2 || icmp[optionOffset+1] == 0 {
+			return NDP{}, ErrMalformedNDP
+		}
+		optionLength := int(icmp[optionOffset+1]) * 8
+		if optionLength > len(icmp)-optionOffset {
+			return NDP{}, ErrMalformedNDP
+		}
+		optionType := icmp[optionOffset]
+		if (optionType == 1 || optionType == 2) && optionLength >= 8 {
+			message.SourceMAC = append(net.HardwareAddr(nil), icmp[optionOffset+2:optionOffset+8]...)
+		}
+		if optionType == 3 && optionLength == 32 {
+			prefixLength := int(icmp[optionOffset+2])
+			prefixAddress := netip.AddrFrom16([16]byte(icmp[optionOffset+16 : optionOffset+32]))
+			validSeconds := binary.BigEndian.Uint32(icmp[optionOffset+4 : optionOffset+8])
+			preferredSeconds := binary.BigEndian.Uint32(icmp[optionOffset+8 : optionOffset+12])
+			if prefixLength <= 128 && preferredSeconds <= validSeconds {
+				message.Prefixes = append(message.Prefixes, PrefixInformation{
+					Prefix: netip.PrefixFrom(prefixAddress, prefixLength).Masked(),
+					OnLink: icmp[optionOffset+3]&0x80 != 0, Autonomous: icmp[optionOffset+3]&0x40 != 0,
+					ValidLifetime: lifetimeDuration(validSeconds), PreferredLifetime: lifetimeDuration(preferredSeconds),
+				})
+			}
+		}
+		optionOffset += optionLength
+	}
+	if !validNDPUnicastMAC(message.SourceMAC) {
+		return NDP{}, ErrMalformedNDP
+	}
+	return message, nil
+}
+
+func lifetimeDuration(seconds uint32) time.Duration {
+	if seconds == ^uint32(0) {
+		return time.Duration(1<<63 - 1)
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func isNDPType(value uint8) bool {
+	return value >= ICMPv6RouterSolicitation && value <= ICMPv6NeighborAdvertisement
+}
+
+func validNDPUnicastMAC(mac net.HardwareAddr) bool {
+	if len(mac) != 6 || mac[0]&1 != 0 {
+		return false
+	}
+	for _, octet := range mac {
+		if octet != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func validICMPv6Checksum(source, destination netip.Addr, payload []byte) bool {
+	return icmpv6Checksum(source, destination, payload) == 0
+}
+
+func icmpv6Checksum(source, destination netip.Addr, payload []byte) uint16 {
+	sourceBytes, destinationBytes := source.As16(), destination.As16()
+	var sum uint32
+	sum = checksumBytes(sum, sourceBytes[:])
+	sum = checksumBytes(sum, destinationBytes[:])
+	var length [4]byte
+	binary.BigEndian.PutUint32(length[:], uint32(len(payload)))
+	sum = checksumBytes(sum, length[:])
+	sum += NextHeaderICMPv6
+	sum = checksumBytes(sum, payload)
+	for sum>>16 != 0 {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	return ^uint16(sum)
+}
+
+func checksumBytes(sum uint32, value []byte) uint32 {
+	for len(value) >= 2 {
+		sum += uint32(binary.BigEndian.Uint16(value[:2]))
+		value = value[2:]
+	}
+	if len(value) == 1 {
+		sum += uint32(value[0]) << 8
+	}
+	return sum
+}

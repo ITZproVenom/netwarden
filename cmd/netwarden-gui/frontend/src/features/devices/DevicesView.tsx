@@ -5,6 +5,7 @@ import { QueryError } from "@/components/QueryError"
 import { useDisconnectSelectedDevices, useRestoreAllControls } from "@/features/control/control.queries"
 import { MonitoringOverview } from "@/features/monitoring/MonitoringOverview"
 import { useBandwidthLimits, useClearBandwidthLimits } from "@/features/bandwidth/bandwidth.queries"
+import { useBandwidthMonitors } from "@/features/bandwidth/monitor.queries"
 import { useRuntimeStatus } from "@/features/monitoring/monitoring.queries"
 import type { Device } from "@/lib/wails/types"
 import { BulkProgress } from "./DeviceBulkActions"
@@ -18,6 +19,7 @@ export function DevicesView() {
   const { data: devices = [], isLoading, error, refetch } = useDevices()
   const { data: bandwidthLimits = [] } = useBandwidthLimits()
   const { data: runtimeStatus } = useRuntimeStatus()
+  const { data: bandwidthMonitors = [] } = useBandwidthMonitors(Boolean(runtimeStatus?.BandwidthMonitoringAvailable && runtimeStatus?.Running))
   const clearBandwidth = useClearBandwidthLimits()
   const [preferences, setPreferences] = useState<DevicePreferences>(defaultDevicePreferences)
   const [detailsMAC, setDetailsMAC] = useState("")
@@ -36,25 +38,29 @@ export function DevicesView() {
     () => new Map(bandwidthLimits.map((limit) => [limit.mac.toLowerCase(), limit])),
     [bandwidthLimits],
   )
+  const bandwidthBlockedMACs = useMemo(
+    () => new Set([...bandwidthByMAC.keys(), ...bandwidthMonitors.map((target) => target.mac.toLowerCase())]),
+    [bandwidthByMAC, bandwidthMonitors],
+  )
   const visible = useMemo(() => filterAndSortDevices(devices, preferences), [devices, preferences])
   const selectedTargets = devices
     .filter(
       (device) =>
-        checkedMACs.has(device.mac) && isControlEligible(device) && !bandwidthByMAC.has(device.mac.toLowerCase()),
+        checkedMACs.has(device.mac) && isControlEligible(device) && !bandwidthBlockedMACs.has(device.mac.toLowerCase()),
     )
     .map(({ ip, mac }) => ({ ip, mac }))
 
   useEffect(() => {
     const eligibleMACs = new Set(
       devices
-        .filter((device) => isControlEligible(device) && !bandwidthByMAC.has(device.mac.toLowerCase()))
+        .filter((device) => isControlEligible(device) && !bandwidthBlockedMACs.has(device.mac.toLowerCase()))
         .map((device) => device.mac),
     )
     setCheckedMACs((current) => {
       const next = new Set([...current].filter((mac) => eligibleMACs.has(mac)))
       return next.size === current.size ? current : next
     })
-  }, [devices, bandwidthByMAC])
+  }, [devices, bandwidthBlockedMACs])
 
   const setChecked = (mac: string, checked: boolean) =>
     setCheckedMACs((current) => {
@@ -67,7 +73,7 @@ export function DevicesView() {
     setCheckedMACs((current) => {
       const next = new Set(current)
       for (const device of visible.filter(
-        (candidate) => isControlEligible(candidate) && !bandwidthByMAC.has(candidate.mac.toLowerCase()),
+        (candidate) => isControlEligible(candidate) && !bandwidthBlockedMACs.has(candidate.mac.toLowerCase()),
       )) {
         if (checked) next.add(device.mac)
         else next.delete(device.mac)
@@ -118,6 +124,7 @@ export function DevicesView() {
             <DeviceTable
               devices={visible}
               bandwidthByMAC={bandwidthByMAC}
+              bandwidthBlockedMACs={bandwidthBlockedMACs}
               checkedMACs={checkedMACs}
               onCheckedChange={setChecked}
               onCheckVisible={setVisibleChecked}
@@ -148,6 +155,8 @@ export function DevicesView() {
         device={selected}
         bandwidthLimit={selected ? bandwidthByMAC.get(selected.mac.toLowerCase()) : undefined}
         bandwidthAvailable={Boolean(runtimeStatus?.BandwidthAvailable)}
+        bandwidthMonitoringAvailable={Boolean(runtimeStatus?.BandwidthMonitoringAvailable)}
+        bandwidthMonitored={Boolean(selected && bandwidthMonitors.some((target) => target.mac.toLowerCase() === selected.mac.toLowerCase()))}
         onClose={closeDetails}
       />
     </>

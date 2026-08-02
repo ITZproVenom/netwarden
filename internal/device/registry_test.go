@@ -75,6 +75,61 @@ func TestRegistryReportsMACAddressMove(t *testing.T) {
 	}
 }
 
+func TestRegistryGroupsIPv4AndMultipleIPv6AddressesByMAC(t *testing.T) {
+	registry := NewRegistry()
+	mac, _ := net.ParseMAC("02:00:00:00:00:30")
+	addresses := []netip.Addr{
+		netip.MustParseAddr("fe80::30"),
+		netip.MustParseAddr("2001:db8::30"),
+		netip.MustParseAddr("192.168.1.30"),
+	}
+	for index, address := range addresses {
+		if _, _, err := registry.Observe(Observation{IP: address, MAC: mac, SeenAt: time.Now().Add(time.Duration(index) * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	device, ok := registry.Get(mac.String())
+	if !ok || device.IP != addresses[2] {
+		t.Fatalf("IPv4 address was not retained as preferred: %#v", device)
+	}
+	if len(device.Addresses) != 3 {
+		t.Fatalf("addresses = %#v", device.Addresses)
+	}
+}
+
+func TestRegistryReplacesIPv4WithoutDiscardingIPv6(t *testing.T) {
+	registry := NewRegistry()
+	mac, _ := net.ParseMAC("02:00:00:00:00:31")
+	for _, address := range []string{"192.168.1.31", "fe80::31", "192.168.1.32"} {
+		if _, _, err := registry.Observe(Observation{IP: netip.MustParseAddr(address), MAC: mac}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	device, _ := registry.Get(mac.String())
+	if device.IP.String() != "192.168.1.32" || len(device.Addresses) != 2 {
+		t.Fatalf("unexpected addresses after IPv4 replacement: %#v", device)
+	}
+}
+
+func TestRegistryExpiresOnlyStaleSecondaryIPv6Addresses(t *testing.T) {
+	registry := NewRegistry()
+	mac, _ := net.ParseMAC("02:00:00:00:00:32")
+	now := time.Now().UTC()
+	for _, observation := range []Observation{
+		{IP: netip.MustParseAddr("192.168.1.32"), MAC: mac, SeenAt: now},
+		{IP: netip.MustParseAddr("fe80::32"), MAC: mac, SeenAt: now},
+		{IP: netip.MustParseAddr("2001:db8::32"), MAC: mac, SeenAt: now.Add(2 * time.Hour)},
+	} {
+		if _, _, err := registry.Observe(observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	changed := registry.ExpireIPv6Addresses(now.Add(3*time.Hour), 2*time.Hour)
+	if len(changed) != 1 || len(changed[0].Addresses) != 2 || containsAddress(changed[0].Addresses, netip.MustParseAddr("fe80::32")) {
+		t.Fatalf("unexpected address aging result: %#v", changed)
+	}
+}
+
 func TestRegistryReportsIPReassignmentAndMarksOldDeviceOffline(t *testing.T) {
 	registry := NewRegistry()
 	oldMAC, _ := net.ParseMAC("02:00:00:00:00:20")

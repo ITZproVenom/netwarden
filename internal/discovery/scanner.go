@@ -20,14 +20,22 @@ type Prober interface {
 }
 
 type Scanner struct {
-	prober   Prober
-	maxHosts int
-	delay    time.Duration
+	prober         Prober
+	ipv6Prober     Prober
+	ipv6Candidates func() []netip.Addr
+	maxHosts       int
+	delay          time.Duration
 
 	mu       sync.Mutex
 	running  bool
 	observer func(ScanEvent)
 	periodic bool
+}
+
+func (s *Scanner) ConfigureIPv6(prober Prober, candidates func() []netip.Addr) {
+	s.mu.Lock()
+	s.ipv6Prober, s.ipv6Candidates = prober, candidates
+	s.mu.Unlock()
 }
 
 type ScanEventKind uint8
@@ -39,12 +47,13 @@ const (
 )
 
 type ScanEvent struct {
-	Kind     ScanEventKind
-	Prefix   netip.Prefix
-	At       time.Time
-	Probed   int
-	Duration time.Duration
-	Err      error
+	Kind       ScanEventKind
+	Prefix     netip.Prefix
+	At         time.Time
+	Probed     int
+	IPv6Probed int
+	Duration   time.Duration
+	Err        error
 }
 
 func NewScanner(prober Prober, maxHosts int, delay time.Duration) *Scanner {
@@ -98,10 +107,11 @@ func (s *Scanner) Scan(ctx context.Context, prefix netip.Prefix) (err error) {
 	started := time.Now().UTC()
 	s.notify(ScanEvent{Kind: ScanStarted, Prefix: prefix.Masked(), At: started})
 	probed := 0
+	ipv6Probed := 0
 	defer func() {
 		event := ScanEvent{
 			Kind: ScanCompleted, Prefix: prefix.Masked(), At: time.Now().UTC(),
-			Probed: probed, Duration: time.Since(started), Err: err,
+			Probed: probed, IPv6Probed: ipv6Probed, Duration: time.Since(started), Err: err,
 		}
 		if err != nil {
 			event.Kind = ScanFailed
@@ -128,7 +138,54 @@ func (s *Scanner) Scan(ctx context.Context, prefix netip.Prefix) (err error) {
 			}
 		}
 	}
+	s.mu.Lock()
+	ipv6Prober, candidateSource := s.ipv6Prober, s.ipv6Candidates
+	s.mu.Unlock()
+	if ipv6Prober != nil && candidateSource != nil {
+		candidates := uniqueIPv6Candidates(candidateSource(), s.maxHosts)
+		for i, target := range candidates {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := ipv6Prober.Probe(ctx, target); err != nil {
+				return err
+			}
+			probed++
+			ipv6Probed++
+			if s.delay > 0 && i < len(candidates)-1 {
+				timer := time.NewTimer(s.delay)
+				select {
+				case <-ctx.Done():
+					if !timer.Stop() {
+						<-timer.C
+					}
+					return ctx.Err()
+				case <-timer.C:
+				}
+			}
+		}
+	}
 	return nil
+}
+
+func uniqueIPv6Candidates(input []netip.Addr, maximum int) []netip.Addr {
+	seen := make(map[netip.Addr]struct{})
+	result := make([]netip.Addr, 0, len(input))
+	for _, candidate := range input {
+		candidate = candidate.Unmap()
+		if !candidate.Is6() || candidate.IsUnspecified() || candidate.IsMulticast() {
+			continue
+		}
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		result = append(result, candidate)
+		if maximum > 0 && len(result) >= maximum {
+			break
+		}
+	}
+	return result
 }
 
 func (s *Scanner) notify(event ScanEvent) {

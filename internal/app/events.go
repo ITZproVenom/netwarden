@@ -38,6 +38,7 @@ const (
 	EventControlBulkRollbackCompleted
 	EventControlContinuousWorkerStopped
 	EventControlAuditFailed
+	EventBandwidthMonitoringFailed
 )
 
 type ControlState string

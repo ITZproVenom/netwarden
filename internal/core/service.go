@@ -46,6 +46,10 @@ type ARPObserver interface {
 	Observe(packet.ARP, time.Time)
 }
 
+type NDPObserver interface {
+	Observe(packet.NDP, time.Time)
+}
+
 type Option func(*Service)
 
 func WithEnricher(enricher Enricher) Option {
@@ -60,8 +64,20 @@ func WithARPObserver(observer ARPObserver) Option {
 	}
 }
 
+func WithNDPObserver(observer NDPObserver) Option {
+	return func(service *Service) {
+		if observer != nil {
+			service.ndpObservers = append(service.ndpObservers, observer)
+		}
+	}
+}
+
 func WithRemovalAfter(retention time.Duration) Option {
 	return func(service *Service) { service.removeAfter = retention }
+}
+
+func WithIPv6AddressRetention(retention time.Duration) Option {
+	return func(service *Service) { service.ipv6AddressRetention = retention }
 }
 
 func WithIgnoredSenderMAC(mac net.HardwareAddr) Option {
@@ -73,16 +89,18 @@ func WithIgnoredSenderMAC(mac net.HardwareAddr) Option {
 }
 
 type Service struct {
-	driver           capture.Driver
-	registry         *device.Registry
-	offlineAfter     time.Duration
-	checkInterval    time.Duration
-	removeAfter      time.Duration
-	events           chan Event
-	enricher         Enricher
-	observers        []ARPObserver
-	ignoredSenderMAC string
-	dropped          atomic.Uint64
+	driver               capture.Driver
+	registry             *device.Registry
+	offlineAfter         time.Duration
+	checkInterval        time.Duration
+	removeAfter          time.Duration
+	ipv6AddressRetention time.Duration
+	events               chan Event
+	enricher             Enricher
+	observers            []ARPObserver
+	ndpObservers         []NDPObserver
+	ignoredSenderMAC     string
+	dropped              atomic.Uint64
 
 	mu      sync.Mutex
 	running bool
@@ -160,29 +178,46 @@ func (s *Service) Close() error { return s.driver.Close() }
 
 func (s *Service) handleFrame(frame capture.Frame) error {
 	message, err := packet.ParseARP(frame.Data)
+	seenAt := frame.CapturedAt
+	if seenAt.IsZero() {
+		seenAt = time.Now().UTC()
+	}
+	if err == nil {
+		return s.handleARP(message, seenAt.UTC())
+	}
+	ndp, err := packet.ParseNDP(frame.Data)
 	if err != nil {
-		// The capture filter should normally admit only ARP, but malformed input
-		// must never terminate capture.
+		// Malformed and unrelated frames never terminate capture.
 		return nil
 	}
+	for _, observer := range s.ndpObservers {
+		observer.Observe(ndp, seenAt.UTC())
+	}
+	return s.observeAddress(ndp.SourceIP, ndp.SourceMAC, seenAt.UTC())
+}
+
+func (s *Service) handleARP(message packet.ARP, seenAt time.Time) error {
 	if message.Operation != packet.ARPOpRequest && message.Operation != packet.ARPOpReply {
 		return nil
 	}
 	if s.ignoredSenderMAC != "" && strings.EqualFold(message.SenderMAC.String(), s.ignoredSenderMAC) {
 		return nil
 	}
-	seenAt := frame.CapturedAt
-	if seenAt.IsZero() {
-		seenAt = time.Now().UTC()
-	}
 	for _, observer := range s.observers {
-		observer.Observe(message, seenAt.UTC())
+		observer.Observe(message, seenAt)
 	}
 	if message.SenderIP.IsUnspecified() || isZeroMAC(message.SenderMAC) {
 		return nil
 	}
+	return s.observeAddress(message.SenderIP, message.SenderMAC, seenAt)
+}
+
+func (s *Service) observeAddress(ip netip.Addr, mac net.HardwareAddr, seenAt time.Time) error {
+	if s.ignoredSenderMAC != "" && strings.EqualFold(mac.String(), s.ignoredSenderMAC) {
+		return nil
+	}
 	result, err := s.registry.ObserveDetailed(device.Observation{
-		IP: message.SenderIP, MAC: message.SenderMAC, SeenAt: seenAt.UTC(),
+		IP: ip, MAC: mac, SeenAt: seenAt,
 	})
 	if err != nil {
 		return nil
@@ -203,7 +238,7 @@ func (s *Service) handleFrame(frame capture.Frame) error {
 			event.Kind = EventDiscovered
 		case device.ChangeReturnedOnline:
 			event.Kind = EventReturnedOnline
-		case device.ChangeAddressChanged:
+		case device.ChangeAddressChanged, device.ChangeAddressAdded:
 			event.Kind = EventAddressChanged
 			event.PreviousIP = change.PreviousIP
 		case device.ChangeIPConflict:
@@ -222,6 +257,9 @@ func (s *Service) runLiveness(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
+			for _, snapshot := range s.registry.ExpireIPv6Addresses(now.UTC(), s.ipv6AddressRetention) {
+				s.publish(Event{Kind: EventAddressChanged, Device: snapshot})
+			}
 			for _, snapshot := range s.registry.MarkOffline(now.UTC(), s.offlineAfter) {
 				s.publish(Event{Kind: EventOffline, Device: snapshot})
 			}
