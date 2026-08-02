@@ -9,6 +9,7 @@ import { queryKeys } from "@/lib/query-keys"
 import { UnsavedChangesProvider } from "@/app/unsaved-changes"
 import { LiveAnnouncer } from "@/components/LiveAnnouncer"
 import { announce } from "@/lib/accessibility"
+import { MeasurementProvider } from "@/lib/measurement"
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: 2_000, retry: 1 } } })
 
@@ -41,12 +42,14 @@ export function AppProviders({ children }: { children: ReactNode }) {
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
       <QueryClientProvider client={queryClient}>
         <UnsavedChangesProvider>
-          <TooltipProvider>
-            <RuntimeEventBridge />
-            <LiveAnnouncer />
-            {children}
-            <Toaster richColors position="bottom-right" />
-          </TooltipProvider>
+          <MeasurementProvider>
+            <TooltipProvider>
+              <RuntimeEventBridge />
+              <LiveAnnouncer />
+              {children}
+              <Toaster richColors position="bottom-right" />
+            </TooltipProvider>
+          </MeasurementProvider>
         </UnsavedChangesProvider>
       </QueryClientProvider>
     </ThemeProvider>

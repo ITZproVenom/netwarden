@@ -1,4 +1,4 @@
-import { Info, MonitorCog, Palette } from "lucide-react"
+import { Gauge, Info, MonitorCog, Palette } from "lucide-react"
 import { useTheme } from "next-themes"
 import { useQuery } from "@tanstack/react-query"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -6,9 +6,11 @@ import { Label } from "@/components/ui/label"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { queryKeys } from "@/lib/query-keys"
 import { wailsClient } from "@/lib/wails/client"
+import { useRateUnit, type RateUnit } from "@/lib/measurement"
 
 export function ApplicationPreferencesCard() {
   const { theme, setTheme } = useTheme()
+  const { rateUnit, setRateUnit } = useRateUnit()
   const { data: appInfo } = useQuery({ queryKey: queryKeys.appInfo, queryFn: wailsClient.appInfo, retry: false })
   return (
     <Card className="bg-card/60">
@@ -23,7 +25,7 @@ export function ApplicationPreferencesCard() {
           </div>
         </div>
       </CardHeader>
-      <CardContent className="grid gap-6 py-6 md:grid-cols-2 md:gap-12">
+      <CardContent className="grid gap-6 py-6 md:grid-cols-3 md:gap-12">
         <div className="space-y-3">
           <div className="flex items-center gap-2">
             <Palette className="size-4 text-primary" />
@@ -40,6 +42,22 @@ export function ApplicationPreferencesCard() {
             <NativeSelectOption value="light">Light</NativeSelectOption>
           </NativeSelect>
           <p className="text-xs text-muted-foreground">Your choice is stored on this device.</p>
+        </div>
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Gauge className="size-4 text-primary" />
+            <Label htmlFor="rate-unit">Bandwidth measurement</Label>
+          </div>
+          <NativeSelect
+            id="rate-unit"
+            className="w-full"
+            value={rateUnit}
+            onChange={(event) => setRateUnit(event.target.value as RateUnit)}
+          >
+            <NativeSelectOption value="megabytes">Megabytes per second (MB/s)</NativeSelectOption>
+            <NativeSelectOption value="megabits">Megabits per second (Mbps)</NativeSelectOption>
+          </NativeSelect>
+          <p className="text-xs text-muted-foreground">Used for live traffic and bandwidth limits.</p>
         </div>
         <div className="rounded-lg border bg-background/30 p-4">
           <div className="flex items-center gap-2">

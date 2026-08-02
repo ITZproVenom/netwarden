@@ -23,8 +23,10 @@ import {
 } from "./monitor.queries"
 import { useBandwidthLimits } from "./bandwidth.queries"
 import { formatBytes, formatRate } from "./monitor-format"
+import { useRateUnit } from "@/lib/measurement"
 
 export function BandwidthMonitorView() {
+  const { rateUnit } = useRateUnit()
   const { data: status } = useRuntimeStatus()
   const running = Boolean(status?.Running)
   const available = running && Boolean(status?.BandwidthMonitoringAvailable)
@@ -63,8 +65,8 @@ export function BandwidthMonitorView() {
         <p className="mt-2 text-sm text-muted-foreground">Live per-device rates, totals, peaks, and one hour of recent history.</p>
       </div>
       <div className="grid gap-3 sm:grid-cols-3">
-        <MetricCard label="Current download" value={formatRate(totals.download)} icon={<ArrowDown />} />
-        <MetricCard label="Current upload" value={formatRate(totals.upload)} icon={<ArrowUp />} />
+        <MetricCard label="Current download" value={formatRate(totals.download, rateUnit)} icon={<ArrowDown />} />
+        <MetricCard label="Current upload" value={formatRate(totals.upload, rateUnit)} icon={<ArrowUp />} />
         <MetricCard label="Highest current usage" value={busiest ? busiest.device.name : "None"} icon={<Gauge />} />
       </div>
       {(health?.samplingError || health?.queueDrops || health?.sendErrors) ? (
@@ -102,9 +104,9 @@ export function BandwidthMonitorView() {
                   return (
                     <TableRow key={device.mac}>
                       <TableCell><p className="text-sm font-medium">{device.name}</p><p className="font-mono text-[10px] text-muted-foreground">{device.ip}</p></TableCell>
-                      <TableCell><p className="text-xs text-primary">↓ {formatRate(measurement?.downloadBPS || 0)}</p><p className="text-xs text-muted-foreground">↑ {formatRate(measurement?.uploadBPS || 0)}</p></TableCell>
+                      <TableCell><p className="text-xs text-primary">↓ {formatRate(measurement?.downloadBPS || 0, rateUnit)}</p><p className="text-xs text-muted-foreground">↑ {formatRate(measurement?.uploadBPS || 0, rateUnit)}</p></TableCell>
                       <TableCell><p className="text-xs">↓ {formatBytes(measurement?.downloadBytes || 0)}</p><p className="text-xs text-muted-foreground">↑ {formatBytes(measurement?.uploadBytes || 0)}</p></TableCell>
-                      <TableCell><p className="text-xs">↓ {formatRate(measurement?.peakDownloadBPS || 0)}</p><p className="text-xs text-muted-foreground">↑ {formatRate(measurement?.peakUploadBPS || 0)}</p></TableCell>
+                      <TableCell><p className="text-xs">↓ {formatRate(measurement?.peakDownloadBPS || 0, rateUnit)}</p><p className="text-xs text-muted-foreground">↑ {formatRate(measurement?.peakUploadBPS || 0, rateUnit)}</p></TableCell>
                       <TableCell><TrafficBars measurement={measurement} /></TableCell>
                       <TableCell className="text-right">
                         {isMonitored ? (
