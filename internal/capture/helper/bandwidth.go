@@ -43,6 +43,7 @@ type bandwidthSession struct {
 	forwarder *shaping.Forwarder
 
 	mu              sync.RWMutex
+	announcementsMu sync.Mutex
 	gatewayMAC      net.HardwareAddr
 	localIPv6       netip.Addr
 	routerIPv6      netip.Addr
@@ -473,6 +474,8 @@ func (s *bandwidthSession) removeMonitor(ctx context.Context, ip netip.Addr, mac
 }
 
 func (s *bandwidthSession) removeMode(ctx context.Context, ip netip.Addr, mac net.HardwareAddr, limited bool) error {
+	s.announcementsMu.Lock()
+	defer s.announcementsMu.Unlock()
 	if err := s.validateTarget(ip, mac); err != nil {
 		return err
 	}
@@ -573,10 +576,37 @@ func (s *bandwidthSession) refresh(ctx context.Context) {
 			}
 			s.mu.RUnlock()
 			for _, target := range targets {
-				_ = s.redirect(ctx, target)
+				_ = s.refreshRedirect(ctx, target)
 			}
 		}
 	}
+}
+
+func (s *bandwidthSession) refreshRedirect(ctx context.Context, target bandwidthTarget) error {
+	s.announcementsMu.Lock()
+	defer s.announcementsMu.Unlock()
+	if !s.targetIsActive(target) {
+		return nil
+	}
+	return s.redirect(ctx, target)
+}
+
+func (s *bandwidthSession) targetIsActive(target bandwidthTarget) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	active, ok := s.targets[target.mac.String()]
+	if !ok {
+		active, ok = s.isolated[target.mac.String()]
+	}
+	if !ok || active.ip != target.ip || active.limited != target.limited || active.continuous != target.continuous || len(active.addresses) != len(target.addresses) {
+		return false
+	}
+	for index := range active.addresses {
+		if active.addresses[index] != target.addresses[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *bandwidthSession) redirect(ctx context.Context, target bandwidthTarget) error {
