@@ -7,6 +7,7 @@ import type { Device } from "@/lib/wails/types"
 import type { BandwidthLimit } from "@/lib/wails/types"
 import { bandwidthSummary } from "@/features/bandwidth/format"
 import { isControlEligible } from "./device-list"
+import { useRateUnit } from "@/lib/measurement"
 
 export function DeviceTable({
   devices,
@@ -89,6 +90,7 @@ function DeviceRow({
   onCheckedChange: (checked: boolean) => void
   onOpen: (trigger: HTMLElement) => void
 }) {
+  const { rateUnit } = useRateUnit()
   const controlled = device.controlState !== ""
   const control =
     device.controlState === "active"
@@ -157,7 +159,7 @@ function DeviceRow({
         </Badge>
       </TableCell>
       <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-        {bandwidthSummary(bandwidthLimit)}
+        {bandwidthSummary(bandwidthLimit, rateUnit)}
       </TableCell>
       <TableCell className="text-xs text-muted-foreground">{formatDate(device.lastSeen)}</TableCell>
       <TableCell>

@@ -6,9 +6,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import type { BandwidthLimit, Device } from "@/lib/wails/types"
 import { useRemoveBandwidthLimit, useSetBandwidthLimit } from "./bandwidth.queries"
-import { displayMbps } from "./format"
+import { displayRateValue, rateUnitLabel } from "./format"
 import { bandwidthValidation, parseMbps } from "./validation"
 import { useStartBandwidthMonitor, useStopBandwidthMonitor } from "./monitor.queries"
+import { useRateUnit } from "@/lib/measurement"
 
 const isBandwidthEligible = (device: Device) =>
   device.online && device.role === "Device" && device.controlState === ""
@@ -26,6 +27,8 @@ export function BandwidthSection({
   monitoringAvailable: boolean
   monitored: boolean
 }) {
+  const { rateUnit } = useRateUnit()
+  const unitLabel = rateUnitLabel(rateUnit)
   const [download, setDownload] = useState("")
   const [upload, setUpload] = useState("")
   const setLimit = useSetBandwidthLimit()
@@ -33,9 +36,9 @@ export function BandwidthSection({
   const startMonitor = useStartBandwidthMonitor()
   const stopMonitor = useStopBandwidthMonitor()
   useEffect(() => {
-    setDownload(limit?.downloadBitsPerSecond ? displayMbps(limit.downloadBitsPerSecond) : "")
-    setUpload(limit?.uploadBitsPerSecond ? displayMbps(limit.uploadBitsPerSecond) : "")
-  }, [device.mac, limit?.downloadBitsPerSecond, limit?.uploadBitsPerSecond])
+    setDownload(limit?.downloadBitsPerSecond ? displayRateValue(limit.downloadBitsPerSecond, rateUnit) : "")
+    setUpload(limit?.uploadBitsPerSecond ? displayRateValue(limit.uploadBitsPerSecond, rateUnit) : "")
+  }, [device.mac, limit?.downloadBitsPerSecond, limit?.uploadBitsPerSecond, rateUnit])
   const validation = bandwidthValidation(download, upload)
   const eligible = available && isBandwidthEligible(device)
   const pending = setLimit.isPending || removeLimit.isPending
@@ -69,18 +72,18 @@ export function BandwidthSection({
           <div className="flex justify-between gap-3 py-1">
             <span className="text-muted-foreground">Download</span>
             <span>
-              {limit.downloadBitsPerSecond ? `${displayMbps(limit.downloadBitsPerSecond)} Mbps` : "Unlimited"}
+              {limit.downloadBitsPerSecond ? `${displayRateValue(limit.downloadBitsPerSecond, rateUnit)} ${unitLabel}` : "Unlimited"}
             </span>
           </div>
           <div className="flex justify-between gap-3 py-1">
             <span className="text-muted-foreground">Upload</span>
-            <span>{limit.uploadBitsPerSecond ? `${displayMbps(limit.uploadBitsPerSecond)} Mbps` : "Unlimited"}</span>
+            <span>{limit.uploadBitsPerSecond ? `${displayRateValue(limit.uploadBitsPerSecond, rateUnit)} ${unitLabel}` : "Unlimited"}</span>
           </div>
         </div>
       )}
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-2">
-          <Label htmlFor={`download-limit-${device.mac}`}>Download Mbps</Label>
+          <Label htmlFor={`download-limit-${device.mac}`}>Download {unitLabel}</Label>
           <Input
             id={`download-limit-${device.mac}`}
             type="number"
@@ -94,7 +97,7 @@ export function BandwidthSection({
           />
         </div>
         <div className="space-y-2">
-          <Label htmlFor={`upload-limit-${device.mac}`}>Upload Mbps</Label>
+          <Label htmlFor={`upload-limit-${device.mac}`}>Upload {unitLabel}</Label>
           <Input
             id={`upload-limit-${device.mac}`}
             type="number"
@@ -119,8 +122,8 @@ export function BandwidthSection({
             setLimit.mutate({
               ip: device.ip,
               mac: device.mac,
-              downloadBitsPerSecond: parseMbps(download) ?? 0,
-              uploadBitsPerSecond: parseMbps(upload) ?? 0,
+              downloadBitsPerSecond: (parseMbps(download) ?? 0) * (rateUnit === "megabytes" ? 8 : 1),
+              uploadBitsPerSecond: (parseMbps(upload) ?? 0) * (rateUnit === "megabytes" ? 8 : 1),
             })
           }
         >

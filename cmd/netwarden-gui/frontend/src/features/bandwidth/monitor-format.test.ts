@@ -3,9 +3,10 @@ import { formatBytes, formatRate } from "./monitor-format"
 
 describe("bandwidth monitor formatting", () => {
   it("selects readable rate units", () => {
-    expect(formatRate(800)).toBe("800 bps")
-    expect(formatRate(1_500)).toBe("1.5 Kbps")
-    expect(formatRate(2_500_000)).toBe("2.50 Mbps")
+    expect(formatRate(8_000_000)).toBe("1.00 MB/s")
+    expect(formatRate(800, "megabits")).toBe("800 bps")
+    expect(formatRate(1_500, "megabits")).toBe("1.5 Kbps")
+    expect(formatRate(2_500_000, "megabits")).toBe("2.50 Mbps")
   })
 
   it("selects readable usage units", () => {
