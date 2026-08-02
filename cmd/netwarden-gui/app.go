@@ -21,6 +21,7 @@ import (
 	"github.com/amdzy/NetWarden/internal/discovery"
 	"github.com/amdzy/NetWarden/internal/history"
 	"github.com/amdzy/NetWarden/internal/metadata"
+	networkgateway "github.com/amdzy/NetWarden/internal/network/gateway"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -176,15 +177,53 @@ func (a *GUIApp) Bootstrap() (BootstrapDTO, error) {
 	if err != nil {
 		return BootstrapDTO{}, err
 	}
-	result := BootstrapDTO{SelectedInterface: config.Interface, GatewayMAC: config.GatewayMAC, Interfaces: make([]InterfaceDTO, 0, len(interfaces))}
+	route, err := (networkgateway.SystemDiscoverer{}).Discover(context.Background())
+	if err != nil {
+		return BootstrapDTO{}, err
+	}
+	interfaces = interfacesForRoute(interfaces, route)
+	result := BootstrapDTO{GatewayMAC: config.GatewayMAC, Interfaces: make([]InterfaceDTO, 0, len(interfaces))}
 	for _, candidate := range interfaces {
 		item := InterfaceDTO{Name: candidate.Name, SystemName: candidate.SystemName, Description: candidate.Description, MAC: candidate.MAC.String()}
 		for _, prefix := range candidate.Prefixes {
 			item.Prefixes = append(item.Prefixes, prefix.String())
 		}
 		result.Interfaces = append(result.Interfaces, item)
+		if candidate.Name == config.Interface || candidate.SystemName == config.Interface {
+			result.SelectedInterface = candidate.Name
+		}
 	}
 	return result, nil
+}
+
+func interfacesForRoute(interfaces []pcapdriver.Interface, route networkgateway.Route) []pcapdriver.Interface {
+	usable := make([]pcapdriver.Interface, 0, 1)
+	seen := make(map[string]struct{})
+	for _, candidate := range interfaces {
+		if len(candidate.MAC) != 6 {
+			continue
+		}
+		matches := false
+		for _, prefix := range candidate.Prefixes {
+			if prefix.Addr() == route.InterfaceIP && prefix.Masked().Contains(route.GatewayIP) {
+				matches = true
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		key := candidate.SystemName
+		if key == "" {
+			key = candidate.Name
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		usable = append(usable, candidate)
+	}
+	return usable
 }
 
 func (a *GUIApp) StartMonitoring(interfaceName string) (resultErr error) {
