@@ -99,12 +99,15 @@ struct NetworkView: View {
             PanelHeader(
                 systemImage: "play.rectangle",
                 title: "Scanning & monitoring",
-                subtitle: runtime.running ? "Monitoring active · demonstration mode" : "Monitoring inactive",
+                subtitle: runtime.running ? "Monitoring active · sampling real interface counters" : "Monitoring inactive",
                 tag: "Experimental"
             )
+            InfoRow(label: "Scan status", value: runtime.scanStatusText)
             if let lastScanAt = runtime.lastScanAt {
                 InfoRow(label: "Last scan", value: Formatters.shortDateTime(lastScanAt))
             }
+            InfoRow(label: "Local subnet", value: runtime.subnetDescription)
+            InfoRow(label: "Gateway", value: runtime.gatewayMAC == "unknown" ? runtime.gatewayIP : "\(runtime.gatewayIP) · \(runtime.gatewayMAC)")
             if runtime.running {
                 Button {
                     runtime.toggleRuntime()
@@ -140,7 +143,7 @@ struct NetworkView: View {
                 ))
                 .font(.footnote)
             }
-            Text("Live ARP/NDP probing requires raw packets and cannot run on iPhone. Scan state and monitoring are simulated from the imported snapshot for a faithful standalone build; enforcing controls needs the desktop host.")
+            Text("Discovery reads the kernel ARP cache and sweeps the local subnet, so it needs Local Network permission. Monitoring samples this device's real interface counters. Per-device capture, disconnect controls, and shaping need the desktop helper.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -175,6 +178,9 @@ struct NetworkView: View {
             }
             if let primaryIPv4 {
                 InfoRow(label: "Local IP", value: primaryIPv4)
+            }
+            if let selfMAC = runtime.selfMAC {
+                InfoRow(label: "Hardware address", value: selfMAC)
             }
             InfoRow(label: "Interfaces", value: "\(interfaces.filter { !$0.isLinkLocal }.count) active")
         }
@@ -257,13 +263,16 @@ struct NetworkView: View {
 
     private func refresh() async {
         interfaces = InterfaceProbe.addresses()
-        guard !wifiChecked else { return }
-        wifiChecked = true
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             WiFiInfo.fetchCurrent { details in
                 wifi = details
+                runtime.store.setSSID(details?.ssid)
                 continuation.resume()
             }
+        }
+        wifiChecked = true
+        if runtime.lastScanAt == nil && !runtime.scanning {
+            runtime.startScan()
         }
     }
 }

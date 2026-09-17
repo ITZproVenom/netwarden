@@ -24,9 +24,9 @@ struct GatewayConflict: Identifiable, Hashable {
     let expectedMAC: String
     let claimedMAC: String
     let firstSeen: Date
-    let lastSeen: Date
-    let count: Int
-    let active: Bool
+    var lastSeen: Date
+    var count: Int
+    var active: Bool
 }
 
 struct IPv6PrefixModel: Hashable {
@@ -45,7 +45,7 @@ struct RouterIdentity: Hashable {
 struct IPv6RouterModel: Identifiable, Hashable {
     var id: String { ip }
     let ip: String
-    let mac: String
+    let mac: String?
     let preference: Int8
     let expiresAt: Date?
     let prefixes: [IPv6PrefixModel]
@@ -65,9 +65,9 @@ struct IPv6RouterConflict: Identifiable, Hashable {
     let expectedMAC: String
     let claimedMAC: String
     let firstSeen: Date
-    let lastSeen: Date
-    let count: Int
-    let active: Bool
+    var lastSeen: Date
+    var count: Int
+    var active: Bool
 }
 
 struct IPv6NetworkModel: Hashable {

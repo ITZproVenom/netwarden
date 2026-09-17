@@ -23,21 +23,24 @@ struct AboutView: View {
                 }
 
                 Section("Runs on iPhone") {
-                    label("Local network identity", "This device's IP addresses and Wi-Fi name.", .supported, "wifi")
+                    label("Local network identity", "This device's IP addresses, subnet, hardware address, and Wi-Fi name.", .supported, "wifi")
+                    label("Device discovery", "Reads the system neighbor (ARP) cache and sweeps the local subnet to find real hosts and MAC addresses.", .supported, "dot.radiowaves.left.and.right")
                     label("mDNS discovery", "Browse services advertised by devices on the network.", .supported, "antenna.radiowaves.left.and.right")
+                    label("Traffic monitoring", "Live upload and download rates from this iPhone's real interface byte counters, plus peaks and usage history.", .supported, "chart.bar.xaxis")
+                    label("Gateway integrity", "Watches the neighbor cache for a device claiming the gateway address and reports real conflicts.", .supported, "shield.lefthalf.filled")
+                    label("IPv6 status", "Real learned prefixes and the default IPv6 route from the system routing table.", .supported, "globe.americas")
                     label("Device registry", "Import, browse, search, and nickname devices from a desktop scan snapshot.", .supported, "network")
                 }
 
                 Section("Experimental · cannot be enforced on iOS") {
-                    label("ARP / NDP discovery", "Scan status and device census driven by the imported snapshot; live probing needs raw sockets iOS forbids.", .included, "point.3.connected.trianglepath.dotted")
-                    label("Gateway security", "Gateway and IPv6 router identity analysis with active/restored conflict states; passive capture requires the desktop host.", .included, "shield")
                     label("Disconnect & restore", "Full control UI and control-audit logging; ARP/NDP redirection is recorded as not enforceable on iPhone.", .included, "hand.raised")
                     label("Bandwidth limits", "Per-device limit policies, unit handling, and audit entries; enforcement needs the privileged desktop forwarder.", .included, "speedometer")
-                    label("Traffic monitoring", "Live rates, totals, peaks, health, and usage-history buckets in NetWarden's exact shapes; monitoring uses userspace forwarding.", .included, "chart.bar.xaxis")
+                    label("Per-device traffic capture", "Rates for other devices are modelled; only this iPhone's own traffic can be measured without raw capture.", .included, "rectangle.stack.badge.person.crop")
+                    label("Router Advertisement analysis", "Passive RA parsing and IPv6 router preferences need raw packets; iOS shows the routing table instead.", .included, "point.3.connected.trianglepath.dotted")
                 }
 
                 Section("Why enforcement is impossible") {
-                    Text("iOS apps run in a sandbox with no raw-packet or privileged-low-level network access, so capture, control, and shaping can never operate on this device. This build wires every desktop feature surface into the app, tags the non-enforceable ones Experimental, and labels exactly what cannot be enforced, so the unmodified NetWarden remains on macOS and the desktop app.")
+                    Text("iOS apps run in a sandbox with no raw-packet or privileged-low-level network access, so capture, ARP/NDP redirection, and shaping can never operate on this device. This build implements everything the sandbox does allow for real — discovery, throughput, and gateway integrity — and labels the rest plainly instead of faking it.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

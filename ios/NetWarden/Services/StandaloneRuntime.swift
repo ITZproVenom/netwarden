@@ -1,15 +1,22 @@
 import Foundation
 import Observation
 
-/// Standalone presentation layer for the full NetWarden feature set.
+/// Standalone runtime for the NetWarden feature set on iPhone.
 ///
-/// iOS cannot capture or inject packets, so scanning, gateway security,
-/// controls, and bandwidth shaping cannot operate on this device. This
-/// runtime wires every desktop feature surface to real data structures,
-/// drives them with deterministic demo data derived from the imported
-/// snapshot, and records every requested action so the app is a faithful
-/// standalone build of NetWarden. Wherever a capability cannot be enforced
-/// on iOS, the UI states that plainly instead of pretending it worked.
+/// Everything the iOS sandbox genuinely permits is implemented for real:
+///
+/// - Discovery reads interfaces, the routing table, and the kernel ARP cache,
+///   and actively sweeps the local subnet to populate it.
+/// - Traffic monitoring samples real interface byte counters for this device.
+/// - Gateway security watches the ARP cache for a MAC that claims the gateway
+///   address and reports real conflicts.
+/// - IPv6 status uses real interface prefixes and the real default IPv6 route.
+///
+/// Capabilities that require raw packet access or the privileged helper —
+/// ARP/NDP redirection, disconnect controls, and traffic shaping — cannot run
+/// on iOS. Those surfaces keep their full data model and audit trail, record
+/// requests as not enforceable, and say so in the UI rather than faking a
+/// result.
 @Observable
 @MainActor
 final class StandaloneRuntime {
@@ -22,6 +29,7 @@ final class StandaloneRuntime {
     var restartCount = 0
     var droppedEvents = 0
     var bandwidthUnit: BandwidthUnit = .bytes
+    var scanStatusText = "Idle"
 
     var gatewayConflicts: [GatewayConflict] = []
     var ipv6Network = IPv6NetworkModel(defaultRouterIP: nil, defaultRouterMAC: nil, routers: [], conflicts: [], trustedIdentities: [])
@@ -41,6 +49,25 @@ final class StandaloneRuntime {
         sampledAt: .now
     )
 
+    // Real on-device network state.
+    var interfaces: [LocalInterfaceInfo] = []
+    var primaryInterface: String?
+    var selfMAC: String?
+    var ipv6Prefixes: [String] = []
+    var gatewayIPv6: String?
+    var localDownloadBPS: UInt64 = 0
+    var localUploadBPS: UInt64 = 0
+    var localTotalDownloadBytes: UInt64 = 0
+    var localTotalUploadBytes: UInt64 = 0
+
+    private var baselineGatewayMAC: String?
+    private var lastCounters: (received: UInt64, sent: UInt64)?
+    private var lastCounterSampleAt: Date?
+    private var peakSelfDown: UInt64 = 0
+    private var peakSelfUp: UInt64 = 0
+    private var sampleStep = 0
+
+    // Modelled per-device estimates for traffic that iOS cannot capture.
     private var liveUp: [String: Int] = [:]
     private var liveDown: [String: Int] = [:]
     private var totalUp: [String: UInt64] = [:]
@@ -48,8 +75,10 @@ final class StandaloneRuntime {
     private var peakUp: [String: Int] = [:]
     private var peakDown: [String: Int] = [:]
     private var history: [String: [BandwidthPoint]] = [:]
+
     private var tickerTask: Task<Void, Never>?
     private var scanTask: Task<Void, Never>?
+    private var periodicTask: Task<Void, Never>?
 
     init(store: DeviceStore) {
         self.store = store
@@ -62,7 +91,6 @@ final class StandaloneRuntime {
     var onlineCount: Int { store.devices.filter { $0.online }.count }
     var activeConflictCount: Int { gatewayConflicts.filter { $0.active }.count }
     var ipv6ConflictCount: Int { ipv6Network.conflicts.filter { $0.active }.count }
-
     var totalConflictCount: Int { activeConflictCount + ipv6ConflictCount }
 
     var monitoredCount: Int {
@@ -73,27 +101,45 @@ final class StandaloneRuntime {
         store.devices.filter { limitPolicies[$0.mac]?.isLimited == true }.count
     }
 
+    var subnetDescription: String {
+        guard let ip = store.snapshotNetwork?.localIPv4 else { return "Unknown" }
+        if let interfaceName = primaryInterface {
+            return "\(ip) · \(interfaceName)"
+        }
+        return ip
+    }
+
     var gatewayIP: String {
         store.snapshotNetwork?.gatewayIPv4 ?? "192.168.1.1"
     }
 
     var gatewayMAC: String {
-        store.devices.first { ($0.role ?? $0.name).localizedCaseInsensitiveContains("gateway") }?.mac
-            ?? store.devices.first { $0.ipv4 == gatewayIP }?.mac
-            ?? "3c:22:fb:00:11:22"
+        baselineGatewayMAC
+            ?? store.lastScan?.gatewayMAC
+            ?? store.devices.first { ($0.role ?? "").localizedCaseInsensitiveContains("gateway") }?.mac
+            ?? "unknown"
+    }
+
+    func measurement(for mac: String) -> BandwidthMeasurementModel? {
+        measurements.first { $0.mac == mac }
+    }
+
+    func usageBuckets(granularity: String) -> [BandwidthBucket] {
+        buckets.filter { $0.granularity == granularity }.sorted { $0.start < $1.start }
     }
 
     var measurements: [BandwidthMeasurementModel] {
         store.devices.map { device in
-            BandwidthMeasurementModel(
+            let isLocal = device.isSelf || device.mac == selfMAC
+            return BandwidthMeasurementModel(
                 mac: device.mac,
                 deviceName: device.displayName,
-                uploadBPS: liveUp[device.mac] ?? 0,
-                downloadBPS: liveDown[device.mac] ?? 0,
-                uploadBytes: totalUp[device.mac] ?? 0,
-                downloadBytes: totalDown[device.mac] ?? 0,
-                peakUploadBPS: peakUp[device.mac] ?? 0,
-                peakDownloadBPS: peakDown[device.mac] ?? 0,
+                uploadBPS: isLocal ? Int(localUploadBPS) : (liveUp[device.mac] ?? 0),
+                downloadBPS: isLocal ? Int(localDownloadBPS) : (liveDown[device.mac] ?? 0),
+                uploadBytes: isLocal ? localTotalUploadBytes : (totalUp[device.mac] ?? 0),
+                downloadBytes: isLocal ? localTotalDownloadBytes : (totalDown[device.mac] ?? 0),
+                peakUploadBPS: isLocal ? Int(peakSelfUp) : (peakUp[device.mac] ?? 0),
+                peakDownloadBPS: isLocal ? Int(peakSelfDown) : (peakDown[device.mac] ?? 0),
                 history: history[device.mac] ?? []
             )
         }
@@ -104,24 +150,16 @@ final class StandaloneRuntime {
     }
 
     var currentDownloadBPS: UInt64 {
-        UInt64(max(0, measurements.reduce(0) { $0 + $1.downloadBPS }))
+        localDownloadBPS > 0 ? localDownloadBPS : UInt64(max(0, measurements.reduce(0) { $0 + $1.downloadBPS }))
     }
 
     var currentUploadBPS: UInt64 {
-        UInt64(max(0, measurements.reduce(0) { $0 + $1.uploadBPS }))
+        localUploadBPS > 0 ? localUploadBPS : UInt64(max(0, measurements.reduce(0) { $0 + $1.uploadBPS }))
     }
 
     var highestUsageDevice: (name: String, bps: Int)? {
         measurements.max { ($0.uploadBPS + $0.downloadBPS) < ($1.uploadBPS + $1.downloadBPS) }
             .map { ($0.deviceName, $0.uploadBPS + $0.downloadBPS) }
-    }
-
-    func measurement(for mac: String) -> BandwidthMeasurementModel? {
-        measurements.first { $0.mac == mac }
-    }
-
-    func usageBuckets(granularity: String) -> [BandwidthBucket] {
-        buckets.filter { $0.granularity == granularity }.sorted { $0.start < $1.start }
     }
 
     var historySummary: HistorySummaryModel {
@@ -141,58 +179,78 @@ final class StandaloneRuntime {
         }
     }
 
-    // MARK: - Actions
+    // MARK: - Runtime
 
     func toggleRuntime() {
         running.toggle()
         if running {
+            sampleStep = 0
+            lastCounters = LocalNetworkScanner.interfaceCounters()
+            lastCounterSampleAt = .now
             startTicker()
-            log(kind: "runtime", severity: .info, title: "Monitoring started", detail: "Live per-device traffic rates in demonstration mode. Enforcing monitoring routes requires a macOS host.")
+            log(kind: "runtime", severity: .info, title: "Monitoring started", detail: "Sampling real interface counters\(primaryInterface.map { " on \($0)" } ?? ""). Per-device capture still requires a macOS host.")
         } else {
             tickerTask?.cancel()
             tickerTask = nil
-            log(kind: "bandwidth", severity: .info, title: "Monitoring stopped", detail: "Live rates are frozen. Routing traffic through the limiter requires the privileged desktop helper.")
+            log(kind: "bandwidth", severity: .info, title: "Monitoring stopped", detail: "Interface sampling paused.")
         }
     }
 
     func startScan() {
         guard !scanning else { return }
         scanning = true
-        lastScanAt = nil
-        log(kind: "scan", severity: .info, title: "Scan started", detail: "Enumerating the local network…")
+        scanStatusText = "Scanning…"
         scanTask?.cancel()
+        log(kind: "scan", severity: .info, title: "Scan started", detail: "Reading interfaces, routes, and the kernel ARP cache.")
         scanTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            let result = await Task.detached(priority: .userInitiated) {
+                LocalNetworkScanner.scan()
+            }.value
             guard let self else { return }
-            self.scanning = false
-            self.lastScanAt = .now
-            self.log(kind: "scan", severity: .info, title: "Scan completed", detail: "\(self.store.devices.count) devices in the imported snapshot.")
+            self.apply(result)
         }
     }
 
     func togglePeriodicScan() {
         periodicScanEnabled.toggle()
-        log(kind: "scan", severity: .info, title: periodicScanEnabled ? "Periodic discovery enabled" : "Periodic discovery disabled", detail: "Each discovery pass requires ARP probing, which iOS does not permit.")
+        if periodicScanEnabled {
+            log(kind: "scan", severity: .info, title: "Periodic discovery enabled", detail: "Re-scanning the local network every 30 seconds.")
+            periodicTask?.cancel()
+            periodicTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 30_000_000_000)
+                    guard let self, self.periodicScanEnabled else { return }
+                    self.startScan()
+                }
+            }
+        } else {
+            periodicTask?.cancel()
+            periodicTask = nil
+            log(kind: "scan", severity: .info, title: "Periodic discovery disabled", detail: "Automatic re-scanning stopped.")
+        }
     }
 
     func toggleMonitor(for device: Device) {
         if monitoredMACS.contains(device.mac) {
             monitoredMACS.remove(device.mac)
-            log(kind: "bandwidth", severity: .info, title: "Monitoring stopped", detail: "\(device.displayName) traffic is no longer routed through the monitor.")
+            log(kind: "bandwidth", severity: .info, title: "Monitoring stopped", detail: "\(device.displayName) traffic is no longer tracked.")
         } else {
             monitoredMACS.insert(device.mac)
-            log(kind: "bandwidth", severity: .info, title: "Monitoring started", detail: "\(device.displayName) traffic flows through the userspace forwarder.")
+            let detail = device.isSelf
+                ? "Tracking real interface counters for \(device.displayName)."
+                : "Queued \(device.displayName) for monitoring; userspace forwarding requires the desktop helper."
+            log(kind: "bandwidth", severity: .info, title: "Monitoring started", detail: detail)
         }
     }
 
     func disconnect(_ device: Device) {
         audit(operation: "disconnect", targets: [device])
-        log(kind: "control", severity: .warning, title: "Disconnect requested", detail: "\(device.displayName) would be isolated via ARP/NDP redirection. iOS cannot redirect traffic; request recorded for demonstration.")
+        log(kind: "control", severity: .warning, title: "Disconnect requested", detail: "\(device.displayName) would be isolated via ARP/NDP redirection, which requires the privileged desktop helper; request recorded.")
     }
 
     func startContinuousControl(_ device: Device) {
         audit(operation: "continuous", targets: [device])
-        log(kind: "control", severity: .warning, title: "Continuous control requested", detail: "Continuous isolation of \(device.displayName) refreshes redirection each cycle on the desktop host.")
+        log(kind: "control", severity: .warning, title: "Continuous control requested", detail: "Continuous isolation of \(device.displayName) requires the desktop helper; request recorded.")
     }
 
     func stopContinuousControl(_ device: Device) {
@@ -207,7 +265,7 @@ final class StandaloneRuntime {
 
     func disconnectAll() {
         audit(operation: "disconnect_all", targets: store.devices)
-        log(kind: "control", severity: .warning, title: "Disconnect all requested", detail: "All devices would be isolated on the desktop host.")
+        log(kind: "control", severity: .warning, title: "Disconnect all requested", detail: "All devices would be isolated on the desktop host; request recorded.")
     }
 
     func restoreAll() {
@@ -236,43 +294,234 @@ final class StandaloneRuntime {
         controlAudit.removeAll()
     }
 
-    // MARK: - Demonstration toggle
+    // MARK: - Gateway conflict demonstration
+
+    private static let simulatedClaimedMAC = "02:00:5e:10:00:01"
 
     func toggleDemoConflict() {
-        if let index = gatewayConflicts.firstIndex(where: { $0.active }) {
-            var conflict = gatewayConflicts[index]
-            conflict = GatewayConflict(
-                gatewayIP: conflict.gatewayIP,
-                expectedMAC: conflict.expectedMAC,
-                claimedMAC: conflict.claimedMAC,
-                firstSeen: conflict.firstSeen,
-                lastSeen: .now,
-                count: conflict.count,
-                active: false
-            )
-            gatewayConflicts[index] = conflict
-            log(kind: "integrity", severity: .info, title: "Gateway identity restored", detail: "\(conflict.claimedMAC) stopped claiming \(conflict.gatewayIP).")
+        if let index = gatewayConflicts.firstIndex(where: { $0.claimedMAC == Self.simulatedClaimedMAC }) {
+            gatewayConflicts[index].active = false
+            gatewayConflicts[index].lastSeen = .now
+            log(kind: "integrity", severity: .info, title: "Simulated conflict cleared", detail: "Removed the simulated gateway identity conflict.")
         } else {
-            let conflict = GatewayConflict(
+            gatewayConflicts.append(GatewayConflict(
                 gatewayIP: gatewayIP,
                 expectedMAC: gatewayMAC,
-                claimedMAC: "52:54:00:9e:21:0f",
-                firstSeen: .now.addingTimeInterval(-86_400),
+                claimedMAC: Self.simulatedClaimedMAC,
+                firstSeen: .now,
                 lastSeen: .now,
-                count: 41,
+                count: 1,
                 active: true
-            )
-            gatewayConflicts.append(conflict)
-            log(kind: "integrity", severity: .warning, title: "Unexpected gateway identity detected", detail: "\(conflict.claimedMAC) is claiming the gateway address \(conflict.gatewayIP); the trusted identity is \(conflict.expectedMAC).")
+            ))
+            log(kind: "integrity", severity: .warning, title: "Simulated gateway conflict", detail: "Synthetic conflict added for demonstration; real detections come from the ARP cache.")
+        }
+    }
+
+    // MARK: - Real scan handling
+
+    private func apply(_ result: LocalNetworkScan) {
+        interfaces = result.interfaces
+        primaryInterface = result.primaryInterface
+        selfMAC = result.selfMAC
+        ipv6Prefixes = result.ipv6Prefixes
+        gatewayIPv6 = result.gatewayIPv6
+        scanning = false
+        lastScanAt = result.scannedAt
+        scanStatusText = result.hosts.isEmpty
+            ? "No hosts discovered"
+            : "\(result.hosts.count) host\(result.hosts.count == 1 ? "" : "s") discovered"
+        if baselineGatewayMAC == nil { baselineGatewayMAC = result.gatewayMAC }
+        store.applyScan(result)
+        updateIPv6Model(from: result)
+        detectGatewayConflicts(from: result.arpEntries)
+
+        var detail = "\(result.hosts.count) neighbors"
+        if let ip = result.primaryIPv4 { detail += " · local \(ip)" }
+        if let gateway = result.gatewayIPv4 { detail += " · gateway \(gateway)" }
+        if let mac = result.gatewayMAC { detail += " (\(mac))" }
+        log(kind: "scan", severity: .info, title: "Scan completed", detail: detail)
+    }
+
+    private func updateIPv6Model(from result: LocalNetworkScan) {
+        let prefixes = result.ipv6Prefixes.map {
+            IPv6PrefixModel(prefix: $0, onLink: true, autonomous: true, validUntil: nil, preferredUntil: nil)
+        }
+        var routers: [IPv6RouterModel] = []
+        var trusted: [RouterIdentity] = []
+        if let routerIP = result.gatewayIPv6 {
+            routers.append(IPv6RouterModel(
+                ip: routerIP,
+                mac: result.gatewayMAC,
+                preference: 1,
+                expiresAt: nil,
+                prefixes: prefixes
+            ))
+            if let mac = result.gatewayMAC {
+                trusted.append(RouterIdentity(routerIP: routerIP, mac: mac))
+            }
+        }
+        ipv6Network = IPv6NetworkModel(
+            defaultRouterIP: result.gatewayIPv6,
+            defaultRouterMAC: result.gatewayMAC,
+            routers: routers,
+            conflicts: ipv6Network.conflicts,
+            trustedIdentities: trusted
+        )
+    }
+
+    private func detectGatewayConflicts(from entries: [ARPEntry]) {
+        guard let gateway = store.snapshotNetwork?.gatewayIPv4 else { return }
+        let claims = Set(entries.filter { $0.ip == gateway }.map { $0.mac })
+        guard !claims.isEmpty else { return }
+        if baselineGatewayMAC == nil { baselineGatewayMAC = claims.sorted().first }
+        guard let expected = baselineGatewayMAC else { return }
+
+        if let rogue = claims.sorted().first(where: { $0 != expected }) {
+            if let index = gatewayConflicts.firstIndex(where: { $0.gatewayIP == gateway && $0.claimedMAC == rogue }) {
+                gatewayConflicts[index].lastSeen = .now
+                gatewayConflicts[index].count += 1
+                gatewayConflicts[index].active = true
+            } else {
+                gatewayConflicts.append(GatewayConflict(
+                    gatewayIP: gateway,
+                    expectedMAC: expected,
+                    claimedMAC: rogue,
+                    firstSeen: .now,
+                    lastSeen: .now,
+                    count: 1,
+                    active: true
+                ))
+                log(kind: "integrity", severity: .warning, title: "Possible gateway impersonation", detail: "\(rogue) is answering for gateway \(gateway) in the kernel ARP cache; trusted identity is \(expected).")
+            }
+        } else {
+            for index in gatewayConflicts.indices where gatewayConflicts[index].gatewayIP == gateway && gatewayConflicts[index].active {
+                gatewayConflicts[index].active = false
+                gatewayConflicts[index].lastSeen = .now
+                log(kind: "integrity", severity: .info, title: "Gateway identity restored", detail: "\(gateway) is back to \(expected) in the ARP cache.")
+            }
+        }
+    }
+
+    // MARK: - Sampling
+
+    private func startTicker() {
+        tickerTask?.cancel()
+        tickerTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                self.sample()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+    }
+
+    private func sample() {
+        let now = Date()
+        let counters = LocalNetworkScanner.interfaceCounters()
+        let previous = lastCounters
+        let previousAt = lastCounterSampleAt
+        lastCounters = counters
+        lastCounterSampleAt = now
+        bandwidthHealth = BandwidthHealthModel(
+            activeWarning: false,
+            recentQueueDrops: 0,
+            recentSendErrors: 0,
+            queueCapacity: 4096,
+            queueByteCapacity: 6 * 1024 * 1024,
+            uploadQueueBytes: 0,
+            downloadQueueBytes: 0,
+            sampledAt: now
+        )
+
+        if let previous, let previousAt {
+            let elapsed = max(0.25, now.timeIntervalSince(previousAt))
+            let received = counters.received >= previous.received ? counters.received - previous.received : 0
+            let sent = counters.sent >= previous.sent ? counters.sent - previous.sent : 0
+            localDownloadBPS = UInt64(Double(received) / elapsed)
+            localUploadBPS = UInt64(Double(sent) / elapsed)
+            localTotalDownloadBytes += received
+            localTotalUploadBytes += sent
+            peakSelfDown = max(peakSelfDown, localDownloadBPS)
+            peakSelfUp = max(peakSelfUp, localUploadBPS)
+            if let selfMAC {
+                var points = history[selfMAC] ?? []
+                points.append(BandwidthPoint(at: now, uploadBPS: Int(localUploadBPS), downloadBPS: Int(localDownloadBPS)))
+                if points.count > 120 { points.removeFirst(points.count - 120) }
+                history[selfMAC] = points
+            }
+            recordUsage(upload: received, download: sent, at: now)
+        }
+
+        let devices = store.devices
+        for (index, device) in devices.enumerated() where !(device.isSelf || device.mac == selfMAC) {
+            let base = seededBase(index: index)
+            let downWave = 0.72 + 0.28 * sin(Double(sampleStep) * 0.23 + Double(index) * 1.7)
+            let upWave = 0.66 + 0.34 * sin(Double(sampleStep) * 0.29 + Double(index) * 0.9 + 1.2)
+            let down = Int(Double(base.down) * downWave)
+            let up = Int(Double(base.up) * upWave)
+            liveDown[device.mac] = down
+            liveUp[device.mac] = up
+            totalDown[device.mac] = (totalDown[device.mac] ?? 0) + UInt64(down / 8)
+            totalUp[device.mac] = (totalUp[device.mac] ?? 0) + UInt64(up / 8)
+            peakDown[device.mac] = max(peakDown[device.mac] ?? 0, down)
+            peakUp[device.mac] = max(peakUp[device.mac] ?? 0, up)
+            var points = history[device.mac] ?? []
+            points.append(BandwidthPoint(at: now, uploadBPS: up, downloadBPS: down))
+            if points.count > 120 { points.removeFirst(points.count - 120) }
+            history[device.mac] = points
+        }
+        sampleStep += 1
+
+        if sampleStep % 5 == 0 {
+            detectGatewayConflicts(from: LocalNetworkScanner.arpCache())
+        }
+    }
+
+    private func recordUsage(upload: UInt64, download: UInt64, at now: Date) {
+        for granularity in ["hour", "day", "week", "month"] {
+            let start = bucketStart(now, granularity: granularity)
+            if let index = buckets.firstIndex(where: { $0.granularity == granularity && $0.start == start }) {
+                let existing = buckets[index]
+                buckets[index] = BandwidthBucket(
+                    granularity: granularity,
+                    start: start,
+                    uploadBytes: existing.uploadBytes + upload,
+                    downloadBytes: existing.downloadBytes + download,
+                    peakUploadBPS: max(existing.peakUploadBPS, Int(upload)),
+                    peakDownloadBPS: max(existing.peakDownloadBPS, Int(download))
+                )
+            } else {
+                buckets.append(BandwidthBucket(
+                    granularity: granularity,
+                    start: start,
+                    uploadBytes: upload,
+                    downloadBytes: download,
+                    peakUploadBPS: Int(upload),
+                    peakDownloadBPS: Int(download)
+                ))
+            }
+        }
+    }
+
+    private func bucketStart(_ date: Date, granularity: String) -> Date {
+        let calendar = Calendar.autoupdatingCurrent
+        switch granularity {
+        case "hour":
+            let components = calendar.dateComponents([.year, .month, .day, .hour], from: date)
+            return calendar.date(from: components) ?? date
+        case "day":
+            return calendar.startOfDay(for: date)
+        case "week":
+            return calendar.dateInterval(of: .weekOfYear, for: date)?.start ?? calendar.startOfDay(for: date)
+        default:
+            let components = calendar.dateComponents([.year, .month], from: date)
+            return calendar.date(from: components) ?? date
         }
     }
 
     // MARK: - Seeding
 
     private func seed() {
-        let now = Date.now
-        let calendar = Calendar.autoupdatingCurrent
-
         gatewayConflicts = []
 
         for (index, device) in store.devices.enumerated() {
@@ -283,76 +532,9 @@ final class StandaloneRuntime {
             totalDown[device.mac] = UInt64(index * 1_208_400_000_000)
             peakUp[device.mac] = base.up
             peakDown[device.mac] = base.down
-            var points: [BandwidthPoint] = []
-            for offset in stride(from: 120, through: 1, by: -1) {
-                let t = now.addingTimeInterval(-Double(offset) * 60)
-                let wave = 0.7 + 0.3 * sin(Double(offset) * 0.33 + Double(index) * 1.7)
-                points.append(BandwidthPoint(
-                    at: t,
-                    uploadBPS: Int(Double(base.up) * wave),
-                    downloadBPS: Int(Double(base.down) * wave)
-                ))
-            }
-            history[device.mac] = points
         }
 
-        for granularity in ["hour", "day", "week", "month"] {
-            let minutes: Int
-            switch granularity {
-            case "hour": minutes = 60
-            case "day": minutes = 1_440
-            case "week": minutes = 10_080
-            default: minutes = 43_200
-            }
-            for i in 0..<24 {
-                let start = calendar.date(byAdding: .minute, value: -(i + 1) * minutes, to: now) ?? now
-                let total = UInt64(6_000_000 + i * 3_100_000)
-                buckets.append(BandwidthBucket(
-                    granularity: granularity,
-                    start: start,
-                    uploadBytes: total / 7,
-                    downloadBytes: total,
-                    peakUploadBPS: 220_000 + i * 9_700,
-                    peakDownloadBPS: 980_000 + i * 31_000
-                ))
-            }
-        }
-
-        let gatewayConflict = GatewayConflict(
-            gatewayIP: store.snapshotNetwork?.gatewayIPv4 ?? "192.168.1.1",
-            expectedMAC: gatewayMAC,
-            claimedMAC: "b6:12:3a:90:44:07",
-            firstSeen: now.addingTimeInterval(-172_800),
-            lastSeen: now.addingTimeInterval(-3_600),
-            count: 26,
-            active: true
-        )
-        gatewayConflicts.append(gatewayConflict)
-
-        let router = IPv6RouterModel(
-            ip: "fe80::1",
-            mac: gatewayMAC,
-            preference: 3,
-            expiresAt: now.addingTimeInterval(1_800),
-            prefixes: [
-                IPv6PrefixModel(prefix: "2001:db8:77::/64", onLink: true, autonomous: true, validUntil: now.addingTimeInterval(86_400), preferredUntil: now.addingTimeInterval(43_200)),
-                IPv6PrefixModel(prefix: "fd00:1:1::/64", onLink: true, autonomous: false, validUntil: now.addingTimeInterval(604_800), preferredUntil: nil)
-            ]
-        )
-        ipv6Network = IPv6NetworkModel(
-            defaultRouterIP: "fe80::1",
-            defaultRouterMAC: gatewayMAC,
-            routers: [router],
-            conflicts: [
-                IPv6RouterConflict(routerIP: "fe80::1", expectedMAC: gatewayMAC, claimedMAC: "b6:12:3a:90:44:07", firstSeen: now.addingTimeInterval(-172_800), lastSeen: now.addingTimeInterval(-3_600), count: 12, active: true)
-            ],
-            trustedIdentities: [
-                RouterIdentity(routerIP: "fe80::1", mac: gatewayMAC)
-            ]
-        )
-
-        log(kind: "integrity", severity: .warning, title: "Gateway integrity changed", detail: "A device is claiming \(gatewayConflict.gatewayIP) as its own; see Gateway security.")
-        log(kind: "runtime", severity: .info, title: "Runtime ready", detail: "Bundled snapshot loaded with \(store.devices.count) devices.")
+        log(kind: "runtime", severity: .info, title: "Runtime ready", detail: "\(store.devices.count) devices in the registry. Run a scan to discover this network.")
     }
 
     private func seededBase(index: Int) -> (up: Int, down: Int) {
@@ -377,35 +559,5 @@ final class StandaloneRuntime {
     private func log(kind: String, severity: Severity, title: String, detail: String) {
         activity.insert(ActivityEvent(at: .now, kind: kind, severity: severity, title: title, detail: detail), at: 0)
         if activity.count > 300 { activity.removeLast() }
-    }
-
-    private func startTicker() {
-        tickerTask?.cancel()
-        tickerTask = Task { [weak self] in
-            var step = 0
-            while !Task.isCancelled {
-                guard let self else { return }
-                let devices = self.store.devices
-                for (index, device) in devices.enumerated() {
-                    let base = self.seededBase(index: index)
-                    let downWave = 0.72 + 0.28 * sin(Double(step) * 0.23 + Double(index) * 1.7)
-                    let upWave = 0.66 + 0.34 * sin(Double(step) * 0.29 + Double(index) * 0.9 + 1.2)
-                    let down = Int(Double(base.down) * downWave)
-                    let up = Int(Double(base.up) * upWave)
-                    self.liveDown[device.mac] = down
-                    self.liveUp[device.mac] = up
-                    self.totalDown[device.mac] = (self.totalDown[device.mac] ?? 0) + UInt64(down / 8)
-                    self.totalUp[device.mac] = (self.totalUp[device.mac] ?? 0) + UInt64(up / 8)
-                    self.peakDown[device.mac] = max(self.peakDown[device.mac] ?? 0, down)
-                    self.peakUp[device.mac] = max(self.peakUp[device.mac] ?? 0, up)
-                    var points = self.history[device.mac] ?? []
-                    points.append(BandwidthPoint(at: .now, uploadBPS: up, downloadBPS: down))
-                    if points.count > 120 { points.removeFirst(points.count - 120) }
-                    self.history[device.mac] = points
-                }
-                step += 1
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-        }
     }
 }

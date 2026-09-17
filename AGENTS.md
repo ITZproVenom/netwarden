@@ -29,7 +29,7 @@ NetWarden is a Go/Wails desktop application for local-network discovery, device 
 - `internal/config/`: settings storage and defaults.
 - `internal/applog/`: bounded rotating JSONL application logs.
 - `internal/defense/` and `internal/controlaudit/`: gateway protection events and control audit history.
-- `ios/`: native SwiftUI iPhone standalone build of the full NetWarden feature set (XcodeGen spec in `project.yml`, committed Xcode project plus generated sources, unsigned-IPA CI in `.github/workflows/ios.yml`). `StandaloneRuntime` wires scanning, gateway/IPv6 security, controls, bandwidth, and traffic surfaces to the imported snapshot, tagging each as **Experimental**; every capability iOS cannot enforce is labeled plainly in the UI and control audit. It must not pull desktop capture/control code; iOS has no raw-packet access. See `ios/README.md`.
+- `ios/`: native SwiftUI iPhone standalone build of the full NetWarden feature set (XcodeGen spec in `project.yml`, committed Xcode project plus generated sources, unsigned-IPA CI in `.github/workflows/ios.yml`). `LocalNetworkScanner` implements the real on-device capability the iOS sandbox allows — ARP-cache device discovery, a UDP subnet sweep, interface byte counters, default-route/IPv6-prefix reads, and ARP-based gateway conflict detection — while `StandaloneRuntime` wires the remaining surfaces to full data models. Capabilities iOS cannot enforce (ARP/NDP redirection, per-device capture, shaping, RA analysis) are tagged **Experimental** and labeled plainly in the UI and control audit. It must not pull desktop capture/control code; iOS has no raw-packet access. See `ios/README.md`.
 
 ## Bandwidth architecture
 

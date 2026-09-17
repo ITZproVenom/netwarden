@@ -47,7 +47,7 @@ struct BandwidthView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Monitoring inactive")
                     .font(.subheadline)
-                Text("Start monitoring from the Network tab to see live rates. Enforcing monitoring routes requires the desktop app; iOS shows the shapes NetWarden reports.")
+                Text("Start monitoring from the Network tab to see live rates. This iPhone's rates come from real interface counters; other devices are modelled because iOS cannot capture their traffic.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -58,7 +58,7 @@ struct BandwidthView: View {
 
     private var summaryCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PanelHeader(systemImage: "speedometer", title: "Traffic visibility", subtitle: "Live per-device rates, totals, and peaks", tag: "Experimental")
+            PanelHeader(systemImage: "speedometer", title: "Traffic visibility", subtitle: "Real for this iPhone · modelled for other devices", tag: "Experimental")
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible())], spacing: 12) {
                 summaryTile(title: "Current download", value: Formatters.rate(runtime.currentDownloadBPS, asBits: runtime.bandwidthUnit == .bits), icon: "arrow.down")
                 summaryTile(title: "Current upload", value: Formatters.rate(runtime.currentUploadBPS, asBits: runtime.bandwidthUnit == .bits), icon: "arrow.up")
@@ -127,7 +127,7 @@ struct BandwidthView: View {
 
     private var historyCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PanelHeader(systemImage: "clock.arrow.circlepath", title: "Usage history", subtitle: "Persistent compact usage buckets", tag: "Experimental")
+            PanelHeader(systemImage: "clock.arrow.circlepath", title: "Usage history", subtitle: "Accumulated from real interface samples", tag: "Experimental")
             Picker("Granularity", selection: $granularity) {
                 ForEach(granularities, id: \.self) { value in
                     Text(value.capitalized).tag(value)

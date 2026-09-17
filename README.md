@@ -127,15 +127,16 @@ archives and prepares a draft GitHub Release.
 ## iOS app
 
 `ios/` contains a standalone native SwiftUI iPhone build of NetWarden's full
-feature set. It really runs local network identity, mDNS service discovery,
-and a searchable/nicknameable device registry that imports scan snapshots from
-the desktop app. The remaining surfaces — scanning, gateway and IPv6 router
-security, disconnect controls, bandwidth limits, live traffic monitoring,
-usage history, and the unified activity feed — are implemented end-to-end
-against the same data shapes and driven by the imported snapshot, and are
-tagged **Experimental** in the UI: because iOS has no raw-packet access, every
-capability that cannot be enforced on the device is labeled plainly and in the
-control audit rather than faked. See `ios/README.md` for scope, build, and
+feature set. It implements for real everything the iOS sandbox permits: local
+network identity, active device discovery from the system ARP cache plus a UDP
+subnet sweep, live traffic rates from the device's interface byte counters,
+gateway identity conflict detection, learned IPv6 prefixes and the default
+IPv6 route, mDNS service discovery, and a searchable/nicknameable device
+registry that imports desktop scan snapshots. The surfaces iOS cannot enforce —
+ARP/NDP redirection for disconnect controls, per-device capture, bandwidth
+shaping, and Router Advertisement analysis — keep their full data model and
+audit trail, are tagged **Experimental** in the UI, and are recorded as not
+enforceable rather than faked. See `ios/README.md` for scope, build, and
 sideload-signing instructions. The `.github/workflows/ios.yml` workflow builds
 an unsigned IPA on a macOS runner and publishes it to the releases page.
 

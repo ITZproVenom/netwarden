@@ -16,7 +16,17 @@ targets:
       properties:
         CFBundleDisplayName: NetWarden
         ITSAppUsesNonExemptEncryption: false
-        NSLocalNetworkUsageDescription: NetWarden browses services advertised on your local network (mDNS/Bonjour) so you can see what is reachable from this iPhone. iPhone apps cannot run the raw-packet network scans available in the NetWarden desktop app.
+        NSLocalNetworkUsageDescription: NetWarden inspects your local network so you can see which devices are reachable from this iPhone. It reads the system neighbor (ARP) cache, sweeps the local subnet, and browses mDNS/Bonjour services. iPhone apps cannot run the raw-packet capture, ARP/NDP redirection, or traffic shaping of the NetWarden desktop app.
+        NSBonjourServices:
+          - _http._tcp
+          - _printer._tcp
+          - _ipp._tcp
+          - _airplay._tcp
+          - _raop._tcp
+          - _companion-link._tcp
+          - _ssh._tcp
+          - _smb._tcp
+          - _spotify-connect._tcp
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

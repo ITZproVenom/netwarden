@@ -24,7 +24,7 @@ struct SecurityView: View {
             Image(systemName: "lock.iphone")
                 .font(.title3)
                 .foregroundStyle(.tint)
-            Text("Passive gateway monitoring needs raw packet capture, which iOS forbids. This read-only view shows imported and demonstration analysis of gateway identity and IPv6 router integrity.")
+            Text("Gateway identity is checked against the kernel ARP cache, which iOS exposes read-only, so real impersonation conflicts are reported here. Router Advertisement analysis and IPv6 redirection need raw packets and stay on the desktop app.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -96,7 +96,7 @@ struct SecurityView: View {
             PanelHeader(
                 systemImage: "point.3.connected.trianglepath.dotted",
                 title: "IPv6 router integrity",
-                subtitle: "Router Advertisements, prefixes, and identity claims",
+                subtitle: "Default route, learned prefixes, and identity claims",
                 tag: "Experimental"
             )
             if let routerIP = runtime.ipv6Network.defaultRouterIP {
@@ -154,7 +154,7 @@ struct SecurityView: View {
                 Spacer()
                 Badge(text: router.preferenceLabel, color: .accentColor)
             }
-            InfoRow(label: "Identity", value: router.mac)
+            InfoRow(label: "Identity", value: router.mac ?? "unknown")
             if let expiresAt = router.expiresAt {
                 InfoRow(label: "Expires", value: Formatters.shortTime(expiresAt))
             }

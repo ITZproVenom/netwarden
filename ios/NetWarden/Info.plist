@@ -27,7 +27,19 @@
 	<key>MinimumOSVersion</key>
 	<string>17.0</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>NetWarden browses services advertised on your local network (mDNS/Bonjour) so you can see what is reachable from this iPhone. iPhone apps cannot run the raw-packet network scans available in the NetWarden desktop app.</string>
+	<string>NetWarden inspects your local network so you can see which devices are reachable from this iPhone. It reads the system neighbor (ARP) cache, sweeps the local subnet, and browses mDNS/Bonjour services. iPhone apps cannot run the raw-packet capture, ARP/NDP redirection, or traffic shaping of the NetWarden desktop app.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_http._tcp</string>
+		<string>_printer._tcp</string>
+		<string>_ipp._tcp</string>
+		<string>_airplay._tcp</string>
+		<string>_raop._tcp</string>
+		<string>_companion-link._tcp</string>
+		<string>_ssh._tcp</string>
+		<string>_smb._tcp</string>
+		<string>_spotify-connect._tcp</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

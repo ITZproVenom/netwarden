@@ -2,65 +2,63 @@
 
 A native SwiftUI app that is a standalone build of NetWarden's full feature
 set. iOS apps run sandboxed with no raw-packet or privileged-low-level
-network access, so the desktop capture pipeline (ARP/NDP probing, gateway
-integrity monitoring, disconnect controls, bandwidth shaping, userspace
-traffic forwarding) cannot physically operate on iPhone. This app therefore
-implements every desktop surface — Network overview, scans, gateway and IPv6
-router security, device controls, bandwidth limits and live monitoring,
-usage history, and the unified activity feed — wired to real data structures
-and driven by the imported snapshot, with each non-enforceable capability
-labeled plainly in the UI and in the control audit rather than faked.
+network access, so the desktop capture pipeline (packet injection, ARP/NDP
+redirection, disconnect controls, bandwidth shaping, userspace traffic
+forwarding) cannot physically operate on iPhone. Everything the sandbox does
+allow is implemented for real; the rest is present with its full data model,
+tagged **Experimental**, and recorded honestly instead of faked.
 
 ## What really runs on iPhone
 
-- **Current network identity** — this iPhone's IPv4/IPv6 addresses per
-  interface (from the sandbox-safe `getifaddrs` API) and, where the system
-  grants it, the connected Wi-Fi network name.
+- **Current network identity** — this iPhone's IPv4/IPv6 addresses, subnet,
+  and hardware address per interface (sandbox-safe `getifaddrs`), plus the
+  connected Wi-Fi network name where the system grants it.
+- **Real device discovery** — `LocalNetworkScanner` reads the system neighbor
+  (ARP) cache via the BSD routing socket (`sysctl NET_RT_FLAGS`/`RTF_LLINFO`)
+  and actively sweeps the local subnet with unicast UDP so the kernel resolves
+  real neighbors. Discovered hosts, MAC addresses, OUI vendors, and the
+  gateway identity are real. If the ARP table is unavailable, a bounded TCP
+  reachability sweep is used instead.
+- **Real traffic monitoring** — live upload/download rates for this iPhone
+  come from real interface byte counters (`sysctl NET_RT_IFLIST2`), with totals,
+  peaks, sparklines, and usage buckets accumulated from those samples.
+- **Real gateway integrity** — the neighbor cache is re-read periodically; a
+  MAC that answers for the gateway address raises a real conflict event.
+- **Real IPv6 status** — learned global `/64` prefixes and the default IPv6
+  route come from the interface list and the system routing table.
 - **mDNS discovery** — browses service types (`_http._tcp`, `_airplay._tcp`,
-  `_ssh._tcp`, `_printer._tcp`, …) using Apple's Network framework and shows
-  what those devices advertise. This is the only real on-device discovery an
-  iOS app can perform: it does not enumerate every device on the network, only
-  devices that advertise services.
-- **Device registry** — a native Devices view backed by a bundled sample scan
-  snapshot plus an importer for snapshots exported from the NetWarden desktop
-  app. Import a JSON snapshot, search it, open devices, and assign nicknames.
+  `_ssh._tcp`, `_printer._tcp`, …) using Apple's Network framework.
+- **Device registry** — a native Devices view backed by the bundled sample
+  snapshot, live scan results, and an importer for desktop scan snapshots.
 
 ## Experimental feature surfaces (not enforceable on iPhone)
 
 These surfaces are implemented end-to-end and tagged **Experimental** in the
-app. They present real NetWarden data shapes but cannot be enforced on iOS:
+app. They keep real NetWarden data shapes but cannot be enforced on iOS:
 
-- **Scanning & monitoring** — Network overview stat tiles and Start monitoring
-  / Scan now controls that simulate scan and monitoring state from the
-  imported snapshot.
-- **Gateway security** — gateway identity conflicts (ARP impersonation) and
-  IPv6 router integrity (default router, prefixes, identities, conflicts) with
-  active/restored states and a demonstration toggle.
 - **Device controls** — full disconnect / continuous / restore controls with
   control-state labels and control-audit records; requests are logged as not
   enforceable on iOS rather than pretended successful.
 - **Bandwidth limits** — per-device limit policies with MB/s / Mbps handling,
   apply/update/remove, and status badges.
-- **Traffic monitoring** — live per-device rates, totals, peaks, recent
-  activity sparklines, forwarder health, and hour/day/week/month usage buckets
-  in NetWarden's exact DTO shapes.
+- **Per-device traffic capture** — rates for other devices are modelled; only
+  this iPhone's own traffic can be measured without raw capture.
+- **Router Advertisement analysis** — passive RA parsing and IPv6 router
+  preferences need raw packets; iOS shows the routing table and prefixes it can
+  actually read instead.
 - **Unified activity** — a severity-filterable runtime/scan/integrity/control/
-  bandwidth event feed with a support summary, mirroring the desktop
-  diagnostics view.
-
-Everything above reflects capability that requires the privileged helper and
-raw packet access that exist only in the desktop app; the iOS build shows the
-real state, tags it Experimental, and records requests honestly.
+  bandwidth event feed with a support summary, mirroring the desktop view.
 
 ### iOS limitations in detail
 
-iPhone apps cannot open raw sockets or read/forge ARP or ICMPv6 packets, so:
+iPhone apps cannot open raw sockets or inject packets, so:
 
-- ARP/NDP device discovery and IPv6 state tracking: not possible on-device.
-- Router/gateway identity monitoring: not possible on-device.
+- Active ARP/NDP *probing* (sending ARP requests) and IPv6 RA capture: not
+  possible on-device. Reading the existing neighbor cache is.
 - ARP/NDP redirection used for disconnect and bandwidth control: not possible
   and would violate App Store rules even with a personal-VPN entitlement.
-- Traffic shaping: not possible.
+- Traffic shaping and userspace forwarding: not possible.
+- Full per-device traffic attribution: not possible without capture.
 
 ## Requirements
 
