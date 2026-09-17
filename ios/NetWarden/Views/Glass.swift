@@ -32,8 +32,10 @@ extension View {
                 .padding(.horizontal, prominent ? 18 : 14)
                 .padding(.vertical, prominent ? 12 : 9)
                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: prominent ? 16 : 12))
+        } else if prominent {
+            self.buttonStyle(.borderedProminent)
         } else {
-            self.buttonStyle(prominent ? .borderedProminent : .bordered)
+            self.buttonStyle(.bordered)
         }
     }
 }
