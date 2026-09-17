@@ -28,7 +28,10 @@ extension View {
     @ViewBuilder
     func glassButton(prominent: Bool = false) -> some View {
         if #available(iOS 26.0, *) {
-            self.buttonStyle(prominent ? .glassProminent : .glass)
+            self.buttonStyle(.plain)
+                .padding(.horizontal, prominent ? 18 : 14)
+                .padding(.vertical, prominent ? 12 : 9)
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: prominent ? 16 : 12))
         } else {
             self.buttonStyle(prominent ? .borderedProminent : .bordered)
         }
