@@ -28,7 +28,7 @@ struct AboutView: View {
                     label("Device registry", "Import, browse, search, and nickname devices from a desktop scan snapshot.", .supported, "network")
                 }
 
-                Section("Included · cannot be enforced on iOS") {
+                Section("Experimental · cannot be enforced on iOS") {
                     label("ARP / NDP discovery", "Scan status and device census driven by the imported snapshot; live probing needs raw sockets iOS forbids.", .included, "point.3.connected.trianglepath.dotted")
                     label("Gateway security", "Gateway and IPv6 router identity analysis with active/restored conflict states; passive capture requires the desktop host.", .included, "shield")
                     label("Disconnect & restore", "Full control UI and control-audit logging; ARP/NDP redirection is recorded as not enforceable on iPhone.", .included, "hand.raised")
@@ -37,7 +37,7 @@ struct AboutView: View {
                 }
 
                 Section("Why enforcement is impossible") {
-                    Text("iOS apps run in a sandbox with no raw-packet or privileged-low-level network access, so capture, control, and shaping can never operate on this device. This build wires every desktop feature surface into the app and labels exactly what cannot be enforced, so the unmodified NetWarden remains on macOS and the desktop app.")
+                    Text("iOS apps run in a sandbox with no raw-packet or privileged-low-level network access, so capture, control, and shaping can never operate on this device. This build wires every desktop feature surface into the app, tags the non-enforceable ones Experimental, and labels exactly what cannot be enforced, so the unmodified NetWarden remains on macOS and the desktop app.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

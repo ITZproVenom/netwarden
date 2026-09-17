@@ -37,7 +37,8 @@ struct SecurityView: View {
             PanelHeader(
                 systemImage: "shield",
                 title: "Gateway security",
-                subtitle: "Detect devices attempting to impersonate your router"
+                subtitle: "Detect devices attempting to impersonate your router",
+                tag: "Experimental"
             )
             HStack(spacing: 8) {
                 Label(
@@ -95,7 +96,8 @@ struct SecurityView: View {
             PanelHeader(
                 systemImage: "point.3.connected.trianglepath.dotted",
                 title: "IPv6 router integrity",
-                subtitle: "Router Advertisements, prefixes, and identity claims"
+                subtitle: "Router Advertisements, prefixes, and identity claims",
+                tag: "Experimental"
             )
             if let routerIP = runtime.ipv6Network.defaultRouterIP {
                 InfoRow(label: "Default router", value: "\(routerIP) · \(runtime.ipv6Network.defaultRouterMAC ?? "—")")

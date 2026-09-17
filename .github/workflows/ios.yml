@@ -136,6 +136,7 @@ jobs:
           - Bundle identifier: com.netwarden.app
           - Minimum iOS 17.0; built with the iOS 26 SDK
           - Not App Store signed: required for ad-hoc sideloading
+          - Scanning, gateway/IPv6 security, controls, bandwidth, and traffic surfaces are Experimental: iOS cannot capture or redirect packets, so they are not enforced on-device.
 
           Install: download NetWarden-unsigned.ipa and resign it with your Apple ID (e.g. sideloadly/AltStore) before installing."
           if gh release view "$TAG" >/dev/null 2>&1; then

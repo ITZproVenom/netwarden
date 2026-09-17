@@ -99,7 +99,8 @@ struct NetworkView: View {
             PanelHeader(
                 systemImage: "play.rectangle",
                 title: "Scanning & monitoring",
-                subtitle: runtime.running ? "Monitoring active · demonstration mode" : "Monitoring inactive"
+                subtitle: runtime.running ? "Monitoring active · demonstration mode" : "Monitoring inactive",
+                tag: "Experimental"
             )
             if let lastScanAt = runtime.lastScanAt {
                 InfoRow(label: "Last scan", value: Formatters.shortDateTime(lastScanAt))

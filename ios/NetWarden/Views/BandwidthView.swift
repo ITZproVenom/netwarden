@@ -58,7 +58,7 @@ struct BandwidthView: View {
 
     private var summaryCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PanelHeader(systemImage: "speedometer", title: "Traffic visibility", subtitle: "Live per-device rates, totals, and peaks")
+            PanelHeader(systemImage: "speedometer", title: "Traffic visibility", subtitle: "Live per-device rates, totals, and peaks", tag: "Experimental")
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible())], spacing: 12) {
                 summaryTile(title: "Current download", value: Formatters.rate(runtime.currentDownloadBPS, asBits: runtime.bandwidthUnit == .bits), icon: "arrow.down")
                 summaryTile(title: "Current upload", value: Formatters.rate(runtime.currentUploadBPS, asBits: runtime.bandwidthUnit == .bits), icon: "arrow.up")
@@ -92,7 +92,7 @@ struct BandwidthView: View {
 
     private var healthCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            PanelHeader(systemImage: "waveform.path.ecg", title: "Forwarding health", subtitle: "Sampled at \(Formatters.shortTime(runtime.bandwidthHealth.sampledAt))")
+            PanelHeader(systemImage: "waveform.path.ecg", title: "Forwarding health", subtitle: "Sampled at \(Formatters.shortTime(runtime.bandwidthHealth.sampledAt))", tag: "Experimental")
             HStack(spacing: 8) {
                 Label(runtime.bandwidthHealth.statusLabel, systemImage: runtime.bandwidthHealth.activeWarning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                     .font(.footnote)
@@ -113,7 +113,7 @@ struct BandwidthView: View {
 
     private var devicesCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PanelHeader(systemImage: "rectangle.stack.badge.person.crop", title: "Devices", subtitle: "Monitoring routes remain active only while monitoring is running.")
+            PanelHeader(systemImage: "rectangle.stack.badge.person.crop", title: "Devices", subtitle: "Monitoring routes remain active only while monitoring is running.", tag: "Experimental")
             ForEach(runtime.measurements) { measurement in
                 BandwidthDeviceRow(measurement: measurement, unit: runtime.bandwidthUnit)
                 if measurement.id != runtime.measurements.last?.id {
@@ -127,7 +127,7 @@ struct BandwidthView: View {
 
     private var historyCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PanelHeader(systemImage: "clock.arrow.circlepath", title: "Usage history", subtitle: "Persistent compact usage buckets")
+            PanelHeader(systemImage: "clock.arrow.circlepath", title: "Usage history", subtitle: "Persistent compact usage buckets", tag: "Experimental")
             Picker("Granularity", selection: $granularity) {
                 ForEach(granularities, id: \.self) { value in
                     Text(value.capitalized).tag(value)

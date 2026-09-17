@@ -79,7 +79,8 @@ struct DeviceDetailView: View {
             PanelHeader(
                 systemImage: device.hasControl ? "hand.raised.fill" : "hand.raised",
                 title: "Device control",
-                subtitle: device.controlStateLabel
+                subtitle: device.controlStateLabel,
+                tag: "Experimental"
             )
             HStack {
                 Text("Disconnect isolates \(device.displayName) via ARP/NDP redirection; continuous control refreshes it and restore rolls back to legitimate address resolution.")
@@ -113,7 +114,8 @@ struct DeviceDetailView: View {
             PanelHeader(
                 systemImage: "eye",
                 title: "Traffic monitoring",
-                subtitle: runtime.monitoredMACS.contains(device.mac) ? "Monitoring \(device.displayName)" : "Not monitored"
+                subtitle: runtime.monitoredMACS.contains(device.mac) ? "Monitoring \(device.displayName)" : "Not monitored",
+                tag: "Experimental"
             )
             if let measurement = runtime.measurement(for: device.mac) {
                 if runtime.running {
@@ -148,7 +150,8 @@ struct DeviceDetailView: View {
             PanelHeader(
                 systemImage: "speedometer",
                 title: "Bandwidth limit",
-                subtitle: policy?.isLimited == true ? "Limited" : "Unlimited"
+                subtitle: policy?.isLimited == true ? "Limited" : "Unlimited",
+                tag: "Experimental"
             )
             Picker("Unit", selection: Bindable(runtime).bandwidthUnit) {
                 ForEach(BandwidthUnit.allCases) { unit in
@@ -200,7 +203,11 @@ struct DeviceDetailView: View {
 
     private var auditCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            PanelHeader(systemImage: "clock.arrow.circlepath", title: "Recent control activity")
+            PanelHeader(
+                systemImage: "clock.arrow.circlepath",
+                title: "Recent control activity",
+                tag: "Experimental"
+            )
             let entries = runtime.auditEntries(for: device)
             if entries.isEmpty {
                 Text("No control audit entries for this device.")

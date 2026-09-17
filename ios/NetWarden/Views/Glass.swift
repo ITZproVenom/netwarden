@@ -44,6 +44,7 @@ struct PanelHeader: View {
     let systemImage: String
     let title: String
     var subtitle: String? = nil
+    var tag: String? = nil
 
     var body: some View {
         HStack(spacing: 12) {
@@ -53,8 +54,13 @@ struct PanelHeader: View {
                 .frame(width: 44, height: 44)
                 .glassPanel(cornerRadius: 14)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.headline)
+                HStack(spacing: 8) {
+                    Text(title)
+                        .font(.headline)
+                    if let tag {
+                        Badge(text: tag, color: .orange)
+                    }
+                }
                 if let subtitle {
                     Text(subtitle)
                         .font(.footnote)

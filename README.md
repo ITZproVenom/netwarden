@@ -132,12 +132,12 @@ and a searchable/nicknameable device registry that imports scan snapshots from
 the desktop app. The remaining surfaces — scanning, gateway and IPv6 router
 security, disconnect controls, bandwidth limits, live traffic monitoring,
 usage history, and the unified activity feed — are implemented end-to-end
-against the same data shapes and driven by the imported snapshot; because iOS
-has no raw-packet access, every capability that cannot be enforced on the
-device is labeled plainly in the UI and in the control audit rather than
-faked. See `ios/README.md` for scope, build, and sideload-signing
-instructions. The `.github/workflows/ios.yml` workflow builds an unsigned IPA
-on a macOS runner and publishes it to the releases page.
+against the same data shapes and driven by the imported snapshot, and are
+tagged **Experimental** in the UI: because iOS has no raw-packet access, every
+capability that cannot be enforced on the device is labeled plainly and in the
+control audit rather than faked. See `ios/README.md` for scope, build, and
+sideload-signing instructions. The `.github/workflows/ios.yml` workflow builds
+an unsigned IPA on a macOS runner and publishes it to the releases page.
 
 ## License
 

@@ -25,7 +25,10 @@ labeled plainly in the UI and in the control audit rather than faked.
   snapshot plus an importer for snapshots exported from the NetWarden desktop
   app. Import a JSON snapshot, search it, open devices, and assign nicknames.
 
-## Feature surfaces included as standalone builds
+## Experimental feature surfaces (not enforceable on iPhone)
+
+These surfaces are implemented end-to-end and tagged **Experimental** in the
+app. They present real NetWarden data shapes but cannot be enforced on iOS:
 
 - **Scanning & monitoring** — Network overview stat tiles and Start monitoring
   / Scan now controls that simulate scan and monitoring state from the
@@ -47,7 +50,7 @@ labeled plainly in the UI and in the control audit rather than faked.
 
 Everything above reflects capability that requires the privileged helper and
 raw packet access that exist only in the desktop app; the iOS build shows the
-real state and records requests honestly.
+real state, tags it Experimental, and records requests honestly.
 
 ### iOS limitations in detail
 
