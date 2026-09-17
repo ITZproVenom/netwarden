@@ -16,7 +16,7 @@ struct BonjourIdentity: Hashable {
 /// LAN. This browses the common service types, resolves each advertisement, and
 /// maps the advertised addresses (plus the TXT `deviceid`) to real names and
 /// models.
-final class BonjourResolver {
+final class BonjourResolver: NSObject {
     private static let serviceTypes = [
         "_device-info._tcp.",
         "_airplay._tcp.",
