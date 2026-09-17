@@ -124,6 +124,18 @@ Use `make gui-build` to create a local packaged build. Version tags such as
 `v2.0.1` trigger the GitHub Actions workflow, which builds unsigned preview
 archives and prepares a draft GitHub Release.
 
+## iOS companion app
+
+`ios/` contains a native SwiftUI iPhone app for the NetWarden features that
+can run on iOS, where raw-packet access is unavailable: local network
+identity, mDNS service discovery, and a searchable/nicknameable device
+registry that imports scan snapshots from the desktop app. The pipeline that
+needs a privileged helper — scanning, gateway security, disconnect controls,
+bandwidth limits, and traffic monitoring — remains desktop-only. See
+`ios/README.md` for scope, build, and sideload-signing instructions. The
+`.github/workflows/ios.yml` workflow builds an unsigned IPA on a macOS runner
+and uploads it as an artifact.
+
 ## License
 
 NetWarden is free software licensed under the [GNU General Public License

@@ -1,0 +1,131 @@
+name: iOS App Build
+
+on:
+  push:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ipa:
+    runs-on: macos-26
+    env:
+      APP_PRODUCT: NetWarden
+      BUNDLE_ID: com.netwarden.app
+      MIN_IPA_BYTES: 200000
+    defaults:
+      run:
+        shell: bash
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report Xcode and iOS SDK
+        run: |
+          xcodebuild -version
+          echo "ios SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
+          if ! xcrun --sdk iphoneos --show-sdk-version | grep -qE '^2[456]\.'; then
+            echo "ERROR: iOS 26 SDK required (Liquid Glass APIs are iOS 26+), got $(xcrun --sdk iphoneos --show-sdk-version)" >&2
+            exit 1
+          fi
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Build unsigned app with xcodebuild
+        run: |
+          xcodebuild \
+            -project NetWarden.xcodeproj \
+            -scheme NetWarden \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Assemble IPA from .app
+        run: |
+          set -euo pipefail
+          APP="build/DerivedData/Build/Products/Release-iphoneos/NetWarden.app"
+          if [ ! -d "$APP" ]; then
+            echo "ERROR: built .app not found at $APP" >&2
+            exit 1
+          fi
+          if [ ! -f "$APP/Info.plist" ]; then
+            echo "ERROR: Info.plist missing in built .app" >&2
+            exit 1
+          fi
+          if [ ! -x "$APP/NetWarden" ]; then
+            echo "ERROR: executable NetWarden missing or not executable in built .app" >&2
+            exit 1
+          fi
+          rm -rf Payload NetWarden-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/NetWarden.app
+          zip -qry NetWarden-unsigned.ipa Payload
+
+      - name: Validate IPA contents
+        run: |
+          set -euo pipefail
+          IPA="NetWarden-unsigned.ipa"
+          if [ ! -f "$IPA" ]; then
+            echo "ERROR: $IPA was not produced" >&2
+            exit 1
+          fi
+          SIZE=$(stat -f%z "$IPA")
+          if [ "$SIZE" -lt "$MIN_IPA_BYTES" ]; then
+            echo "ERROR: IPA is suspiciously small ($SIZE bytes < $MIN_IPA_BYTES)" >&2
+            exit 1
+          fi
+          if ! unzip -t "$IPA" >/dev/null; then
+            echo "ERROR: $IPA is corrupt (unzip -t failed)" >&2
+            exit 1
+          fi
+          if ! unzip -l "$IPA" | grep -q "Payload/NetWarden.app/Info.plist"; then
+            echo "ERROR: Payload/NetWarden.app/Info.plist missing from IPA" >&2
+            exit 1
+          fi
+          if ! unzip -l "$IPA" | grep -q "Payload/NetWarden.app/NetWarden"; then
+            echo "ERROR: Payload/NetWarden.app/NetWarden executable missing from IPA" >&2
+            exit 1
+          fi
+          unzip -oq "$IPA" -d verify
+          if ! plutil -lint "verify/Payload/NetWarden.app/Info.plist" >/dev/null; then
+            echo "ERROR: Info.plist failed plutil -lint" >&2
+            exit 1
+          fi
+          EXPECTED_BUNDLE_ID="$BUNDLE_ID"
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "verify/Payload/NetWarden.app/Info.plist")
+          if [ "$BUNDLE_ID" != "$EXPECTED_BUNDLE_ID" ]; then
+            echo "ERROR: bundle identifier is $BUNDLE_ID, expected $EXPECTED_BUNDLE_ID" >&2
+            exit 1
+          fi
+          echo "bundle_id=$BUNDLE_ID" >> "$GITHUB_OUTPUT"
+          echo "ipa_bytes=$SIZE" >> "$GITHUB_OUTPUT"
+
+      - name: Report artifact summary
+        run: |
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" verify/Payload/NetWarden.app/Info.plist)
+          echo "IPA size: $(stat -f%z NetWarden-unsigned.ipa) bytes"
+          echo "Bundle identifier: $BUNDLE_ID"
+          unzip -l NetWarden-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NetWarden-unsigned-ipa
+          path: ios/NetWarden-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "network": {
+    "ssid": "HomeNet-5G",
+    "localIPv4": "192.168.1.24",
+    "gatewayIPv4": "192.168.1.1",
+    "prefix": "192.168.1.0/24"
+  },
+  "devices": [
+    {
+      "mac": "A4:2B:B0:11:22:33",
+      "name": "Gateway Router",
+      "vendor": "TP-Link",
+      "type": "router",
+      "nickname": "Cable Modem",
+      "online": true,
+      "ipv4": "192.168.1.1",
+      "linkLocalIPv6": "fe80::a62b:b0ff:fe11:2233",
+      "globalIPv6": null,
+      "firstSeen": "2026-08-14T08:02:11Z",
+      "lastSeen": "2026-09-16T18:22:10Z",
+      "isSelf": false
+    },
+    {
+      "mac": "44:2E:E8:AA:BB:CC",
+      "name": "Living Room TV",
+      "vendor": "Samsung",
+      "type": "television",
+      "nickname": null,
+      "online": true,
+      "ipv4": "192.168.1.101",
+      "linkLocalIPv6": "fe80::462e:e8ff:feaa:bbcc",
+      "globalIPv6": "fd00:1:1:0:462e:e8ff:feaa:bbcc",
+      "firstSeen": "2026-07-02T19:45:03Z",
+      "lastSeen": "2026-09-16T18:20:44Z",
+      "isSelf": false
+    },
+    {
+      "mac": "30:9C:23:44:55:66",
+      "name": "HomePod",
+      "vendor": "Apple",
+      "type": "speaker",
+      "nickname": "Kitchen Pod",
+      "online": true,
+      "ipv4": "192.168.1.102",
+      "linkLocalIPv6": "fe80::329c:23ff:fe44:5566",
+      "globalIPv6": null,
+      "firstSeen": "2026-06-11T11:00:27Z",
+      "lastSeen": "2026-09-16T17:59:03Z",
+      "isSelf": false
+    },
+    {
+      "mac": "D8:3A:DD:88:99:AA",
+      "name": "Office Printer",
+      "vendor": "Brother",
+      "type": "printer",
+      "nickname": null,
+      "online": false,
+      "ipv4": "192.168.1.103",
+      "linkLocalIPv6": "fe80::da3a:ddff:fe88:99aa",
+      "globalIPv6": null,
+      "firstSeen": "2026-05-20T13:12:00Z",
+      "lastSeen": "2026-09-15T21:03:52Z",
+      "isSelf": false
+    },
+    {
+      "mac": "00:1A:2B:3C:4D:5E",
+      "name": "Bedroom Camera",
+      "vendor": "Wyze",
+      "type": "camera",
+      "nickname": "Nursery cam",
+      "online": true,
+      "ipv4": "192.168.1.104",
+      "linkLocalIPv6": "fe80::21a:2bff:fe3c:4d5e",
+      "globalIPv6": null,
+      "firstSeen": "2026-08-30T15:37:49Z",
+      "lastSeen": "2026-09-16T18:21:36Z",
+      "isSelf": false
+    },
+    {
+      "mac": "B0:BE:76:11:22:33",
+      "name": "Family Laptop",
+      "vendor": "Dell",
+      "type": "computer",
+      "nickname": "Mom's laptop",
+      "online": false,
+      "ipv4": "192.168.1.105",
+      "linkLocalIPv6": "fe80::b2be:76ff:fe11:2233",
+      "globalIPv6": null,
+      "firstSeen": "2026-09-01T07:28:15Z",
+      "lastSeen": "2026-09-16T08:02:44Z",
+      "isSelf": false
+    },
+    {
+      "mac": "A8:5C:2C:BB:CC:DD",
+      "name": "This iPhone",
+      "vendor": "Apple",
+      "type": "smartphone",
+      "nickname": null,
+      "online": true,
+      "ipv4": "192.168.1.24",
+      "linkLocalIPv6": "fe80::a85c:2cff:febb:ccdd",
+      "globalIPv6": "fd00:1:1:0:a85c:2cff:febb:ccdd",
+      "firstSeen": "2026-09-16T07:40:00Z",
+      "lastSeen": "2026-09-16T18:22:10Z",
+      "isSelf": true
+    }
+  ]
+}

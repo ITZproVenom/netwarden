@@ -1,0 +1,406 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1B0000000000000000000001 /* NetWardenApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000001 /* NetWardenApp.swift */; };
+		1B0000000000000000000002 /* Device.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000002 /* Device.swift */; };
+		1B0000000000000000000003 /* InterfaceProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000003 /* InterfaceProbe.swift */; };
+		1B0000000000000000000004 /* WiFiInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000004 /* WiFiInfo.swift */; };
+		1B0000000000000000000005 /* DeviceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000005 /* DeviceStore.swift */; };
+		1B0000000000000000000006 /* MDNSScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000006 /* MDNSScanner.swift */; };
+		1B0000000000000000000007 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000007 /* RootView.swift */; };
+		1B0000000000000000000008 /* NetworkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000008 /* NetworkView.swift */; };
+		1B0000000000000000000009 /* DevicesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000009 /* DevicesView.swift */; };
+		1B000000000000000000000A /* DeviceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000000000000000000000A /* DeviceDetailView.swift */; };
+		1B000000000000000000000B /* DiscoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000000000000000000000B /* DiscoverView.swift */; };
+		1B000000000000000000000C /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000000000000000000000C /* AboutView.swift */; };
+		1B000000000000000000000D /* Glass.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000000000000000000000D /* Glass.swift */; };
+		1B000000000000000000000E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A000000000000000000000E /* Assets.xcassets */; };
+		1B000000000000000000000F /* sample-snapshot.json in Resources */ = {isa = PBXBuildFile; fileRef = 1A000000000000000000000F /* sample-snapshot.json */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		1A0000000000000000000001 /* NetWardenApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetWardenApp.swift; sourceTree = "<group>"; };
+		1A0000000000000000000002 /* Device.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Device.swift; sourceTree = "<group>"; };
+		1A0000000000000000000003 /* InterfaceProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterfaceProbe.swift; sourceTree = "<group>"; };
+		1A0000000000000000000004 /* WiFiInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WiFiInfo.swift; sourceTree = "<group>"; };
+		1A0000000000000000000005 /* DeviceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceStore.swift; sourceTree = "<group>"; };
+		1A0000000000000000000006 /* MDNSScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MDNSScanner.swift; sourceTree = "<group>"; };
+		1A0000000000000000000007 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		1A0000000000000000000008 /* NetworkView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkView.swift; sourceTree = "<group>"; };
+		1A0000000000000000000009 /* DevicesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicesView.swift; sourceTree = "<group>"; };
+		1A000000000000000000000A /* DeviceDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDetailView.swift; sourceTree = "<group>"; };
+		1A000000000000000000000B /* DiscoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoverView.swift; sourceTree = "<group>"; };
+		1A000000000000000000000C /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
+		1A000000000000000000000D /* Glass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Glass.swift; sourceTree = "<group>"; };
+		1A000000000000000000000E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		1A000000000000000000000F /* sample-snapshot.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "sample-snapshot.json"; sourceTree = "<group>"; };
+		1A0000000000000000000010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		1A0000000000000000000011 /* NetWarden.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NetWarden.entitlements; sourceTree = "<group>"; };
+		1A0000000000000000000012 /* NetWarden.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NetWarden.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1D0000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		1C0000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				1C0000000000000000000002 /* NetWarden */,
+				1C0000000000000000000007 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		1C0000000000000000000002 /* NetWarden */ = {
+			isa = PBXGroup;
+			children = (
+				1A0000000000000000000001 /* NetWardenApp.swift */,
+				1C0000000000000000000003 /* Models */,
+				1C0000000000000000000004 /* Services */,
+				1C0000000000000000000005 /* Views */,
+				1C0000000000000000000006 /* Resources */,
+				1A000000000000000000000E /* Assets.xcassets */,
+				1A0000000000000000000010 /* Info.plist */,
+				1A0000000000000000000011 /* NetWarden.entitlements */,
+			);
+			path = NetWarden;
+			sourceTree = "<group>";
+		};
+		1C0000000000000000000003 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				1A0000000000000000000002 /* Device.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		1C0000000000000000000004 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				1A0000000000000000000003 /* InterfaceProbe.swift */,
+				1A0000000000000000000004 /* WiFiInfo.swift */,
+				1A0000000000000000000005 /* DeviceStore.swift */,
+				1A0000000000000000000006 /* MDNSScanner.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		1C0000000000000000000005 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				1A0000000000000000000007 /* RootView.swift */,
+				1A0000000000000000000008 /* NetworkView.swift */,
+				1A0000000000000000000009 /* DevicesView.swift */,
+				1A000000000000000000000A /* DeviceDetailView.swift */,
+				1A000000000000000000000B /* DiscoverView.swift */,
+				1A000000000000000000000C /* AboutView.swift */,
+				1A000000000000000000000D /* Glass.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		1C0000000000000000000006 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				1A000000000000000000000F /* sample-snapshot.json */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		1C0000000000000000000007 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				1A0000000000000000000012 /* NetWarden.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		1E0000000000000000000001 /* NetWarden */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1E0000000000000000000003 /* Build configuration list for PBXNativeTarget "NetWarden" */;
+			buildPhases = (
+				1D0000000000000000000001 /* Sources */,
+				1D0000000000000000000002 /* Frameworks */,
+				1D0000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NetWarden;
+			productName = NetWarden;
+			productReference = 1A0000000000000000000012 /* NetWarden.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		1E0000000000000000000002 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					1E0000000000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = 1E0000000000000000000004 /* Build configuration list for PBXProject "NetWarden" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 1C0000000000000000000001;
+			productRefGroup = 1C0000000000000000000007 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				1E0000000000000000000001 /* NetWarden */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		1D0000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1B000000000000000000000E /* Assets.xcassets in Resources */,
+				1B000000000000000000000F /* sample-snapshot.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1D0000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1B0000000000000000000001 /* NetWardenApp.swift in Sources */,
+				1B0000000000000000000002 /* Device.swift in Sources */,
+				1B0000000000000000000003 /* InterfaceProbe.swift in Sources */,
+				1B0000000000000000000004 /* WiFiInfo.swift in Sources */,
+				1B0000000000000000000005 /* DeviceStore.swift in Sources */,
+				1B0000000000000000000006 /* MDNSScanner.swift in Sources */,
+				1B0000000000000000000007 /* RootView.swift in Sources */,
+				1B0000000000000000000008 /* NetworkView.swift in Sources */,
+				1B0000000000000000000009 /* DevicesView.swift in Sources */,
+				1B000000000000000000000A /* DeviceDetailView.swift in Sources */,
+				1B000000000000000000000B /* DiscoverView.swift in Sources */,
+				1B000000000000000000000C /* AboutView.swift in Sources */,
+				1B000000000000000000000D /* Glass.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		1E0000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = NetWarden/NetWarden.entitlements;
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NetWarden/Info.plist;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.netwarden.app;
+				PRODUCT_NAME = NetWarden;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		1E0000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = NetWarden/NetWarden.entitlements;
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NetWarden/Info.plist;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.netwarden.app;
+				PRODUCT_NAME = NetWarden;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		1E0000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		1E0000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1E0000000000000000000003 /* Build configuration list for PBXNativeTarget "NetWarden" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1E0000000000000000000005 /* Debug */,
+				1E0000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1E0000000000000000000004 /* Build configuration list for PBXProject "NetWarden" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1E0000000000000000000007 /* Debug */,
+				1E0000000000000000000008 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 1E0000000000000000000002 /* Project object */;
+}
