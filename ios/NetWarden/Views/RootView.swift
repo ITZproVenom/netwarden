@@ -11,13 +11,17 @@ struct RootView: View {
                 .tabItem {
                     Label("Devices", systemImage: "network")
                 }
-            DiscoverView()
+            SecurityView()
                 .tabItem {
-                    Label("Discover", systemImage: "antenna.radiowaves.left.and.right")
+                    Label("Security", systemImage: "shield")
                 }
-            AboutView()
+            BandwidthView()
                 .tabItem {
-                    Label("Scope", systemImage: "scope")
+                    Label("Bandwidth", systemImage: "speedometer")
+                }
+            ActivityView()
+                .tabItem {
+                    Label("Activity", systemImage: "list.bullet.rectangle")
                 }
         }
     }

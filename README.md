@@ -124,17 +124,20 @@ Use `make gui-build` to create a local packaged build. Version tags such as
 `v2.0.1` trigger the GitHub Actions workflow, which builds unsigned preview
 archives and prepares a draft GitHub Release.
 
-## iOS companion app
+## iOS app
 
-`ios/` contains a native SwiftUI iPhone app for the NetWarden features that
-can run on iOS, where raw-packet access is unavailable: local network
-identity, mDNS service discovery, and a searchable/nicknameable device
-registry that imports scan snapshots from the desktop app. The pipeline that
-needs a privileged helper — scanning, gateway security, disconnect controls,
-bandwidth limits, and traffic monitoring — remains desktop-only. See
-`ios/README.md` for scope, build, and sideload-signing instructions. The
-`.github/workflows/ios.yml` workflow builds an unsigned IPA on a macOS runner
-and uploads it as an artifact.
+`ios/` contains a standalone native SwiftUI iPhone build of NetWarden's full
+feature set. It really runs local network identity, mDNS service discovery,
+and a searchable/nicknameable device registry that imports scan snapshots from
+the desktop app. The remaining surfaces — scanning, gateway and IPv6 router
+security, disconnect controls, bandwidth limits, live traffic monitoring,
+usage history, and the unified activity feed — are implemented end-to-end
+against the same data shapes and driven by the imported snapshot; because iOS
+has no raw-packet access, every capability that cannot be enforced on the
+device is labeled plainly in the UI and in the control audit rather than
+faked. See `ios/README.md` for scope, build, and sideload-signing
+instructions. The `.github/workflows/ios.yml` workflow builds an unsigned IPA
+on a macOS runner and publishes it to the releases page.
 
 ## License
 

@@ -6,6 +6,7 @@ import Observation
 final class DeviceStore {
     private(set) var devices: [Device] = []
     private(set) var sourceDescription: String
+    private(set) var snapshotNetwork: SnapshotNetwork?
     var searchText: String = ""
 
     init() {
@@ -46,6 +47,7 @@ final class DeviceStore {
             throw DeviceStoreError.emptySnapshot
         }
         devices = snapshot.devices
+        snapshotNetwork = snapshot.network
         sourceDescription = "Imported from \(url.lastPathComponent)"
     }
 
@@ -62,6 +64,7 @@ final class DeviceStore {
         }
         if let snapshot = try? decode(data) {
             devices = snapshot.devices
+            snapshotNetwork = snapshot.network
         } else {
             devices = []
         }

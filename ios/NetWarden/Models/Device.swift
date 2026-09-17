@@ -28,6 +28,9 @@ struct Device: Identifiable, Codable, Hashable {
     var firstSeen: Date?
     var lastSeen: Date?
     var isSelf: Bool
+    var role: String?
+    var controlState: String?
+    var addresses: [String]?
 }
 
 extension Device {
@@ -40,6 +43,29 @@ extension Device {
 
     var typeLabel: String {
         type ?? "Unknown"
+    }
+
+    var roleLabel: String {
+        role ?? (isSelf ? "This device" : "Device")
+    }
+
+    var controlStateLabel: String {
+        switch controlState {
+        case "active":
+            return "Disconnected"
+        case "continuous":
+            return "Continuous"
+        case "restoring":
+            return "Restoring"
+        case "failed":
+            return "Recovery failed"
+        default:
+            return "Protected"
+        }
+    }
+
+    var hasControl: Bool {
+        controlState == "active" || controlState == "continuous"
     }
 
     var addressSummary: String {

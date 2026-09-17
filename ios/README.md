@@ -1,12 +1,17 @@
 # NetWarden for iPhone
 
-A native SwiftUI app that brings the parts of NetWarden that actually work on
-iPhone. iOS apps run sandboxed with no raw-packet or privileged-low-level
-network access, so the desktop capture pipeline (ARP/NDP discovery, gateway
-security, disconnect controls, bandwidth limits, traffic monitoring) cannot
-run on iPhone. This app is deliberately a companion, not a port.
+A native SwiftUI app that is a standalone build of NetWarden's full feature
+set. iOS apps run sandboxed with no raw-packet or privileged-low-level
+network access, so the desktop capture pipeline (ARP/NDP probing, gateway
+integrity monitoring, disconnect controls, bandwidth shaping, userspace
+traffic forwarding) cannot physically operate on iPhone. This app therefore
+implements every desktop surface — Network overview, scans, gateway and IPv6
+router security, device controls, bandwidth limits and live monitoring,
+usage history, and the unified activity feed — wired to real data structures
+and driven by the imported snapshot, with each non-enforceable capability
+labeled plainly in the UI and in the control audit rather than faked.
 
-## What works on iPhone
+## What really runs on iPhone
 
 - **Current network identity** — this iPhone's IPv4/IPv6 addresses per
   interface (from the sandbox-safe `getifaddrs` API) and, where the system
@@ -20,16 +25,36 @@ run on iPhone. This app is deliberately a companion, not a port.
   snapshot plus an importer for snapshots exported from the NetWarden desktop
   app. Import a JSON snapshot, search it, open devices, and assign nicknames.
 
-Everything else — live network scans, gateway-security alerts, temporary
-disconnects, bandwidth limits, per-device traffic monitoring — requires the
-privileged helper and raw packet access that exist only in the desktop app.
+## Feature surfaces included as standalone builds
+
+- **Scanning & monitoring** — Network overview stat tiles and Start monitoring
+  / Scan now controls that simulate scan and monitoring state from the
+  imported snapshot.
+- **Gateway security** — gateway identity conflicts (ARP impersonation) and
+  IPv6 router integrity (default router, prefixes, identities, conflicts) with
+  active/restored states and a demonstration toggle.
+- **Device controls** — full disconnect / continuous / restore controls with
+  control-state labels and control-audit records; requests are logged as not
+  enforceable on iOS rather than pretended successful.
+- **Bandwidth limits** — per-device limit policies with MB/s / Mbps handling,
+  apply/update/remove, and status badges.
+- **Traffic monitoring** — live per-device rates, totals, peaks, recent
+  activity sparklines, forwarder health, and hour/day/week/month usage buckets
+  in NetWarden's exact DTO shapes.
+- **Unified activity** — a severity-filterable runtime/scan/integrity/control/
+  bandwidth event feed with a support summary, mirroring the desktop
+  diagnostics view.
+
+Everything above reflects capability that requires the privileged helper and
+raw packet access that exist only in the desktop app; the iOS build shows the
+real state and records requests honestly.
 
 ### iOS limitations in detail
 
 iPhone apps cannot open raw sockets or read/forge ARP or ICMPv6 packets, so:
 
-- ARP/NDP device discovery and IPv6 state tracking: not possible.
-- Router/gateway identity monitoring: not possible.
+- ARP/NDP device discovery and IPv6 state tracking: not possible on-device.
+- Router/gateway identity monitoring: not possible on-device.
 - ARP/NDP redirection used for disconnect and bandwidth control: not possible
   and would violate App Store rules even with a personal-VPN entitlement.
 - Traffic shaping: not possible.
@@ -81,5 +106,5 @@ best-effort: it has no effect when the app is sideloaded unsigned, and the
 Network view simply omits the network name then. With a paid developer account
 you can enable **Signing & Capabilities → Access WiFi Information** instead.
 
-The mDNS Discover tab uses the standard iOS Local Network permission
-(`NSLocalNetworkUsageDescription`) and requires no entitlement.
+The mDNS Nearby services section uses the standard iOS Local Network
+permission (`NSLocalNetworkUsageDescription`) and requires no entitlement.
