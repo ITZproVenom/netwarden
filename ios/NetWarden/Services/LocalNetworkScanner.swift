@@ -1,6 +1,44 @@
 import Foundation
 import Darwin
 
+// The iOS SDK does not re-export `<net/route.h>` through the Darwin module, so
+// the routing-message header and its flags are declared here. The layout is
+// the public BSD ABI: `struct RouteMessageHeader` up to and including `rtm_inits`.
+private struct RouteMessageHeader {
+    var rtm_msglen: UInt16
+    var rtm_version: UInt8
+    var rtm_type: UInt8
+    var rtm_hdrlen: UInt16
+    var rtm_index: UInt16
+    var rtm_flags: Int32
+    var rtm_addrs: Int32
+    var rtm_pid: Int32
+    var rtm_seq: Int32
+    var rtm_errno: Int32
+    var rtm_use: Int32
+    var rtm_inits: UInt32
+}
+
+private enum RouteFlag {
+    static let gateway: Int32 = 0x2
+    static let llinfo: Int32 = 0x400
+}
+
+private enum RouteAddressFlag {
+    static let destination: Int32 = 0x1
+    static let gateway: Int32 = 0x2
+    static let netmask: Int32 = 0x4
+    static let genmask: Int32 = 0x8
+    static let interface: Int32 = 0x10
+    static let interfaceAddress: Int32 = 0x20
+    static let author: Int32 = 0x40
+    static let broadcast: Int32 = 0x80
+
+    static let ordered: [Int32] = [destination, gateway, netmask, genmask, interface, interfaceAddress, author, broadcast]
+}
+
+private let routeMessageIfInfo2: Int32 = 0x12
+
 /// Real on-device local-network inspection using public BSD interfaces.
 ///
 /// This is the closest an iOS app can get to the desktop discovery stack:
@@ -220,7 +258,7 @@ enum LocalNetworkScanner {
                 let messageLength = Int(header.ifm_msglen)
                 guard messageLength > 0 else { break }
 
-                if Int32(header.ifm_type) == RTM_IFINFO2 {
+                if Int32(header.ifm_type) == routeMessageIfInfo2 {
                     let message = base.loadUnaligned(fromByteOffset: offset, as: if_msghdr2.self)
                     if message.ifm_flags & Int32(IFF_LOOPBACK) == 0 {
                         var nameBuffer = [CChar](repeating: 0, count: Int(IFNAMSIZ) + 1)
@@ -305,7 +343,6 @@ enum LocalNetworkScanner {
                 let addressLength = Int(link.sdl_alen)
                 let nameLength = Int(link.sdl_nlen)
                 if addressLength == 6 {
-                    let dataOffset = MemoryLayout<sockaddr_dl>.size - 12
                     var bytes = [UInt8](repeating: 0, count: 6)
                     withUnsafePointer(to: link.sdl_data) { tuplePointer in
                         tuplePointer.withMemoryRebound(to: UInt8.self, capacity: 12) { dataPointer in
@@ -354,14 +391,14 @@ enum LocalNetworkScanner {
         var offset = 0
         buffer.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
-            while offset + MemoryLayout<rt_msghdr>.size <= length, gateway == nil {
-                let message = base.loadUnaligned(fromByteOffset: offset, as: rt_msghdr.self)
+            while offset + MemoryLayout<RouteMessageHeader>.size <= length, gateway == nil {
+                let message = base.loadUnaligned(fromByteOffset: offset, as: RouteMessageHeader.self)
                 let messageLength = Int(message.rtm_msglen)
                 guard messageLength > 0 else { break }
 
-                if message.rtm_flags & RTF_GATEWAY != 0,
-                   message.rtm_addrs & RTA_DST != 0,
-                   message.rtm_addrs & RTA_GATEWAY != 0 {
+                if message.rtm_flags & RouteFlag.gateway != 0,
+                   message.rtm_addrs & RouteAddressFlag.destination != 0,
+                   message.rtm_addrs & RouteAddressFlag.gateway != 0 {
                     let parsed = addresses(in: message, at: base, offset: offset)
                     if isDefault(parsed.destination, family: family), let destination = parsed.gateway {
                         gateway = destination
@@ -373,8 +410,8 @@ enum LocalNetworkScanner {
         return gateway
     }
 
-    private static func addresses(in message: rt_msghdr, at base: UnsafeRawPointer, offset: Int) -> (destination: String?, gateway: String?) {
-        let order: [Int32] = [RTA_DST, RTA_GATEWAY, RTA_NETMASK, RTA_GENMASK, RTA_IFP, RTA_IFA, RTA_AUTHOR, RTA_BRD]
+    private static func addresses(in message: RouteMessageHeader, at base: UnsafeRawPointer, offset: Int) -> (destination: String?, gateway: String?) {
+        let order = RouteAddressFlag.ordered
         var cursor = offset + Int(message.rtm_hdrlen)
         let limit = offset + Int(message.rtm_msglen)
         var destination: String?
@@ -383,8 +420,8 @@ enum LocalNetworkScanner {
         for flag in order {
             guard message.rtm_addrs & flag != 0 else { continue }
             guard cursor + 1 < limit, let parsed = parseSockaddr(base.advanced(by: cursor)) else { break }
-            if flag == RTA_DST { destination = parsed.address }
-            if flag == RTA_GATEWAY { gateway = parsed.address }
+            if flag == RouteAddressFlag.destination { destination = parsed.address }
+            if flag == RouteAddressFlag.gateway { gateway = parsed.address }
             cursor += roundUp(parsed.length)
         }
         return (destination, gateway)
@@ -399,7 +436,7 @@ enum LocalNetworkScanner {
     // MARK: - ARP cache
 
     static func arpCache() -> [ARPEntry] {
-        var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RTF_LLINFO]
+        var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RouteFlag.llinfo]
         var length = 0
         guard sysctl(&mib, UInt32(mib.count), nil, &length, nil, 0) == 0, length > 0 else { return [] }
         var buffer = [UInt8](repeating: 0, count: length)
@@ -409,14 +446,14 @@ enum LocalNetworkScanner {
         var offset = 0
         buffer.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
-            while offset + MemoryLayout<rt_msghdr>.size <= length {
-                let message = base.loadUnaligned(fromByteOffset: offset, as: rt_msghdr.self)
+            while offset + MemoryLayout<RouteMessageHeader>.size <= length {
+                let message = base.loadUnaligned(fromByteOffset: offset, as: RouteMessageHeader.self)
                 let messageLength = Int(message.rtm_msglen)
                 guard messageLength > 0 else { break }
 
-                if message.rtm_flags & RTF_LLINFO != 0,
-                   message.rtm_addrs & RTA_DST != 0,
-                   message.rtm_addrs & RTA_GATEWAY != 0 {
+                if message.rtm_flags & RouteFlag.llinfo != 0,
+                   message.rtm_addrs & RouteAddressFlag.destination != 0,
+                   message.rtm_addrs & RouteAddressFlag.gateway != 0 {
                     let parsed = linkLayer(in: message, at: base, offset: offset)
                     if let ip = parsed.destination, let mac = parsed.mac, mac != "00:00:00:00:00:00" {
                         entries.append(ARPEntry(ip: ip, mac: mac))
@@ -428,8 +465,8 @@ enum LocalNetworkScanner {
         return entries.sorted { (ipv4Value($0.ip) ?? 0) < (ipv4Value($1.ip) ?? 0) }
     }
 
-    private static func linkLayer(in message: rt_msghdr, at base: UnsafeRawPointer, offset: Int) -> (destination: String?, mac: String?) {
-        let order: [Int32] = [RTA_DST, RTA_GATEWAY, RTA_NETMASK, RTA_GENMASK, RTA_IFP, RTA_IFA, RTA_AUTHOR, RTA_BRD]
+    private static func linkLayer(in message: RouteMessageHeader, at base: UnsafeRawPointer, offset: Int) -> (destination: String?, mac: String?) {
+        let order = RouteAddressFlag.ordered
         var cursor = offset + Int(message.rtm_hdrlen)
         let limit = offset + Int(message.rtm_msglen)
         var destination: String?
@@ -438,8 +475,8 @@ enum LocalNetworkScanner {
         for flag in order {
             guard message.rtm_addrs & flag != 0 else { continue }
             guard cursor + 1 < limit, let parsed = parseSockaddr(base.advanced(by: cursor)) else { break }
-            if flag == RTA_DST { destination = parsed.address }
-            if flag == RTA_GATEWAY { mac = parsed.mac }
+            if flag == RouteAddressFlag.destination { destination = parsed.address }
+            if flag == RouteAddressFlag.gateway { mac = parsed.mac }
             cursor += roundUp(parsed.length)
         }
         return (destination, mac)
