@@ -1,0 +1,9 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "netwarden_9e65991a",
+  "project_id": "c0754e04-fdb8-4d7e-b567-01dcce0a84c9",
+  "global_dolt_database": "beads_global",
+  "global_project_id": "00000000-0000-0000-0000-000000000000"
+}
