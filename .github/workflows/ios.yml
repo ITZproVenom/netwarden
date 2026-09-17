@@ -136,7 +136,7 @@ jobs:
           - Bundle identifier: com.netwarden.app
           - Minimum iOS 17.0; built with the iOS 26 SDK
           - Not App Store signed: required for ad-hoc sideloading
-          - Real on-device: ARP-cache discovery + UDP subnet sweep, interface byte counters, IPv6 prefixes/routes, mDNS, and gateway identity conflict detection.
+          - Real on-device: ARP-cache discovery + UDP subnet sweep, mDNS-resolved device names/models, interface byte counters, IPv6 prefixes/routes, and gateway identity conflict detection.
           - Experimental (not enforced on iOS): disconnect controls, per-device capture, bandwidth shaping, and Router Advertisement analysis.
 
           Install: download NetWarden-unsigned.ipa and resign it with your Apple ID (e.g. sideloadly/AltStore) before installing."

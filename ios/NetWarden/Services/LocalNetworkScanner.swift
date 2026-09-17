@@ -75,6 +75,8 @@ struct DiscoveredHost: Hashable, Identifiable {
     var ip: String
     var mac: String?
     var vendor: String?
+    var name: String?
+    var model: String?
     var isGateway: Bool
     var openPorts: [Int]
 }
@@ -183,6 +185,8 @@ enum LocalNetworkScanner {
                 ip: entry.ip,
                 mac: entry.mac,
                 vendor: OUIVendor.lookup(entry.mac),
+                name: nil,
+                model: nil,
                 isGateway: entry.ip == gatewayIPv4,
                 openPorts: []
             ))
@@ -190,7 +194,7 @@ enum LocalNetworkScanner {
 
         for ip in reachable where !seen.contains(ip) && ip != primary?.ipv4 {
             seen.insert(ip)
-            hosts.append(DiscoveredHost(ip: ip, mac: nil, vendor: nil, isGateway: ip == gatewayIPv4, openPorts: []))
+            hosts.append(DiscoveredHost(ip: ip, mac: nil, vendor: nil, name: nil, model: nil, isGateway: ip == gatewayIPv4, openPorts: []))
         }
 
         let gatewayMAC = gatewayIPv4.flatMap { gateway in arp.first { $0.ip == gateway }?.mac }
@@ -209,6 +213,68 @@ enum LocalNetworkScanner {
             hosts: hosts.sorted { (ipv4Value($0.ip) ?? 0) < (ipv4Value($1.ip) ?? 0) },
             scannedAt: scannedAt
         )
+    }
+
+    // MARK: - Identity enrichment
+
+    /// Applies real device identities learned over Bonjour/mDNS and reverse DNS.
+    /// Address-keyed values win over the vendor guess; a missing MAC is filled
+    /// from a service TXT record so the device still has a stable identity.
+    static func enrich(
+        _ scan: LocalNetworkScan,
+        names: [String: String],
+        models: [String: String],
+        macs: [String: String]
+    ) -> LocalNetworkScan {
+        var updated = scan
+        updated.hosts = scan.hosts.map { host in
+            var host = host
+            if let name = names[host.ip], !name.isEmpty { host.name = name }
+            if let model = models[host.ip], !model.isEmpty { host.model = model }
+            if host.mac == nil, let mac = macs[host.ip] { host.mac = mac }
+            if host.vendor == nil, let mac = host.mac { host.vendor = OUIVendor.lookup(mac) }
+            return host
+        }
+        if let gatewayIPv4 = updated.gatewayIPv4, updated.gatewayMAC == nil, let mac = macs[gatewayIPv4] {
+            updated.gatewayMAC = mac
+        }
+        return updated
+    }
+
+    /// Best-effort reverse DNS for hosts that Bonjour did not name. Runs on a
+    /// bounded, pre-allocated set so a slow resolver cannot corrupt results.
+    static func reverseNames(hosts: [String], limit: Int = 64) -> [String: String] {
+        let subjects = Array(hosts.prefix(limit))
+        guard !subjects.isEmpty else { return [:] }
+        var storage = [String?](repeating: nil, count: subjects.count)
+        storage.withUnsafeMutableBufferPointer { buffer in
+            DispatchQueue.concurrentPerform(iterations: subjects.count) { index in
+                buffer[index] = reverseName(subjects[index])
+            }
+        }
+        var result: [String: String] = [:]
+        for (index, name) in storage.enumerated() {
+            if let name { result[subjects[index]] = name }
+        }
+        return result
+    }
+
+    private static func reverseName(_ ip: String) -> String? {
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        guard inet_pton(AF_INET, ip, &address.sin_addr) == 1 else { return nil }
+
+        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        let status = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                getnameinfo(socketAddress, socklen_t(MemoryLayout<sockaddr_in>.size), &host, socklen_t(host.count), nil, 0, NI_NAMEREQD)
+            }
+        }
+        guard status == 0 else { return nil }
+        var name = String(cString: host)
+        if name.hasSuffix(".") { name = String(name.dropLast()) }
+        return name.isEmpty ? nil : name
     }
 
     // MARK: - Throughput

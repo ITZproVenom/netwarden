@@ -131,7 +131,8 @@ feature set. It implements for real everything the iOS sandbox permits: local
 network identity, active device discovery from the system ARP cache plus a UDP
 subnet sweep, live traffic rates from the device's interface byte counters,
 gateway identity conflict detection, learned IPv6 prefixes and the default
-IPv6 route, mDNS service discovery, and a searchable/nicknameable device
+IPv6 route, mDNS service discovery, real device names/hostnames/models resolved
+from those advertisements, and a searchable/nicknameable device
 registry that imports desktop scan snapshots. The surfaces iOS cannot enforce —
 ARP/NDP redirection for disconnect controls, per-device capture, bandwidth
 shaping, and Router Advertisement analysis — keep their full data model and

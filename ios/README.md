@@ -19,6 +19,13 @@ tagged **Experimental**, and recorded honestly instead of faked.
   real neighbors. Discovered hosts, MAC addresses, OUI vendors, and the
   gateway identity are real. If the ARP table is unavailable, a bounded TCP
   reachability sweep is used instead.
+- **Real device names and models** — `BonjourResolver` resolves the mDNS
+  advertisements the devices on the LAN actually publish (`_device-info._tcp`,
+  `_airplay._tcp`, `_raop._tcp`, `_companion-link._tcp`, printers, file shares,
+  Google Cast, HomeKit, …) and maps the advertised addresses to their instance
+  names, hostnames, model identifiers, and TXT `deviceid` MACs. Unnamed hosts
+  get a best-effort reverse-DNS pass that refines the list after it appears, so
+  devices are listed by their real names instead of a vendor guess.
 - **Real traffic monitoring** — live upload/download rates for this iPhone
   come from real interface byte counters (`sysctl NET_RT_IFLIST2`), with totals,
   peaks, sparklines, and usage buckets accumulated from those samples.

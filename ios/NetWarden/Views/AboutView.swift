@@ -25,6 +25,7 @@ struct AboutView: View {
                 Section("Runs on iPhone") {
                     label("Local network identity", "This device's IP addresses, subnet, hardware address, and Wi-Fi name.", .supported, "wifi")
                     label("Device discovery", "Reads the system neighbor (ARP) cache and sweeps the local subnet to find real hosts and MAC addresses.", .supported, "dot.radiowaves.left.and.right")
+                    label("Device names & models", "Resolves the mDNS advertisements devices actually publish to show their real names, hostnames, models, and hardware IDs, with reverse DNS as a fallback.", .supported, "textformat.abc")
                     label("mDNS discovery", "Browse services advertised by devices on the network.", .supported, "antenna.radiowaves.left.and.right")
                     label("Traffic monitoring", "Live upload and download rates from this iPhone's real interface byte counters, plus peaks and usage history.", .supported, "chart.bar.xaxis")
                     label("Gateway integrity", "Watches the neighbor cache for a device claiming the gateway address and reports real conflicts.", .supported, "shield.lefthalf.filled")

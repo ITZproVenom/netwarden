@@ -207,7 +207,31 @@ final class StandaloneRuntime {
                 LocalNetworkScanner.scan()
             }.value
             guard let self else { return }
-            self.apply(result)
+            self.scanStatusText = "Resolving device names…"
+            let identities = await BonjourResolver.resolve(timeout: 3.5)
+            let enriched = LocalNetworkScanner.enrich(
+                result,
+                names: identities.compactMapValues { $0.name },
+                models: identities.compactMapValues { $0.model },
+                macs: identities.compactMapValues { $0.mac }
+            )
+            self.apply(enriched)
+            self.resolveReverseNames(for: enriched)
+        }
+    }
+
+    /// Reverse DNS is unbounded latency in the worst case, so it runs off the
+    /// main actor after the scan is already visible and only refines unnamed hosts.
+    private func resolveReverseNames(for scan: LocalNetworkScan) {
+        let pending = scan.hosts.filter { $0.name == nil }.map { $0.ip }
+        guard !pending.isEmpty else { return }
+        Task { [weak self] in
+            let names = await Task.detached(priority: .utility) {
+                LocalNetworkScanner.reverseNames(hosts: pending)
+            }.value
+            guard let self, !names.isEmpty else { return }
+            self.store.applyResolvedNames(names)
+            self.log(kind: "scan", severity: .info, title: "Resolved hostnames", detail: "Named \(names.count) device\(names.count == 1 ? "" : "s") from DNS.")
         }
     }
 
@@ -336,6 +360,8 @@ final class StandaloneRuntime {
         detectGatewayConflicts(from: result.arpEntries)
 
         var detail = "\(result.hosts.count) neighbors"
+        let named = result.hosts.filter { $0.name != nil }.count
+        if named > 0 { detail += " · \(named) named" }
         if let ip = result.primaryIPv4 { detail += " · local \(ip)" }
         if let gateway = result.gatewayIPv4 { detail += " · gateway \(gateway)" }
         if let mac = result.gatewayMAC { detail += " (\(mac))" }

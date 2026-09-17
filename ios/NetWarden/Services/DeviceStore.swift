@@ -129,16 +129,19 @@ final class DeviceStore {
                 device.lastSeen = .now
                 if device.vendor == nil { device.vendor = host.vendor }
                 if host.isGateway { device.role = "Gateway" }
-                if device.name.isEmpty {
-                    device.name = host.vendor.map { "\($0) device" } ?? (host.isGateway ? "Gateway" : "Device")
+                if let name = host.name, !name.isEmpty, Self.isGenericName(device.name) {
+                    device.name = name
+                }
+                if device.type == nil, let model = host.model, !model.isEmpty {
+                    device.type = model
                 }
                 updated.append(device)
             } else {
                 updated.append(Device(
                     mac: mac,
-                    name: host.vendor.map { "\($0) device" } ?? (host.isGateway ? "Gateway" : "Device"),
+                    name: Self.displayName(for: host),
                     vendor: host.vendor,
-                    type: nil,
+                    type: host.model,
                     nickname: nil,
                     online: true,
                     ipv4: host.ip,
@@ -164,6 +167,39 @@ final class DeviceStore {
         sourceDescription = scan.hosts.isEmpty
             ? "Live scan · no hosts responded"
             : "Live scan · \(scan.hosts.count) host\(scan.hosts.count == 1 ? "" : "s")"
+    }
+
+    /// Merge real hostnames learned asynchronously from reverse DNS for devices
+    /// that Bonjour did not name.
+    func applyResolvedNames(_ names: [String: String]) {
+        guard !names.isEmpty else { return }
+        var updated = devices
+        for index in updated.indices {
+            guard updated[index].nickname == nil else { continue }
+            guard let ip = updated[index].ipv4, let name = names[ip], !name.isEmpty else { continue }
+            if Self.isGenericName(updated[index].name) {
+                updated[index].name = name
+            }
+        }
+        devices = updated
+    }
+
+    private static func displayName(for host: DiscoveredHost) -> String {
+        if let name = host.name, !name.isEmpty { return name }
+        if let model = host.model, !model.isEmpty {
+            return host.vendor.map { "\($0) \(model)" } ?? model
+        }
+        if let vendor = host.vendor { return "\(vendor) device" }
+        return host.isGateway ? "Gateway" : "Unknown device"
+    }
+
+    private static func isGenericName(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty
+            || trimmed == "Device"
+            || trimmed == "Gateway"
+            || trimmed == "Unknown device"
+            || trimmed.hasSuffix(" device")
     }
 
     private func loadBundled() {
