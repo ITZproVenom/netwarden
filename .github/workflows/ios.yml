@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ios-build-${{ github.ref }}
@@ -122,6 +122,35 @@ jobs:
           echo "IPA size: $(stat -f%z NetWarden-unsigned.ipa) bytes"
           echo "Bundle identifier: $BUNDLE_ID"
           unzip -l NetWarden-unsigned.ipa
+
+      - name: Publish GitHub Release
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 'MARKETING_VERSION:' project.yml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          TAG="iOS-unsigned-latest"
+          SHA="${GITHUB_SHA::7}"
+          NOTES="Unsigned NetWarden iOS build for sideloading (AltStore, Filza, or Xcode with your Apple ID).
+
+        - Marketing version: ${VERSION:-1.0.0}
+        - Commit: ${SHA}
+        - Bundle identifier: com.netwarden.app
+        - Minimum iOS 17.0; built with the iOS 26 SDK
+        - Not App Store signed: required for ad-hoc sideloading
+
+        Install: download NetWarden-unsigned.ipa and resign it with your Apple ID (e.g. sideloadly/AltStore) before installing."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes "$NOTES"
+            gh release upload "$TAG" NetWarden-unsigned.ipa --clobber
+          else
+            gh release create "$TAG" \
+              NetWarden-unsigned.ipa \
+              --target "$GITHUB_SHA" \
+              --title "NetWarden iOS (unsigned)" \
+              --notes "$NOTES"
+          fi
+          echo "Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - uses: actions/upload-artifact@v4
         with:
