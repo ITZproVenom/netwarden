@@ -11,9 +11,12 @@ final class DeviceStore {
     private(set) var lastScan: LocalNetworkScan?
     var searchText: String = ""
 
+    /// True only while the registry holds the bundled synthetic sample, which is
+    /// an opt-in demo. A live scan replaces it instead of merging with it.
+    private var showingSample = false
+
     init() {
-        sourceDescription = "Bundled sample"
-        loadBundled()
+        sourceDescription = "Not scanned yet"
     }
 
     var filteredDevices: [Device] {
@@ -60,13 +63,15 @@ final class DeviceStore {
         devices = snapshot.devices
         snapshotNetwork = snapshot.network
         sourceDescription = "Imported from \(url.lastPathComponent)"
+        showingSample = false
     }
 
     func resetToSample() {
-        sourceDescription = "Bundled sample"
+        sourceDescription = "Bundled sample (synthetic)"
         lastScan = nil
         selfMAC = nil
         loadBundled()
+        showingSample = true
     }
 
     /// Merge a real on-device scan into the registry. Discovered hosts become
@@ -158,11 +163,13 @@ final class DeviceStore {
         }
 
         for device in devices where !seen.contains(device.mac) {
+            guard !showingSample else { continue }
             var offline = device
             offline.online = false
             updated.append(offline)
         }
 
+        showingSample = false
         devices = updated
         sourceDescription = scan.hosts.isEmpty
             ? "Live scan · no hosts responded"

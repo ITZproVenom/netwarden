@@ -11,9 +11,9 @@ struct DevicesView: View {
             Group {
                 if store.devices.isEmpty {
                     ContentUnavailableView(
-                        "No devices",
+                        "No devices yet",
                         systemImage: "network",
-                        description: Text("Load a scan snapshot exported from the NetWarden desktop app.")
+                        description: Text("Open the Network tab to scan the local network, or import a scan snapshot exported from the NetWarden desktop app.")
                     )
                 } else if store.filteredDevices.isEmpty {
                     ContentUnavailableView.search(text: store.searchText)
@@ -49,7 +49,7 @@ struct DevicesView: View {
                         Button {
                             store.resetToSample()
                         } label: {
-                            Label("Restore sample", systemImage: "arrow.uturn.backward")
+                            Label("Load synthetic sample", systemImage: "arrow.uturn.backward")
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")

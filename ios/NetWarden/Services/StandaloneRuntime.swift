@@ -110,7 +110,7 @@ final class StandaloneRuntime {
     }
 
     var gatewayIP: String {
-        store.snapshotNetwork?.gatewayIPv4 ?? "192.168.1.1"
+        store.snapshotNetwork?.gatewayIPv4 ?? "Not detected"
     }
 
     var gatewayMAC: String {

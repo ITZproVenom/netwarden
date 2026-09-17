@@ -30,7 +30,7 @@ struct AboutView: View {
                     label("Traffic monitoring", "Live upload and download rates from this iPhone's real interface byte counters, plus peaks and usage history.", .supported, "chart.bar.xaxis")
                     label("Gateway integrity", "Watches the neighbor cache for a device claiming the gateway address and reports real conflicts.", .supported, "shield.lefthalf.filled")
                     label("IPv6 status", "Real learned prefixes and the default IPv6 route from the system routing table.", .supported, "globe.americas")
-                    label("Device registry", "Import, browse, search, and nickname devices from a desktop scan snapshot.", .supported, "network")
+                    label("Device registry", "Starts from live scan results (real names, models, and MACs), supports import of desktop scan snapshots, and offers an optional synthetic sample.", .supported, "network")
                 }
 
                 Section("Experimental · cannot be enforced on iOS") {

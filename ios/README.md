@@ -35,8 +35,9 @@ tagged **Experimental**, and recorded honestly instead of faked.
   route come from the interface list and the system routing table.
 - **mDNS discovery** — browses service types (`_http._tcp`, `_airplay._tcp`,
   `_ssh._tcp`, `_printer._tcp`, …) using Apple's Network framework.
-- **Device registry** — a native Devices view backed by the bundled sample
-  snapshot, live scan results, and an importer for desktop scan snapshots.
+- **Device registry** — a native Devices view that starts from live scan results
+  (real names, models, and MACs), supports importing desktop scan snapshots, and
+  offers an optional synthetic sample that a live scan replaces.
 
 ## Experimental feature surfaces (not enforceable on iPhone)
 
